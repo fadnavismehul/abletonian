@@ -72,6 +72,12 @@ Claude Desktop or another MCP client can start it over stdio:
 | Bridge port | `--bridge-port` | `ABLETONIAN_BRIDGE_PORT` | `9877` |
 | Bridge timeout | `--bridge-timeout` | `ABLETONIAN_BRIDGE_TIMEOUT` | `10.0` |
 
+## Strategic Directions
+
+Deep product and architecture options are collected in [`docs/strategic-directions.md`](docs/strategic-directions.md),
+including Ableton-native panels, MCP Apps, local-first music memory, adapter-standard
+work, performance tooling, education, collaboration, and custom micro-tool generation.
+
 ## DAW Targets
 
 The first-class target is `ableton`. Other planned targets are described in
