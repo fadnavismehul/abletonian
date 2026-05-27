@@ -259,6 +259,9 @@ Backout:
   - `src/abletonian/bridge/protocol.py`
   - `src/abletonian/manual.py`
   - `src/abletonian/server.py`
+  - `remote_scripts/Abletonian/`
+  - `scripts/install_remote_script.py`
+  - `docs/engineering/live-validation.md`
   - `tests/test_als.py`
   - `tests/test_als_integration.py`
   - `tests/test_bridge_client.py`
@@ -267,6 +270,7 @@ Backout:
   - `tests/test_manual.py`
   - `tests/test_protocol.py`
   - `tests/test_remote_script_adapter.py`
+  - `tests/test_remote_script_install.py`
   - `tests/test_server.py`
 - **Verification:**
   - `python3 -m unittest discover -s tests -p 'test_fake_adapter.py'`
@@ -279,6 +283,8 @@ Backout:
     `Bossa` MIDI clip plan.
   - The same First Light fixture validates fake execution into an in-memory
     post-state with filtered output clips and no real Live Set mutation.
+  - `.venv/bin/python -m scripts.install_remote_script` installs the read-only
+    `Abletonian` Remote Script for manual Live validation.
 - **Commit tags:** none yet
 - **Open follow-ups:**
   - Add manual Ableton verification documentation before mutating real Live
@@ -301,3 +307,5 @@ Backout:
   - 2026-05-27: added fake Drum Rack extraction execution that returns an
     in-memory manifest and post-state snapshot. This validates workflow
     transformation logic without changing Ableton or saved `.als` files.
+  - 2026-05-27: added a self-contained read-only Remote Script package and
+    installer. It intentionally exposes only health and selected-context reads.
