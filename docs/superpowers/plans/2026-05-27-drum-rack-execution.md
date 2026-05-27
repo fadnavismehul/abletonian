@@ -87,7 +87,7 @@ Add a model-facing `execute_drum_rack_extraction(confirm: bool = False)` tool. I
 Run: `.venv/bin/python -m unittest discover -s tests -p 'test_server.py'`
 Expected: OK.
 
-- [ ] **Step 5: Commit MCP tool**
+- [x] **Step 5: Commit MCP tool**
 
 Run:
 
@@ -103,11 +103,11 @@ git commit -m "feat: expose confirmed Drum Rack execution tool" -m "RFC: RFC-001
 - Move: `docs/product/rfcs/inprogress/RFC-001-ableton-deep-integration-foundation.md` to `docs/product/rfcs/done/RFC-001-ableton-deep-integration-foundation.md`
 - Modify: `docs/product/rfcs/README.md`
 
-- [ ] **Step 1: Install and restart Live**
+- [x] **Step 1: Install and restart Live**
 
 Run `.venv/bin/python -m scripts.install_remote_script`, restart Ableton Live, open `testing/First Light Project/First Light.als`, dismiss crash recovery if present, and select the `1-C78 Core Kit` track.
 
-- [ ] **Step 2: Probe execution**
+- [x] **Step 2: Probe execution**
 
 Run:
 
@@ -123,15 +123,15 @@ PY
 
 Expected: created tracks for `Snare`, `Kick`, and `Closed Hi Hat`; each created track reports one retained pitch; `midi_filtering_applied=True`; `saved_live_set=False`.
 
-- [ ] **Step 3: Document validation**
+- [x] **Step 3: Document validation**
 
 Update live validation with the execution result, the note-filtering boundary, and backout guidance. Update RFC-001 implementation tracking with verification commands, commit hashes, and Live validation evidence.
 
-- [ ] **Step 4: Move RFC to done**
+- [x] **Step 4: Move RFC to done**
 
 Set `Status: Implemented`, move the RFC file to `docs/product/rfcs/done/`, and update the RFC registry row to point at the done path.
 
-- [ ] **Step 5: Run full verification**
+- [x] **Step 5: Run full verification**
 
 Run:
 
@@ -144,7 +144,7 @@ git diff --check
 
 Expected: all commands pass.
 
-- [ ] **Step 6: Commit docs and RFC completion**
+- [x] **Step 6: Commit docs and RFC completion**
 
 Run:
 

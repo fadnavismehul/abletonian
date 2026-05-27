@@ -1,14 +1,14 @@
 # RFC-001: Ableton Deep Integration Foundation
 
-**Status:** In Progress
+**Status:** Implemented
 **Created:** 2026-05-23  
 **Owner:** Core Team  
 **Related Docs:** [Product Vision](../../vision.md), [Design Philosophy](../../../design/philosophy.md), [Integration Options](../../../engineering/integration-options.md), [Robustness and Safety](../../../engineering/robustness-and-safety.md)  
-**Implementation Status:** Started: fake adapter health, bridge dispatch,
-RTFM lookup, MCP dry-run tools, read-only Remote Script adapter core, real
-Remote Script Drum Rack dry-run planning, additive Drum Rack scaffold track
-duplication, and manual Live 12.4 validation are implemented for foundation
-workflow validation.
+**Implementation Status:** Implemented: fake adapter health/execution, framed
+bridge dispatch, RTFM lookup, MCP planning and confirmed execution tools, real
+Remote Script selected-context reads, Drum Rack dry-run planning, scaffold track
+duplication, MIDI note filtering on duplicated clips, and manual Live 12.4
+validation are complete for the foundation workflow.
 
 ## Goal
 
@@ -52,7 +52,7 @@ In scope:
 
 Out of scope:
 
-- Implementing the bridge in this RFC.
+- Further bridge hardening beyond the first local Remote Script bridge.
 - Shipping a Max for Live UI.
 - Supporting non-Ableton DAWs.
 - Offline `.als` mutation.
@@ -252,7 +252,7 @@ Backout:
 
 ## Implementation Tracking
 
-- **Lifecycle folder:** `inprogress/`
+- **Lifecycle folder:** `done/`
 - **Code entry points:**
   - `src/abletonian/als.py`
   - `src/abletonian/adapters/fake.py`
@@ -280,7 +280,7 @@ Backout:
   - `python3 -m unittest discover -s tests -p 'test_fake_adapter.py'`
   - `.venv/bin/python -m unittest discover -s tests`
   - `.venv/bin/ruff check .`
-  - `.venv/bin/python -m compileall -q src tests`
+  - `.venv/bin/python -m compileall -q src tests remote_scripts scripts`
   - `git diff --check`
   - `testing/First Light Project/First Light.als` validates a real Ableton Live
     12.4 Drum Rack dry-run: `Snare`, `Kick`, and `Closed Hi Hat` are extracted
@@ -303,12 +303,27 @@ Backout:
     `1-C78 Core Kit - Closed Hi Hat`; the manifest reported
     `created_track_count=3`, `midi_filtering_applied=False`, and
     `saved_live_set=False`.
-- **Commit tags:** none yet
-- **Open follow-ups:**
-  - Add real MIDI clip filtering only after a tighter Live API write-note
-    prototype and before/after validation checklist exist.
-  - Add cleanup/undo automation only if Live's API exposes a safe operation that
-    is no riskier than the user's built-in Undo path.
+  - 2026-05-27 Live validation passed for real
+    `workflow.execute_drum_rack_extraction` with `confirm=True`: the Remote
+    Script duplicated and filtered the selected Drum Rack track into
+    `1-C78 Core Kit - Snare`, `1-C78 Core Kit - Kick`, and
+    `1-C78 Core Kit - Closed Hi Hat`; created clips were renamed
+    `Bossa - Snare`, `Bossa - Kick`, and `Bossa - Closed Hi Hat` and retained
+    only pitches `38`, `41`, and `42`; the manifest reported
+    `created_track_count=3`, `midi_filtering_applied=True`, and
+    `saved_live_set=False`.
+- **Commit tags:**
+  - `7ec0d37 feat: start Ableton integration foundation`
+  - `977b48e feat: add read-only Ableton remote script`
+  - `9e47455 fix: validate Ableton remote script in Live`
+  - `f6d9662 feat: plan Drum Rack extraction through Live`
+  - `06b9385 feat: scaffold Drum Rack extraction tracks`
+  - `038a934 docs: plan Drum Rack execution completion`
+  - `e8daddd feat: execute Drum Rack extraction in Live`
+  - `38c3dc5 feat: expose confirmed Drum Rack execution tool`
+- **Open follow-ups:** none for RFC-001 acceptance. Broader cleanup/undo
+  automation, arbitrary MIDI note writing, and generated UI surfaces should be
+  handled by follow-up RFCs.
 - **Deviations from proposal:**
   - 2026-05-27: started with an in-process fake adapter rather than a networked
     fake bridge server so Drum Rack workflow logic can be tested before bridge
@@ -341,3 +356,7 @@ Backout:
   - 2026-05-27: the first live scaffold attempt exposed that mutating Live APIs
     must not run directly on the socket worker thread. The bridge now dispatches
     requests through `ControlSurface.schedule_message` when Live provides it.
+  - 2026-05-27: finished real Drum Rack extraction by filtering duplicated
+    Session MIDI clips with Live's note-removal APIs. This intentionally keeps
+    arbitrary MIDI note writing unsupported while supporting the narrower,
+    plan-derived one-pitch-per-output workflow.

@@ -5,8 +5,8 @@ and during mutating adapter workflows.
 
 ## Current Scope
 
-Current live validation covers read-only planning and the first additive
-mutation scaffold:
+Current live validation covers read-only planning and the first confirmed
+Drum Rack extraction execution:
 
 - install the Abletonian Remote Script into the User Library,
 - enable it as a Control Surface in Ableton Live,
@@ -17,10 +17,15 @@ mutation scaffold:
 - confirm the selected track/device and dry-run plan match the visible Live Set,
 - call `workflow.scaffold_drum_rack_extraction` with `confirm=True`,
 - confirm scaffold tracks are duplicated, renamed, and colored while MIDI clips
-  remain unfiltered.
+  remain unfiltered,
+- call `workflow.execute_drum_rack_extraction` with `confirm=True`,
+- confirm duplicate clips are filtered to one retained MIDI pitch per output
+  track.
 
-The Remote Script can duplicate tracks for the scaffold workflow. It does not
-create empty tracks, edit MIDI notes, filter clips, or save Live Sets.
+The Remote Script can duplicate tracks and remove nonmatching MIDI notes from
+duplicated Session clips for the Drum Rack extraction workflow. It does not
+create empty tracks, write arbitrary MIDI notes, delete source tracks, or save
+Live Sets.
 
 ## Install
 
@@ -66,7 +71,8 @@ Expected:
 
 - `daw.health` reports `adapter_type` as `ableton_remote_script`,
 - protocol version is `abletonian.bridge.v1`,
-- capabilities include `scaffold_drum_rack_extraction`,
+- capabilities include `scaffold_drum_rack_extraction` and
+  `execute_drum_rack_extraction`,
 - selected context reports the visible selected track and selected device,
 - Drum Rack extraction planning returns a dry-run with no saved-set mutation.
 
@@ -86,6 +92,27 @@ Expected:
 - created tracks are named from the active Drum Rack pads,
 - the original track remains present,
 - `verification.midi_filtering_applied` is `False`,
+- `verification.saved_live_set` is `False`,
+- the manifest includes a Live Undo backout note.
+
+To validate confirmed execution with MIDI filtering, run:
+
+```bash
+.venv/bin/python - <<'PY'
+from pprint import pprint
+from abletonian.bridge.client import BridgeClient
+
+bridge = BridgeClient("127.0.0.1", 9877, 30.0)
+pprint(bridge.request("workflow.execute_drum_rack_extraction", {"confirm": True}))
+PY
+```
+
+Expected:
+
+- created tracks are named from the active Drum Rack pads,
+- duplicated clips are renamed from the pad names,
+- each created clip reports one retained `note_pitches` value,
+- `verification.midi_filtering_applied` is `True`,
 - `verification.saved_live_set` is `False`,
 - the manifest includes a Live Undo backout note.
 
@@ -122,6 +149,16 @@ Probe result:
 - The scaffold manifest reported `created_track_count=3`,
   `midi_filtering_applied=False`, `saved_live_set=False`, and backout guidance
   to use Live Undo three times or close without saving.
+- `workflow.execute_drum_rack_extraction` with `confirm=True` duplicated and
+  filtered the selected Drum Rack track into:
+  `1-C78 Core Kit - Snare`, `1-C78 Core Kit - Kick`, and
+  `1-C78 Core Kit - Closed Hi Hat`.
+- The created clips were renamed `Bossa - Snare`, `Bossa - Kick`, and
+  `Bossa - Closed Hi Hat`, with retained note pitches `38`, `41`, and `42`.
+- The execution manifest reported note counts `5`, `8`, and `16`, removed note
+  counts `24`, `21`, and `13`, `midi_filtering_applied=True`,
+  `saved_live_set=False`, and backout guidance to use Live Undo three times or
+  close without saving.
 
 Compatibility note:
 
@@ -135,12 +172,12 @@ Compatibility note:
 
 ## Mutation Gate
 
-Before adding the next real mutation step:
+Before adding broader mutation workflows:
 
 - read-only health/context/planning validation is passing in Live,
 - fake execution remains green against `First Light.als`,
 - the real mutation method has a manual before/after checklist,
 - the workflow has a backout note using Live undo and the operation manifest,
 - the Live bridge request path schedules mutating work through Live's scheduler,
-- current scaffold tracks can be discarded by Live Undo or closing without
+- current extracted tracks can be discarded by Live Undo or closing without
   saving.
