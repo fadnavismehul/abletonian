@@ -12,6 +12,10 @@ venv/
 env/
 
 .DS_Store
+.superpowers/
 
 dist/
 build/
+
+# Ableton project fixtures keep one canonical set; autosave backups are noisy.
+testing/**/Backup/

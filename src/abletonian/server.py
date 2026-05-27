@@ -10,13 +10,14 @@ from mcp.server.fastmcp import FastMCP
 from abletonian.bridge.client import BridgeClient, BridgeConnectionError
 from abletonian.config import AbletonianConfig
 from abletonian.daws import get_daw_profile, list_daw_profiles
+from abletonian.manual import lookup_manual
 
 
-def build_mcp(config: AbletonianConfig) -> FastMCP:
+def build_mcp(config: AbletonianConfig, bridge: BridgeClient | None = None) -> FastMCP:
     """Build an MCP server named after the configured agent."""
 
     mcp = FastMCP(config.agent_name)
-    bridge = BridgeClient(
+    bridge_client = bridge or BridgeClient(
         host=config.bridge_host,
         port=config.bridge_port,
         timeout=config.bridge_timeout,
@@ -57,7 +58,26 @@ def build_mcp(config: AbletonianConfig) -> FastMCP:
         """Check whether the configured DAW bridge responds."""
 
         try:
-            result = bridge.request("daw.health", {"target_daw": config.target_daw})
+            result = bridge_client.request("daw.health", {"target_daw": config.target_daw})
+        except BridgeConnectionError as exc:
+            return f"Bridge unavailable: {exc}"
+        return json.dumps(result, indent=2)
+
+    @mcp.tool()
+    def lookup_ableton_manual(query: str, live_version: str = "12") -> str:
+        """Return cited Ableton manual context for an indexed workflow query."""
+
+        return json.dumps(lookup_manual(query, live_version), indent=2)
+
+    @mcp.tool()
+    def plan_drum_rack_extraction() -> str:
+        """Return a dry-run Drum Rack extraction plan from the configured bridge."""
+
+        try:
+            result = bridge_client.request(
+                "workflow.plan_drum_rack_extraction",
+                {"target_daw": config.target_daw},
+            )
         except BridgeConnectionError as exc:
             return f"Bridge unavailable: {exc}"
         return json.dumps(result, indent=2)

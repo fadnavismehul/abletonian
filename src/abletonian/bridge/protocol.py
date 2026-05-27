@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from json import JSONDecodeError
 from typing import Any
 from uuid import uuid4
 
 MAX_FRAME_BYTES = 4 * 1024 * 1024
+PROTOCOL_VERSION = "abletonian.bridge.v1"
 
 
 @dataclass(frozen=True)
@@ -27,13 +29,33 @@ class BridgeRequest:
 
 
 @dataclass(frozen=True)
+class BridgeErrorPayload:
+    """Typed bridge error details returned by adapters."""
+
+    code: str
+    message: str
+    recoverable: bool
+    hint: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "code": self.code,
+            "message": self.message,
+            "recoverable": self.recoverable,
+        }
+        if self.hint is not None:
+            payload["hint"] = self.hint
+        return payload
+
+
+@dataclass(frozen=True)
 class BridgeResponse:
     """Response returned by the Ableton bridge."""
 
     id: str
     ok: bool
     result: dict[str, Any] = field(default_factory=dict)
-    error: str | None = None
+    error: BridgeErrorPayload | str | None = None
 
     def to_wire(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -42,7 +64,11 @@ class BridgeResponse:
             "result": self.result,
         }
         if self.error is not None:
-            payload["error"] = self.error
+            payload["error"] = (
+                self.error.to_wire()
+                if isinstance(self.error, BridgeErrorPayload)
+                else self.error
+            )
         return payload
 
 
@@ -69,7 +95,10 @@ def decode_frame(frame: bytes) -> dict[str, Any]:
     if len(frame) - 4 != length:
         raise ValueError("bridge frame length does not match payload size")
 
-    message = json.loads(frame[4:].decode("utf-8"))
+    try:
+        message = json.loads(frame[4:].decode("utf-8"))
+    except JSONDecodeError as exc:
+        raise ValueError("bridge frame payload must be valid JSON") from exc
     if not isinstance(message, dict):
         raise ValueError("bridge frame payload must be a JSON object")
     return message

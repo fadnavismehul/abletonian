@@ -41,8 +41,7 @@ class BridgeClient:
         if response.get("id") != request.id:
             raise BridgeConnectionError("bridge response ID did not match request ID")
         if not response.get("ok", False):
-            error = response.get("error", "unknown bridge error")
-            raise BridgeConnectionError(str(error))
+            raise BridgeConnectionError(_format_bridge_error(response.get("error")))
 
         result = response.get("result", {})
         if not isinstance(result, dict):
@@ -70,3 +69,16 @@ def _recv_n(sock: socket.socket, length: int) -> bytes:
         chunks.append(chunk)
         remaining -= len(chunk)
     return b"".join(chunks)
+
+
+def _format_bridge_error(error: Any) -> str:
+    if isinstance(error, dict):
+        code = error.get("code", "bridge_error")
+        message = error.get("message", "unknown bridge error")
+        hint = error.get("hint")
+        if hint:
+            return f"{code}: {message} Hint: {hint}"
+        return f"{code}: {message}"
+    if error is None:
+        return "unknown bridge error"
+    return str(error)

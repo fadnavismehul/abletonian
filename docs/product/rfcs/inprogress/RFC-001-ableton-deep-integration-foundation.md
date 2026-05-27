@@ -1,10 +1,12 @@
 # RFC-001: Ableton Deep Integration Foundation
 
-**Status:** Proposed  
+**Status:** In Progress
 **Created:** 2026-05-23  
 **Owner:** Core Team  
 **Related Docs:** [Product Vision](../../vision.md), [Design Philosophy](../../../design/philosophy.md), [Integration Options](../../../engineering/integration-options.md), [Robustness and Safety](../../../engineering/robustness-and-safety.md)  
-**Implementation Status:** Not started
+**Implementation Status:** Started: fake adapter health, bridge dispatch,
+RTFM lookup, MCP dry-run tools, and read-only Remote Script adapter core are
+implemented for CI-level workflow validation.
 
 ## Goal
 
@@ -247,10 +249,55 @@ Backout:
 
 ## Implementation Tracking
 
-- **Lifecycle folder:** `proposed/`
-- **Code entry points:** none yet
-- **Verification:** documentation review only
+- **Lifecycle folder:** `inprogress/`
+- **Code entry points:**
+  - `src/abletonian/als.py`
+  - `src/abletonian/adapters/fake.py`
+  - `src/abletonian/adapters/remote_script.py`
+  - `src/abletonian/bridge/client.py`
+  - `src/abletonian/bridge/dispatcher.py`
+  - `src/abletonian/bridge/protocol.py`
+  - `src/abletonian/manual.py`
+  - `src/abletonian/server.py`
+  - `tests/test_als.py`
+  - `tests/test_als_integration.py`
+  - `tests/test_bridge_client.py`
+  - `tests/test_bridge_dispatcher.py`
+  - `tests/test_fake_adapter.py`
+  - `tests/test_manual.py`
+  - `tests/test_protocol.py`
+  - `tests/test_remote_script_adapter.py`
+  - `tests/test_server.py`
+- **Verification:**
+  - `python3 -m unittest discover -s tests -p 'test_fake_adapter.py'`
+  - `.venv/bin/python -m unittest discover -s tests`
+  - `.venv/bin/ruff check .`
+  - `.venv/bin/python -m compileall -q src tests`
+  - `git diff --check`
+  - `testing/First Light Project/First Light.als` validates a real Ableton Live
+    12.4 Drum Rack dry-run: `Rimshot`, `Tamb`, and `Kick` are extracted from the
+    `Bossa` MIDI clip plan.
+  - The same First Light fixture validates fake execution into an in-memory
+    post-state with filtered output clips and no real Live Set mutation.
 - **Commit tags:** none yet
-- **Open follow-ups:** choose first implementation slice and move RFC to
-  `inprogress`
-- **Deviations from proposal:** none
+- **Open follow-ups:**
+  - Add manual Ableton verification documentation before mutating real Live
+    adapter workflows.
+  - Add additive write APIs only after fake adapter execution tests and manual
+    verification criteria are in place.
+- **Deviations from proposal:**
+  - 2026-05-27: started with an in-process fake adapter rather than a networked
+    fake bridge server so Drum Rack workflow logic can be tested before bridge
+    server packaging exists.
+  - 2026-05-27: started the Remote Script path as a dependency-injected
+    read-only adapter core so CI can validate health and selected-context
+    behavior without importing Ableton's host-only Python modules.
+  - 2026-05-27: added a read-only `.als` loader for local validation fixtures.
+    This does not mutate `.als` files and does not change the RFC's non-goal of
+    avoiding offline `.als` mutation.
+  - 2026-05-27: extended the `.als` loader to read MIDI clip notes and Drum Rack
+    branches for real-set dry-run validation. This remains read-only validation,
+    not offline Live Set mutation.
+  - 2026-05-27: added fake Drum Rack extraction execution that returns an
+    in-memory manifest and post-state snapshot. This validates workflow
+    transformation logic without changing Ableton or saved `.als` files.

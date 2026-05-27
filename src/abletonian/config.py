@@ -25,7 +25,7 @@ class AbletonianConfig:
     bridge_timeout: float = DEFAULT_BRIDGE_TIMEOUT
 
     @classmethod
-    def from_env(cls) -> "AbletonianConfig":
+    def from_env(cls) -> AbletonianConfig:
         """Build config from environment variables."""
 
         return cls(
@@ -38,7 +38,7 @@ class AbletonianConfig:
             ),
         )
 
-    def with_args(self, args: argparse.Namespace) -> "AbletonianConfig":
+    def with_args(self, args: argparse.Namespace) -> AbletonianConfig:
         """Return a copy with CLI argument overrides applied."""
 
         return AbletonianConfig(

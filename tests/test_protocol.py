@@ -2,7 +2,13 @@ import unittest
 
 import _bootstrap  # noqa: F401
 
-from abletonian.bridge.protocol import BridgeRequest, BridgeResponse, decode_frame, encode_frame
+from abletonian.bridge.protocol import (
+    BridgeErrorPayload,
+    BridgeRequest,
+    BridgeResponse,
+    decode_frame,
+    encode_frame,
+)
 
 
 class ProtocolTests(unittest.TestCase):
@@ -34,6 +40,37 @@ class ProtocolTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             decode_frame(frame[:-1])
+
+    def test_round_trips_typed_error_payload(self) -> None:
+        response = BridgeResponse(
+            id="abc123",
+            ok=False,
+            error=BridgeErrorPayload(
+                code="unsupported_method",
+                message="method is not supported by this adapter",
+                recoverable=False,
+                hint="Check daw.health capabilities before retrying.",
+            ),
+        )
+
+        decoded = decode_frame(encode_frame(response.to_wire()))
+
+        self.assertEqual(
+            decoded["error"],
+            {
+                "code": "unsupported_method",
+                "message": "method is not supported by this adapter",
+                "recoverable": False,
+                "hint": "Check daw.health capabilities before retrying.",
+            },
+        )
+
+    def test_rejects_invalid_json_payload(self) -> None:
+        payload = b'{"ok": true'
+        frame = len(payload).to_bytes(4, "big") + payload
+
+        with self.assertRaisesRegex(ValueError, "valid JSON"):
+            decode_frame(frame)
 
 
 if __name__ == "__main__":

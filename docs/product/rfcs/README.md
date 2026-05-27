@@ -85,4 +85,4 @@ These rules are enforced for agents by `docs/product/rfcs/AGENTS.md`.
 
 | RFC | Status | Location | Summary |
 | --- | --- | --- | --- |
-| RFC-001 | Proposed | `docs/product/rfcs/proposed/RFC-001-ableton-deep-integration-foundation.md` | Establish the hybrid Ableton integration foundation and first workflow wedge. |
+| RFC-001 | In Progress | `docs/product/rfcs/inprogress/RFC-001-ableton-deep-integration-foundation.md` | Establish the hybrid Ableton integration foundation and first workflow wedge. |
