@@ -18,38 +18,38 @@
 - Modify: `tests/test_remote_script_bridge.py`
 - Modify: `remote_scripts/Abletonian/bridge_server.py`
 
-- [ ] **Step 1: Write failing adapter tests**
+- [x] **Step 1: Write failing adapter tests**
 
 Add tests showing `workflow.execute_drum_rack_extraction` requires `confirm=True`, reports the capability in `daw.health`, preserves source clip notes, creates renamed tracks, and filters each duplicate clip to one pitch.
 
-- [ ] **Step 2: Verify adapter tests fail**
+- [x] **Step 2: Verify adapter tests fail**
 
 Run: `.venv/bin/python -m unittest discover -s tests -p 'test_remote_script_adapter.py'`
 Expected: failure because the real adapter does not support `workflow.execute_drum_rack_extraction`.
 
-- [ ] **Step 3: Implement adapter execution**
+- [x] **Step 3: Implement adapter execution**
 
 Add `workflow.execute_drum_rack_extraction` dispatch. Reuse `_scaffold_drum_rack_extraction`, find each created track by ID, filter its session MIDI clips with `remove_notes_extended` or legacy `remove_notes`, rename filtered clips, and return verification with `midi_filtering_applied=True`, `saved_live_set=False`, and `mutates_real_ableton_set=True`.
 
-- [ ] **Step 4: Verify adapter tests pass**
+- [x] **Step 4: Verify adapter tests pass**
 
 Run: `.venv/bin/python -m unittest discover -s tests -p 'test_remote_script_adapter.py'`
 Expected: OK.
 
-- [ ] **Step 5: Write failing bridge tests**
+- [x] **Step 5: Write failing bridge tests**
 
 Add the same execution behavior to the self-contained bridge tests, including deep-copying fake duplicated clips so source notes remain unchanged.
 
-- [ ] **Step 6: Verify bridge tests fail**
+- [x] **Step 6: Verify bridge tests fail**
 
 Run: `.venv/bin/python -m unittest discover -s tests -p 'test_remote_script_bridge.py'`
 Expected: failure because the self-contained bridge does not support `workflow.execute_drum_rack_extraction`.
 
-- [ ] **Step 7: Implement bridge execution**
+- [x] **Step 7: Implement bridge execution**
 
 Mirror the adapter execution helpers in `remote_scripts/Abletonian/bridge_server.py`, keeping the file importable outside Live and keeping request handling scheduled through `ControlSurface.schedule_message`.
 
-- [ ] **Step 8: Verify bridge tests pass**
+- [x] **Step 8: Verify bridge tests pass**
 
 Run: `.venv/bin/python -m unittest discover -s tests -p 'test_remote_script_bridge.py'`
 Expected: OK.

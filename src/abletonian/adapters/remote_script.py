@@ -16,11 +16,14 @@ REMOTE_SCRIPT_CAPABILITIES = (
     "read_drum_rack",
     "plan_drum_rack_extraction",
     "scaffold_drum_rack_extraction",
+    "execute_drum_rack_extraction",
 )
 REMOTE_SCRIPT_UNSUPPORTED_CAPABILITIES = (
     "create_track",
     "write_midi_notes",
-    "execute_drum_rack_extraction",
+)
+UNFILTERED_SCAFFOLD_WARNING = (
+    "Scaffold tracks are full duplicates; MIDI clips have not been filtered yet."
 )
 
 
@@ -45,6 +48,8 @@ class RemoteScriptAdapter:
             return self._plan_drum_rack_extraction()
         if method == "workflow.scaffold_drum_rack_extraction":
             return self._scaffold_drum_rack_extraction(request_params)
+        if method == "workflow.execute_drum_rack_extraction":
+            return self._execute_drum_rack_extraction(request_params)
         raise RemoteScriptAdapterError(f"unsupported Remote Script method '{method}'")
 
     def _health(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -154,7 +159,7 @@ class RemoteScriptAdapter:
         plan = self._plan_drum_rack_extraction()
         warnings = [
             *plan["warnings"],
-            "Scaffold tracks are full duplicates; MIDI clips have not been filtered yet.",
+            UNFILTERED_SCAFFOLD_WARNING,
         ]
         created_tracks: list[dict[str, Any]] = []
 
@@ -196,6 +201,52 @@ class RemoteScriptAdapter:
                 "source_track_preserved": True,
                 "created_track_count": len(created_tracks),
                 "midi_filtering_applied": False,
+                "saved_live_set": False,
+                "mutates_real_ableton_set": True,
+            },
+        }
+
+    def _execute_drum_rack_extraction(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("confirm") is not True:
+            raise RemoteScriptAdapterError(
+                "workflow.execute_drum_rack_extraction requires confirmation"
+            )
+
+        song = self.song
+        scaffold = self._scaffold_drum_rack_extraction(params)
+        warnings = [
+            warning
+            for warning in scaffold["warnings"]
+            if warning != UNFILTERED_SCAFFOLD_WARNING
+        ]
+        created_tracks: list[dict[str, Any]] = []
+
+        for created_track in scaffold["created_tracks"]:
+            track = _track_by_id(song, str(created_track["id"]))
+            keep_pitch = int(created_track["midi_filter"]["keep_pitch"])
+            pad_name = str(created_track["source_pad"]["name"])
+            clips = _filter_track_midi_clips(track, keep_pitch, pad_name, warnings)
+            created_tracks.append(
+                {
+                    **created_track,
+                    "clips": clips,
+                    "contains_unfiltered_clips": False,
+                }
+            )
+
+        return {
+            "operation": "split_drum_rack",
+            "mode": "execute",
+            "target": scaffold["target"],
+            "preserved_tracks": scaffold["preserved_tracks"],
+            "touched_tracks": scaffold["touched_tracks"],
+            "created_tracks": created_tracks,
+            "warnings": warnings,
+            "backout": scaffold["backout"],
+            "verification": {
+                "source_track_preserved": True,
+                "created_track_count": len(created_tracks),
+                "midi_filtering_applied": True,
                 "saved_live_set": False,
                 "mutates_real_ableton_set": True,
             },
@@ -262,6 +313,13 @@ def _song_tracks(song: Any) -> tuple[Any, ...]:
     return _as_tuple(getattr(song, "tracks", ()))
 
 
+def _track_by_id(song: Any, track_id: str) -> Any:
+    for track in _song_tracks(song):
+        if _object_id(track) == track_id:
+            return track
+    raise RemoteScriptAdapterError(f"track '{track_id}' is unavailable")
+
+
 def _duplicate_track_after(song: Any, source_index: int) -> Any:
     before = _song_tracks(song)
     duplicate_track = getattr(song, "duplicate_track", None)
@@ -295,6 +353,83 @@ def _assign_track_color(track: Any, color: Any, warnings: list[str]) -> None:
         warnings.append(f"Could not apply non-integer scaffold color '{color}'")
     except Exception as exc:
         warnings.append(f"Could not color scaffold track '{_string_attr(track, 'name')}': {exc}")
+
+
+def _filter_track_midi_clips(
+    track: Any,
+    keep_pitch: int,
+    pad_name: str,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    clips = []
+    for clip in _session_midi_clips(track):
+        clip_payload = _filter_clip_for_pitch(clip, keep_pitch, pad_name, warnings)
+        if clip_payload is not None:
+            clips.append(clip_payload)
+    if not clips:
+        warnings.append(
+            f"No MIDI clips on '{_string_attr(track, 'name')}' retained pitch {keep_pitch}"
+        )
+    return clips
+
+
+def _filter_clip_for_pitch(
+    clip: Any,
+    keep_pitch: int,
+    pad_name: str,
+    warnings: list[str],
+) -> dict[str, Any] | None:
+    before_notes = _clip_notes(clip)
+    if not before_notes:
+        return None
+
+    _remove_notes_below_pitch(clip, keep_pitch)
+    _remove_notes_above_pitch(clip, keep_pitch)
+    _assign_clip_name(clip, f"{_string_attr(clip, 'name')} - {pad_name}", warnings)
+
+    after_notes = _clip_notes(clip)
+    note_pitches = sorted({note["pitch"] for note in after_notes})
+    if any(pitch != keep_pitch for pitch in note_pitches):
+        warnings.append(
+            f"Clip '{_string_attr(clip, 'name')}' still contains notes outside pitch {keep_pitch}"
+        )
+    if not after_notes:
+        return None
+    return {
+        "id": _object_id(clip),
+        "name": _string_attr(clip, "name"),
+        "note_count": len(after_notes),
+        "note_pitches": note_pitches,
+        "removed_note_count": len(before_notes) - len(after_notes),
+    }
+
+
+def _remove_notes_below_pitch(clip: Any, keep_pitch: int) -> None:
+    _remove_notes_in_pitch_range(clip, 0, keep_pitch)
+
+
+def _remove_notes_above_pitch(clip: Any, keep_pitch: int) -> None:
+    _remove_notes_in_pitch_range(clip, keep_pitch + 1, 127 - keep_pitch)
+
+
+def _remove_notes_in_pitch_range(clip: Any, from_pitch: int, pitch_span: int) -> None:
+    if pitch_span <= 0:
+        return
+    remove_notes = getattr(clip, "remove_notes_extended", None)
+    if not callable(remove_notes):
+        remove_notes = getattr(clip, "remove_notes", None)
+    if not callable(remove_notes):
+        raise RemoteScriptAdapterError(
+            f"clip '{_string_attr(clip, 'name')}' cannot remove MIDI notes"
+        )
+    remove_notes(from_pitch, pitch_span, 0.0, _clip_time_span(clip))
+
+
+def _assign_clip_name(clip: Any, name: str, warnings: list[str]) -> None:
+    try:
+        clip.name = name
+    except Exception as exc:
+        warnings.append(f"Could not rename filtered clip to '{name}': {exc}")
 
 
 def _clip_notes(clip: Any) -> tuple[dict[str, Any], ...]:

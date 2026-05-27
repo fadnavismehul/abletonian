@@ -116,23 +116,41 @@ class RemoteScriptBridgeTests(unittest.TestCase):
 
     def test_bridge_surface_scaffolds_drum_rack_extraction(self) -> None:
         class Clip:
-            name = "Beat"
-            length = 1.0
-            is_midi_clip = True
-
-            def get_notes_extended(self, *_args):
-                return {
-                    "notes": (
+            def __init__(self, notes=None):
+                self.name = "Beat"
+                self.length = 1.0
+                self.is_midi_clip = True
+                self._notes = tuple(
+                    notes
+                    or (
                         {"pitch": 36, "start_time": 0.0, "duration": 0.25, "velocity": 100},
                     )
-                }
+                )
+
+            def get_notes_extended(self, *_args):
+                return {"notes": self._notes}
+
+            def remove_notes_extended(self, from_pitch, pitch_span, *_args):
+                pitch_stop = from_pitch + pitch_span
+                self._notes = tuple(
+                    note
+                    for note in self._notes
+                    if not from_pitch <= int(note["pitch"]) < pitch_stop
+                )
+
+            def duplicate(self):
+                return Clip(self._notes)
+
+            @property
+            def note_pitches(self):
+                return [int(note["pitch"]) for note in self._notes]
 
         class Track:
-            def __init__(self, name="Drums", live_id="track-drums", color_index=3):
+            def __init__(self, name="Drums", live_id="track-drums", color_index=3, clip=None):
                 self.name = name
                 self.color_index = color_index
                 self._live_ptr = live_id
-                self.clip_slots = (SimpleNamespace(has_clip=True, clip=Clip()),)
+                self.clip_slots = (SimpleNamespace(has_clip=True, clip=clip or Clip()),)
                 self.devices = (rack,)
                 self.view = SimpleNamespace(selected_device=rack)
 
@@ -141,6 +159,7 @@ class RemoteScriptBridgeTests(unittest.TestCase):
                     f"{self.name} Copy",
                     f"{self._live_ptr}-copy-{suffix}",
                     self.color_index,
+                    self.clip_slots[0].clip.duplicate(),
                 )
 
         class Song:
@@ -176,6 +195,106 @@ class RemoteScriptBridgeTests(unittest.TestCase):
         self.assertEqual(result["created_tracks"][0]["name"], "Drums - Kick")
         self.assertEqual(song.duplicate_track_calls, [0])
         self.assertEqual([track.name for track in song.tracks], ["Drums", "Drums - Kick"])
+
+    def test_bridge_surface_executes_drum_rack_extraction(self) -> None:
+        class Clip:
+            def __init__(self, notes=None):
+                self.name = "Beat"
+                self.length = 1.0
+                self.is_midi_clip = True
+                self._notes = tuple(
+                    notes
+                    or (
+                        {"pitch": 36, "start_time": 0.0, "duration": 0.25, "velocity": 100},
+                        {"pitch": 38, "start_time": 0.5, "duration": 0.25, "velocity": 100},
+                        {"pitch": 36, "start_time": 0.75, "duration": 0.25, "velocity": 100},
+                    )
+                )
+
+            def get_notes_extended(self, *_args):
+                return {"notes": self._notes}
+
+            def remove_notes_extended(self, from_pitch, pitch_span, *_args):
+                pitch_stop = from_pitch + pitch_span
+                self._notes = tuple(
+                    note
+                    for note in self._notes
+                    if not from_pitch <= int(note["pitch"]) < pitch_stop
+                )
+
+            def duplicate(self):
+                return Clip(self._notes)
+
+            @property
+            def note_pitches(self):
+                return [int(note["pitch"]) for note in self._notes]
+
+        class Track:
+            def __init__(self, name="Drums", live_id="track-drums", color_index=3, clip=None):
+                self.name = name
+                self.color_index = color_index
+                self._live_ptr = live_id
+                self.clip_slots = (SimpleNamespace(has_clip=True, clip=clip or Clip()),)
+                self.devices = (rack,)
+                self.view = SimpleNamespace(selected_device=rack)
+
+            def duplicate(self, suffix):
+                return Track(
+                    f"{self.name} Copy",
+                    f"{self._live_ptr}-copy-{suffix}",
+                    self.color_index,
+                    self.clip_slots[0].clip.duplicate(),
+                )
+
+        class Song:
+            def __init__(self):
+                self.tracks = [Track()]
+                self.view = SimpleNamespace(selected_track=self.tracks[0])
+                self.duplicate_track_calls = []
+
+            def duplicate_track(self, index):
+                self.duplicate_track_calls.append(index)
+                duplicate = self.tracks[index].duplicate(len(self.duplicate_track_calls))
+                self.tracks.insert(index + 1, duplicate)
+
+        kick_chain = SimpleNamespace(
+            name="Kick Chain",
+            color_index=5,
+            devices=(SimpleNamespace(name="Kick Sampler"),),
+        )
+        snare_chain = SimpleNamespace(
+            name="Snare Chain",
+            color_index=7,
+            devices=(SimpleNamespace(name="Snare Sampler"),),
+        )
+        rack = SimpleNamespace(
+            name="Drum Rack",
+            class_name="DrumGroupDevice",
+            drum_pads=(
+                SimpleNamespace(note=36, name="Kick", chains=(kick_chain,)),
+                SimpleNamespace(note=38, name="Snare", chains=(snare_chain,)),
+            ),
+            _live_ptr="device-drum-rack",
+        )
+        song = Song()
+        surface = AbletonianBridgeControlSurface.__new__(AbletonianBridgeControlSurface)
+        surface.song = song
+
+        result = surface.handle_request("workflow.execute_drum_rack_extraction", {"confirm": True})
+
+        self.assertEqual(result["mode"], "execute")
+        self.assertEqual(
+            [track["name"] for track in result["created_tracks"]],
+            ["Drums - Kick", "Drums - Snare"],
+        )
+        self.assertEqual(song.tracks[0].clip_slots[0].clip.note_pitches, [36, 38, 36])
+        self.assertEqual(song.tracks[1].clip_slots[0].clip.note_pitches, [36, 36])
+        self.assertEqual(song.tracks[2].clip_slots[0].clip.note_pitches, [38])
+        self.assertEqual(
+            [clip["note_pitches"] for track in result["created_tracks"] for clip in track["clips"]],
+            [[36], [38]],
+        )
+        self.assertTrue(result["verification"]["midi_filtering_applied"])
 
 
 if __name__ == "__main__":

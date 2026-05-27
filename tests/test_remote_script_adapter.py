@@ -44,7 +44,7 @@ class FakeClip:
         self.name = name
         self.length = 2.0
         self.is_midi_clip = True
-        self._notes = notes
+        self._notes = tuple(dict(note) for note in notes)
 
     def get_notes_extended(
         self,
@@ -54,6 +54,27 @@ class FakeClip:
         _time_span: float,
     ) -> dict[str, tuple[dict[str, object], ...]]:
         return {"notes": self._notes}
+
+    def remove_notes_extended(
+        self,
+        from_pitch: int,
+        pitch_span: int,
+        _from_time: float,
+        _time_span: float,
+    ) -> None:
+        pitch_stop = from_pitch + pitch_span
+        self._notes = tuple(
+            note
+            for note in self._notes
+            if not from_pitch <= int(note["pitch"]) < pitch_stop
+        )
+
+    def duplicate(self) -> "FakeClip":
+        return FakeClip(self.name, self._notes)
+
+    @property
+    def note_pitches(self) -> list[int]:
+        return [int(note["pitch"]) for note in self._notes]
 
 
 class FakeClipSlot:
@@ -89,7 +110,10 @@ class FakeTrack:
         return FakeTrack(
             name=f"{self.name} Copy",
             devices=self.devices,
-            clip_slots=self.clip_slots,
+            clip_slots=tuple(
+                FakeClipSlot(slot.clip.duplicate()) if slot.clip is not None else FakeClipSlot()
+                for slot in self.clip_slots
+            ),
             color_index=self.color_index,
             is_foldable=self.is_foldable,
             live_id=f"{self._live_ptr}-copy-{suffix}",
@@ -125,6 +149,7 @@ class RemoteScriptAdapterTests(unittest.TestCase):
         self.assertIn("read_selected_context", health["capabilities"])
         self.assertIn("plan_drum_rack_extraction", health["capabilities"])
         self.assertIn("scaffold_drum_rack_extraction", health["capabilities"])
+        self.assertIn("execute_drum_rack_extraction", health["capabilities"])
         self.assertIn("write_midi_notes", health["unsupported_capabilities"])
 
     def test_selected_context_reports_track_and_selected_drum_rack(self) -> None:
@@ -277,6 +302,57 @@ class RemoteScriptAdapterTests(unittest.TestCase):
             },
         )
         self.assertIn("Use Live Undo", result["backout"]["primary"])
+
+    def test_execute_drum_rack_extraction_requires_confirmation(self) -> None:
+        adapter = RemoteScriptAdapter(song=drum_rack_song(), live_version="12.4.0")
+
+        with self.assertRaisesRegex(Exception, "requires confirmation"):
+            adapter.handle_request("workflow.execute_drum_rack_extraction", {})
+
+    def test_execute_drum_rack_extraction_filters_duplicate_clips_and_preserves_source(
+        self,
+    ) -> None:
+        song = drum_rack_song()
+        adapter = RemoteScriptAdapter(song=song, live_version="12.4.0")
+
+        result = adapter.handle_request(
+            "workflow.execute_drum_rack_extraction",
+            {"confirm": True},
+        )
+
+        self.assertEqual(result["operation"], "split_drum_rack")
+        self.assertEqual(result["mode"], "execute")
+        self.assertEqual(result["preserved_tracks"], ["track-drums"])
+        self.assertEqual(song.duplicate_track_calls, [0, 1])
+        self.assertEqual(
+            [track.name for track in song.tracks],
+            ["Drums", "Drums - Kick", "Drums - Snare"],
+        )
+        self.assertEqual(song.tracks[0].clip_slots[0].clip.note_pitches, [36, 38, 36])
+        self.assertEqual(song.tracks[1].clip_slots[0].clip.note_pitches, [36, 36])
+        self.assertEqual(song.tracks[2].clip_slots[0].clip.note_pitches, [38])
+        self.assertEqual(
+            [clip["note_pitches"] for track in result["created_tracks"] for clip in track["clips"]],
+            [[36], [38]],
+        )
+        self.assertEqual(
+            [clip["note_count"] for track in result["created_tracks"] for clip in track["clips"]],
+            [2, 1],
+        )
+        self.assertEqual(
+            [track["contains_unfiltered_clips"] for track in result["created_tracks"]],
+            [False, False],
+        )
+        self.assertEqual(
+            result["verification"],
+            {
+                "source_track_preserved": True,
+                "created_track_count": 2,
+                "midi_filtering_applied": True,
+                "saved_live_set": False,
+                "mutates_real_ableton_set": True,
+            },
+        )
 
 
 def drum_rack_song() -> FakeSong:
