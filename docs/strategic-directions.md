@@ -727,6 +727,23 @@ Build one review UI twice:
 This intentionally compares Direction 1 and Direction 2 with the same underlying
 core.
 
+### Slice 4b: Selected Rack Macro Cockpit
+
+The clearest generated-UI wedge is not a whole-session command center. It is a
+small, high-trust surface generated from what the user already selected:
+
+1. read the selected Ableton Rack;
+2. inspect its existing mapped macros;
+3. generate an interface-neutral `MacroCockpitSpec`;
+4. render a temporary cockpit in any available surface;
+5. let the user explicitly save it as a sidecar artifact.
+
+This keeps the magic close to Ableton's native customization model. The agent is
+not inventing a control scheme from scratch; it is curating producer-authored
+macros into a usable front end. Later versions can propose missing mappings,
+track-level controls, whole-set cockpits, or Max for Live exports, but the first
+product proof should stay selected-rack and existing-macro only.
+
 ### Slice 5: Sidecar Memory
 
 Store plans, approvals, generated UI specs, and session notes in project sidecar
@@ -796,6 +813,23 @@ Represent UI panels as specs:
 A spec can render in an MCP App, local web panel, or DAW-native adapter. This is
 how custom interfaces become portable.
 
+For the Macro Cockpit wedge, this becomes a narrower rack-focused spec:
+
+```json
+{
+  "schema_version": "abletonian.macro_cockpit.v1",
+  "source": {"track_id": "drums", "device_id": "rack-1"},
+  "mode": "temporary",
+  "permissions": {"read_macros": true, "control_macro_values": false},
+  "groups": [{"id": "tone", "label": "Tone", "controls": ["macro-1"]}],
+  "controls": [
+    {"id": "macro-1", "source_macro_index": 1, "label": "Brightness"}
+  ]
+}
+```
+
+The saved artifact is the spec, not generated executable code.
+
 ### 5. Build a Policy Engine
 
 Every action should pass through policy:
@@ -861,6 +895,13 @@ The first demo should be humble but revealing:
 5. save the generated panel/plan as a sidecar artifact.
 
 If that feels magical, the project has a center of gravity.
+
+The near-term version of that center of gravity is the **Selected Rack Macro
+Cockpit**: a generated control surface for the selected Rack's existing macros,
+temporary by default, explicitly saveable, and represented as an
+interface-neutral spec. It is small enough to verify, musical enough to matter,
+and portable enough to keep the local web, cloud desktop, MCP Apps, and
+in-Ableton futures alive.
 
 ## External References
 

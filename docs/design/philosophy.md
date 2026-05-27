@@ -67,6 +67,11 @@ Chat is good for intent. Review, approval, and repeated use often need structure
 controls. A good workflow may start with text and then become a reusable action
 with toggles, checkboxes, previews, and remembered defaults.
 
+Generated UI should be treated as structured product output, not decoration. If
+Abletonian creates a control surface for a selected Rack, the surface should be
+backed by a readable spec that names its source, permissions, controls, grouping,
+and saved/temporary state.
+
 ### 7. RTFM Should Be Helpful, Not Snarky
 
 RTFM is a grounding tool. It should cite the manual, explain concepts clearly,
@@ -135,6 +140,25 @@ Once a workflow proves useful, turn it into a recipe:
 
 Recipes should have stable options and predictable behavior.
 
+### Macro Cockpit
+
+Use for selected Racks that already expose useful macros.
+
+The cockpit should:
+
+- show the selected track and rack/device context,
+- use existing rack macros only unless the user explicitly approves a remapping
+  workflow,
+- preserve source macro names and indexes,
+- group controls by musical role when the source labels support it,
+- mark ambiguous controls clearly,
+- disclose whether controls are read-only, connected, or simulated,
+- start temporary and become saved only through an explicit user action.
+
+The cockpit should not hide generated code or arbitrary bridge calls behind a
+pretty UI. Renderer actions are requests that must pass through policy and
+capability checks.
+
 ### Context Strip
 
 Every UI surface should include a compact context strip:
@@ -156,6 +180,8 @@ Prefer:
 - restrained color,
 - readable monospace for paths and IDs,
 - semantic color only when it maps to tracks/clips/chains.
+- generated control surfaces that can be scanned and performed without reading
+  long prose.
 
 Avoid:
 

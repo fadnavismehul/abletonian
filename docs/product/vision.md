@@ -30,6 +30,11 @@ The first product wedge is: make Ableton operations dead easy for musicians,
 starting with the workflows that are painful because they cross tracks, clips,
 racks, chains, devices, naming, colors, routing, and undo.
 
+The second product wedge is: make Ableton's existing customization power feel
+approachable. A producer who has a Rack with useful macros should be able to ask
+Abletonian to build a clear control surface for those macros, use it
+temporarily, and save it only if it becomes part of their workflow.
+
 ## Product Thesis
 
 The winning shape is a hybrid:
@@ -42,6 +47,8 @@ The winning shape is a hybrid:
 4. **Reviewable plans** that show what will change before the Set is touched.
 5. **MCP server and local UI surfaces** so agents and humans can both use the
    same automation engine.
+6. **Generated UI specs** that turn selected Ableton context into portable,
+   reviewable control surfaces.
 
 Abletonian should make a workflow like "extract this Drum Rack into separate
 tracks, preserving MIDI, naming, and colors" feel like one deliberate operation
@@ -90,6 +97,8 @@ depend on cloud infrastructure.
 - A DAW bridge architecture that can support Remote Scripts, Max for Live,
   AbletonOSC, and test adapters.
 - A product that turns manual workflows into reusable, inspectable recipes.
+- A product that can generate project-specific UI surfaces from existing Ableton
+  controls.
 - A documentation-grounded assistant that can answer "what does Ableton say?"
   before taking action.
 
@@ -99,6 +108,7 @@ depend on cloud infrastructure.
 - Not a brittle UI macro recorder as the primary architecture.
 - Not a cloud-only assistant.
 - Not a giant bag of raw Ableton API endpoints exposed directly to musicians.
+- Not a generator of arbitrary DAW-control code as the default UI strategy.
 - Not a real-time performance control surface until latency and failure behavior
   are explicitly designed and tested.
 - Not a replacement for Ableton's manual; RTFM should cite, summarize, and route
@@ -171,6 +181,7 @@ Expected output:
 ### Phase 3: Workflow Recipes
 
 - Drum Rack extraction.
+- Selected Rack Macro Cockpit from existing rack macros.
 - Session cleanup.
 - Clip variation creation.
 - Batch rename/color/routing operations.
@@ -182,6 +193,7 @@ Expected output:
 - Context strip for selected track, clip, chain, and device.
 - Plan review UI.
 - Quick actions derived from selection.
+- Generated cockpit renderer for saved or temporary rack macro surfaces.
 
 ### Phase 5: Multi-DAW Framework
 
