@@ -83,6 +83,21 @@ def build_mcp(config: AbletonianConfig, bridge: BridgeClient | None = None) -> F
         return json.dumps(result, indent=2)
 
     @mcp.tool()
+    def execute_drum_rack_extraction(confirm: bool = False) -> str:
+        """Execute Drum Rack extraction after explicit confirmation."""
+
+        if confirm is not True:
+            return "workflow.execute_drum_rack_extraction requires confirm=true"
+        try:
+            result = bridge_client.request(
+                "workflow.execute_drum_rack_extraction",
+                {"target_daw": config.target_daw, "confirm": True},
+            )
+        except BridgeConnectionError as exc:
+            return f"Bridge unavailable: {exc}"
+        return json.dumps(result, indent=2)
+
+    @mcp.tool()
     def draft_action_plan(goal: str) -> str:
         """Draft a non-destructive DAW action plan for a musical goal."""
 

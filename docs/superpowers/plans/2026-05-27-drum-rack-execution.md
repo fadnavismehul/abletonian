@@ -54,7 +54,7 @@ Mirror the adapter execution helpers in `remote_scripts/Abletonian/bridge_server
 Run: `.venv/bin/python -m unittest discover -s tests -p 'test_remote_script_bridge.py'`
 Expected: OK.
 
-- [ ] **Step 9: Commit execution core**
+- [x] **Step 9: Commit execution core**
 
 Run:
 
@@ -69,20 +69,20 @@ git commit -m "feat: execute Drum Rack extraction in Live" -m "RFC: RFC-001"
 - Modify: `tests/test_server.py`
 - Modify: `src/abletonian/server.py`
 
-- [ ] **Step 1: Write failing MCP tool test**
+- [x] **Step 1: Write failing MCP tool test**
 
 Add a test for `execute_drum_rack_extraction(confirm=True)` that delegates to `workflow.execute_drum_rack_extraction` with `target_daw=ableton` and `confirm=True`.
 
-- [ ] **Step 2: Verify server test fails**
+- [x] **Step 2: Verify server test fails**
 
 Run: `.venv/bin/python -m unittest discover -s tests -p 'test_server.py'`
 Expected: failure because the MCP tool is missing.
 
-- [ ] **Step 3: Implement MCP tool**
+- [x] **Step 3: Implement MCP tool**
 
 Add a model-facing `execute_drum_rack_extraction(confirm: bool = False)` tool. It must refuse when `confirm` is not true, and only then call the bridge execution method.
 
-- [ ] **Step 4: Verify server test passes**
+- [x] **Step 4: Verify server test passes**
 
 Run: `.venv/bin/python -m unittest discover -s tests -p 'test_server.py'`
 Expected: OK.

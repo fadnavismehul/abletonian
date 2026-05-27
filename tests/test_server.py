@@ -16,6 +16,8 @@ class RecordingBridge:
         self.requests.append((method, params or {}))
         if method == "workflow.plan_drum_rack_extraction":
             return {"operation": "split_drum_rack", "mode": "dry_run"}
+        if method == "workflow.execute_drum_rack_extraction":
+            return {"operation": "split_drum_rack", "mode": "execute"}
         raise AssertionError(f"unexpected method: {method}")
 
 
@@ -37,6 +39,32 @@ class ServerToolTests(unittest.TestCase):
         self.assertEqual(
             json.loads(tool_text(result)),
             {"operation": "split_drum_rack", "mode": "dry_run"},
+        )
+
+    def test_execute_drum_rack_extraction_requires_confirmation(self) -> None:
+        bridge = RecordingBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        result = asyncio.run(mcp.call_tool("execute_drum_rack_extraction", {}))
+
+        self.assertIn("requires confirm=true", tool_text(result))
+        self.assertEqual(bridge.requests, [])
+
+    def test_execute_drum_rack_extraction_delegates_to_bridge_after_confirmation(self) -> None:
+        bridge = RecordingBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        result = asyncio.run(
+            mcp.call_tool("execute_drum_rack_extraction", {"confirm": True})
+        )
+
+        self.assertEqual(
+            bridge.requests,
+            [("workflow.execute_drum_rack_extraction", {"target_daw": "ableton", "confirm": True})],
+        )
+        self.assertEqual(
+            json.loads(tool_text(result)),
+            {"operation": "split_drum_rack", "mode": "execute"},
         )
 
     def test_lookup_ableton_manual_returns_cited_result(self) -> None:
