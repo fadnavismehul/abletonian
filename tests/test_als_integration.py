@@ -34,9 +34,9 @@ class AbletonSetIntegrationTests(unittest.TestCase):
         self.assertEqual(rack.name, "C78 Core Kit")
         self.assertEqual(len(rack.pads), 16)
         pads_by_note = {pad.note: pad.name for pad in rack.pads}
-        self.assertEqual(pads_by_note[38], "Rimshot")
-        self.assertEqual(pads_by_note[41], "Tamb")
-        self.assertEqual(pads_by_note[42], "Kick")
+        self.assertEqual(pads_by_note[38], "Snare")
+        self.assertEqual(pads_by_note[41], "Kick")
+        self.assertEqual(pads_by_note[42], "Closed Hi Hat")
         self.assertEqual(sorted({note.pitch for note in track.clips[0].notes}), [38, 41, 42])
 
     def test_first_light_set_can_plan_bossa_drum_rack_extraction(self) -> None:
@@ -48,7 +48,7 @@ class AbletonSetIntegrationTests(unittest.TestCase):
         self.assertEqual(plan["mode"], "dry_run")
         self.assertEqual(
             [output["source_pad"]["name"] for output in plan["output_tracks"]],
-            ["Rimshot", "Tamb", "Kick"],
+            ["Snare", "Kick", "Closed Hi Hat"],
         )
         self.assertEqual(
             [output["midi_filter"]["keep_pitch"] for output in plan["output_tracks"]],
@@ -71,9 +71,9 @@ class AbletonSetIntegrationTests(unittest.TestCase):
         self.assertEqual(
             [track["name"] for track in result["created_tracks"]],
             [
-                "1-C78 Core Kit - Rimshot",
-                "1-C78 Core Kit - Tamb",
+                "1-C78 Core Kit - Snare",
                 "1-C78 Core Kit - Kick",
+                "1-C78 Core Kit - Closed Hi Hat",
             ],
         )
         self.assertEqual(
@@ -83,9 +83,9 @@ class AbletonSetIntegrationTests(unittest.TestCase):
         self.assertEqual(result["post_state"]["track_count"], 9)
         self.assertEqual(result["post_state"]["track_names"][0], "1-C78 Core Kit")
         self.assertEqual(result["post_state"]["track_names"][-3:], [
-            "1-C78 Core Kit - Rimshot",
-            "1-C78 Core Kit - Tamb",
+            "1-C78 Core Kit - Snare",
             "1-C78 Core Kit - Kick",
+            "1-C78 Core Kit - Closed Hi Hat",
         ])
 
 

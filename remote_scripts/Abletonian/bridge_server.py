@@ -8,6 +8,7 @@ import struct
 import sys
 import threading
 import traceback
+from collections import Counter
 
 try:
     from ableton.v2.control_surface import ControlSurface
@@ -57,6 +58,8 @@ class AbletonianBridgeControlSurface(ControlSurface):
             return self._health(params)
         if method == "ableton.get_selected_context":
             return self._selected_context()
+        if method == "workflow.plan_drum_rack_extraction":
+            return self._plan_drum_rack_extraction()
         raise RuntimeError(f"unsupported Abletonian Remote Script method '{method}'")
 
     def _health(self, params):
@@ -74,6 +77,7 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "read_project_state",
                 "read_selected_context",
                 "read_drum_rack",
+                "plan_drum_rack_extraction",
             ],
             "unsupported_capabilities": [
                 "create_track",
@@ -94,6 +98,70 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "device_count": len(tuple(getattr(track, "devices", ()))),
             },
             "device": _device_payload(device),
+        }
+
+    def _plan_drum_rack_extraction(self):
+        track = _live_object(self, "song").view.selected_track
+        device = _selected_drum_rack(track)
+        pitch_counts = Counter(
+            note["pitch"]
+            for clip in _session_midi_clips(track)
+            for note in _clip_notes(clip)
+        )
+        outputs = []
+        skipped_pad_names = []
+
+        for pad in _drum_pads(device):
+            chains = _as_tuple(getattr(pad, "chains", ()))
+            if not chains:
+                continue
+            note = _int_attr(pad, "note")
+            if note is None:
+                continue
+            pad_name = _string_attr(pad, "name") or f"Pad {note}"
+            note_count = pitch_counts.get(note, 0)
+            if note_count == 0:
+                skipped_pad_names.append(pad_name)
+                continue
+
+            outputs.append(
+                {
+                    "source_pad": {
+                        "note": note,
+                        "name": pad_name,
+                        "chain_name": _chain_name(chains, pad_name),
+                    },
+                    "name": f"{_string_attr(track, 'name')} - {pad_name}",
+                    "color": _first_color(track, pad, chains),
+                    "devices": _chain_device_names(chains),
+                    "midi_filter": {"keep_pitch": note},
+                    "clip_note_count": note_count,
+                }
+            )
+
+        warnings = []
+        if skipped_pad_names:
+            warnings.append(_skipped_pad_warning(skipped_pad_names))
+
+        return {
+            "operation": "split_drum_rack",
+            "mode": "dry_run",
+            "target": {
+                "track_id": _object_id(track),
+                "track_name": _string_attr(track, "name"),
+                "device_id": _object_id(device),
+                "device_name": _string_attr(device, "name"),
+            },
+            "steps": [
+                {"action": "duplicate_track", "count": len(outputs)},
+                {"action": "filter_midi_notes", "policy": "one_note_per_output_track"},
+                {"action": "rename_tracks", "source": "pad_name"},
+                {"action": "set_colors", "source": "pad_color"},
+            ],
+            "output_tracks": outputs,
+            "preserves": ["source_track", "source_clips", "source_devices"],
+            "requires_confirmation": True,
+            "warnings": warnings,
         }
 
     def _log(self, message):
@@ -241,11 +309,163 @@ def _selected_device(track):
     return devices[0] if devices else None
 
 
+def _selected_drum_rack(track):
+    selected = _selected_device(track)
+    if selected is not None and _device_type(_string_attr(selected, "class_name")) == "drum_rack":
+        return selected
+    for device in _as_tuple(getattr(track, "devices", ())):
+        if _device_type(_string_attr(device, "class_name")) == "drum_rack":
+            return device
+    raise RuntimeError(f"selected track '{_string_attr(track, 'name')}' has no Drum Rack")
+
+
+def _drum_pads(device):
+    visible = _as_tuple(getattr(device, "visible_drum_pads", ()))
+    if visible:
+        return visible
+    return _as_tuple(getattr(device, "drum_pads", ()))
+
+
+def _session_midi_clips(track):
+    clips = []
+    for slot in _as_tuple(getattr(track, "clip_slots", ())):
+        if not bool(getattr(slot, "has_clip", False)):
+            continue
+        clip = getattr(slot, "clip", None)
+        if clip is not None and bool(getattr(clip, "is_midi_clip", False)):
+            clips.append(clip)
+    return tuple(clips)
+
+
+def _clip_notes(clip):
+    result = _get_notes_extended(clip)
+    if result is None:
+        result = _get_notes_legacy(clip)
+    return tuple(
+        note_payload
+        for note in _notes_from_result(result)
+        if (note_payload := _note_payload(note)) is not None
+    )
+
+
+def _get_notes_extended(clip):
+    get_notes = getattr(clip, "get_notes_extended", None)
+    if not callable(get_notes):
+        return None
+    return get_notes(0, 128, 0.0, _clip_time_span(clip))
+
+
+def _get_notes_legacy(clip):
+    get_notes = getattr(clip, "get_notes", None)
+    if not callable(get_notes):
+        return ()
+    return get_notes(0.0, 0, _clip_time_span(clip), 128)
+
+
+def _clip_time_span(clip):
+    for name in ("length", "loop_end", "end_marker"):
+        value = getattr(clip, name, None)
+        if value is not None:
+            try:
+                return max(float(value), 1.0)
+            except (TypeError, ValueError):
+                pass
+    return 16384.0
+
+
+def _notes_from_result(result):
+    if isinstance(result, dict):
+        return _as_tuple(result.get("notes", ()))
+    return _as_tuple(result)
+
+
+def _note_payload(note):
+    if isinstance(note, dict):
+        pitch = note.get("pitch")
+    elif isinstance(note, (list, tuple)) and note:
+        pitch = note[0]
+    else:
+        pitch = getattr(note, "pitch", None)
+    try:
+        return {"pitch": int(pitch)}
+    except (TypeError, ValueError):
+        return None
+
+
 def _live_object(surface, name):
     value = getattr(surface, name)
     if callable(value):
         return value()
     return value
+
+
+def _string_attr(target, name):
+    value = getattr(target, name, "")
+    return str(value)
+
+
+def _int_attr(target, name):
+    value = getattr(target, name, None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _object_id(target):
+    for name in ("_live_ptr", "id"):
+        value = getattr(target, name, None)
+        if value is not None:
+            return str(value)
+    return _string_attr(target, "name")
+
+
+def _chain_name(chains, fallback):
+    for chain in chains:
+        name = _string_attr(chain, "name")
+        if name:
+            return name
+    return fallback
+
+
+def _first_color(track, pad, chains):
+    for target in (*chains, pad, track):
+        for name in ("color_index", "color"):
+            value = getattr(target, name, None)
+            if value is not None:
+                return value
+    return None
+
+
+def _chain_device_names(chains):
+    names = []
+    for chain in chains:
+        for device in _as_tuple(getattr(chain, "devices", ())):
+            name = _string_attr(device, "name")
+            if name:
+                names.append(name)
+    return names
+
+
+def _skipped_pad_warning(pad_names):
+    count = len(pad_names)
+    noun = "drum pad" if count == 1 else "drum pads"
+    return f"Skipped {count} {noun} without matching MIDI notes: {', '.join(pad_names)}"
+
+
+def _as_tuple(value):
+    if value is None:
+        return ()
+    if isinstance(value, tuple):
+        return value
+    if isinstance(value, list):
+        return tuple(value)
+    try:
+        return tuple(value)
+    except TypeError:
+        return (value,)
 
 
 def _device_payload(device):

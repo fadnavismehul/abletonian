@@ -5,8 +5,9 @@
 **Owner:** Core Team  
 **Related Docs:** [Product Vision](../../vision.md), [Design Philosophy](../../../design/philosophy.md), [Integration Options](../../../engineering/integration-options.md), [Robustness and Safety](../../../engineering/robustness-and-safety.md)  
 **Implementation Status:** Started: fake adapter health, bridge dispatch,
-RTFM lookup, MCP dry-run tools, read-only Remote Script adapter core, and
-manual Live 12.4 validation are implemented for foundation workflow validation.
+RTFM lookup, MCP dry-run tools, read-only Remote Script adapter core, real
+Remote Script Drum Rack dry-run planning, and manual Live 12.4 validation are
+implemented for foundation workflow validation.
 
 ## Goal
 
@@ -244,6 +245,7 @@ Backout:
 - [Ableton Help: Controlling Live using Max for Live](https://help.ableton.com/hc/en-us/articles/5402681764242-Controlling-Live-using-Max-for-Live)
 - [Cycling '74: Live API Overview](https://docs.cycling74.com/userguide/m4l/live_api_overview/)
 - [Cycling '74: Live Object Model](https://docs.cycling74.com/legacy/max8/vignettes/live_object_model?q=LOM)
+- [Cycling '74: Clip Live Object Model](https://docs.cycling74.com/apiref/lom/clip/)
 - [AbletonOSC](https://github.com/ideoforms/AbletonOSC)
 - [ableton-mcp](https://github.com/ahujasid/ableton-mcp)
 
@@ -280,8 +282,8 @@ Backout:
   - `.venv/bin/python -m compileall -q src tests`
   - `git diff --check`
   - `testing/First Light Project/First Light.als` validates a real Ableton Live
-    12.4 Drum Rack dry-run: `Rimshot`, `Tamb`, and `Kick` are extracted from the
-    `Bossa` MIDI clip plan.
+    12.4 Drum Rack dry-run: `Snare`, `Kick`, and `Closed Hi Hat` are extracted
+    from the `Bossa` MIDI clip plan.
   - The same First Light fixture validates fake execution into an in-memory
     post-state with filtered output clips and no real Live Set mutation.
   - `.venv/bin/python -m scripts.install_remote_script` installs the read-only
@@ -290,6 +292,9 @@ Backout:
     12.4.0: `daw.health` returned `adapter_type=ableton_remote_script` and
     `ableton.get_selected_context` returned track `1-C78 Core Kit` with
     `DrumGroupDevice` `C78 Core Kit`.
+  - 2026-05-27 Live validation passed for real
+    `workflow.plan_drum_rack_extraction`: the Remote Script returned output pads
+    `Snare`, `Kick`, and `Closed Hi Hat` with MIDI filters `38`, `41`, and `42`.
 - **Commit tags:** none yet
 - **Open follow-ups:**
   - Add manual Ableton verification documentation before mutating real Live
@@ -317,3 +322,8 @@ Backout:
   - 2026-05-27: Live 12.4 exposed `ControlSurface.application` as a property, so
     the Remote Script now resolves Live host objects as either properties or
     methods before reading health/context.
+  - 2026-05-27: corrected the read-only `.als` Drum Rack receiving-note mapping
+    to match Live's Remote Script pad names before comparing fake and real plans.
+  - 2026-05-27: added read-only real Remote Script Drum Rack extraction planning.
+    It reports a dry-run plan only; execution remains unsupported by the real
+    adapter.

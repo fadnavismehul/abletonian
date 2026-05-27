@@ -149,7 +149,7 @@ def _branch_name(branch: ET.Element) -> str:
 
 
 def _ableton_receiving_note_to_midi_pitch(receiving_note: int) -> int:
-    return 129 - receiving_note
+    return 128 - receiving_note
 
 
 def _branch_device_names(branch: ET.Element) -> tuple[str, ...]:
