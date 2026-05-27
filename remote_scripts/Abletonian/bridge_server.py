@@ -67,7 +67,7 @@ class AbletonianBridgeControlSurface(ControlSurface):
             "target_daw": "ableton",
             "adapter_type": "ableton_remote_script",
             "adapter_version": ADAPTER_VERSION,
-            "live_version": _live_version(self.application()),
+            "live_version": _live_version(_live_object(self, "application")),
             "python_runtime": sys.version.split()[0],
             "protocol_version": PROTOCOL_VERSION,
             "capabilities": [
@@ -84,7 +84,7 @@ class AbletonianBridgeControlSurface(ControlSurface):
         }
 
     def _selected_context(self):
-        track = self.song().view.selected_track
+        track = _live_object(self, "song").view.selected_track
         device = _selected_device(track)
         return {
             "track": {
@@ -239,6 +239,13 @@ def _selected_device(track):
         return device
     devices = tuple(getattr(track, "devices", ()))
     return devices[0] if devices else None
+
+
+def _live_object(surface, name):
+    value = getattr(surface, name)
+    if callable(value):
+        return value()
+    return value
 
 
 def _device_payload(device):

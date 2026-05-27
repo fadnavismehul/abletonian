@@ -5,8 +5,8 @@
 **Owner:** Core Team  
 **Related Docs:** [Product Vision](../../vision.md), [Design Philosophy](../../../design/philosophy.md), [Integration Options](../../../engineering/integration-options.md), [Robustness and Safety](../../../engineering/robustness-and-safety.md)  
 **Implementation Status:** Started: fake adapter health, bridge dispatch,
-RTFM lookup, MCP dry-run tools, and read-only Remote Script adapter core are
-implemented for CI-level workflow validation.
+RTFM lookup, MCP dry-run tools, read-only Remote Script adapter core, and
+manual Live 12.4 validation are implemented for foundation workflow validation.
 
 ## Goal
 
@@ -269,6 +269,7 @@ Backout:
   - `tests/test_fake_adapter.py`
   - `tests/test_manual.py`
   - `tests/test_protocol.py`
+  - `tests/test_remote_script_bridge.py`
   - `tests/test_remote_script_adapter.py`
   - `tests/test_remote_script_install.py`
   - `tests/test_server.py`
@@ -285,6 +286,10 @@ Backout:
     post-state with filtered output clips and no real Live Set mutation.
   - `.venv/bin/python -m scripts.install_remote_script` installs the read-only
     `Abletonian` Remote Script for manual Live validation.
+  - 2026-05-27 Live validation passed against `First Light.als` on Ableton Live
+    12.4.0: `daw.health` returned `adapter_type=ableton_remote_script` and
+    `ableton.get_selected_context` returned track `1-C78 Core Kit` with
+    `DrumGroupDevice` `C78 Core Kit`.
 - **Commit tags:** none yet
 - **Open follow-ups:**
   - Add manual Ableton verification documentation before mutating real Live
@@ -309,3 +314,6 @@ Backout:
     transformation logic without changing Ableton or saved `.als` files.
   - 2026-05-27: added a self-contained read-only Remote Script package and
     installer. It intentionally exposes only health and selected-context reads.
+  - 2026-05-27: Live 12.4 exposed `ControlSurface.application` as a property, so
+    the Remote Script now resolves Live host objects as either properties or
+    methods before reading health/context.

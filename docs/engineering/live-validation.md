@@ -63,6 +63,36 @@ Expected:
 - capabilities are read-only,
 - selected context reports the visible selected track and selected device.
 
+## Validation Log
+
+### 2026-05-27, Live 12.4.0
+
+Validated against:
+
+```text
+testing/First Light Project/First Light.als
+```
+
+Ableton setup:
+
+- `Abletonian` selected as Control Surface slot 2.
+- Input and output left as `None`.
+- Selected track: `1-C78 Core Kit`.
+- Selected device: `C78 Core Kit`.
+
+Probe result:
+
+- `daw.health` returned `adapter_type=ableton_remote_script`,
+  `protocol_version=abletonian.bridge.v1`, and `live_version=12.4.0`.
+- `ableton.get_selected_context` returned track `1-C78 Core Kit` and a
+  `DrumGroupDevice` named `C78 Core Kit`.
+
+Compatibility note:
+
+- Live 12.4 exposes `ControlSurface.application` as a property, so the Remote
+  Script resolves host objects as either methods or properties before reading
+  health/context.
+
 ## Mutation Gate
 
 Do not add real mutation methods until:
