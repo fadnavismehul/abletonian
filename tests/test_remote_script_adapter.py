@@ -85,6 +85,16 @@ class FakeTrack:
         self._live_ptr = live_id or name
         self.view = FakeTrackView(devices[0] if devices else None)
 
+    def duplicate(self, suffix: int) -> "FakeTrack":
+        return FakeTrack(
+            name=f"{self.name} Copy",
+            devices=self.devices,
+            clip_slots=self.clip_slots,
+            color_index=self.color_index,
+            is_foldable=self.is_foldable,
+            live_id=f"{self._live_ptr}-copy-{suffix}",
+        )
+
 
 class FakeSongView:
     def __init__(self, selected_track: FakeTrack) -> None:
@@ -94,7 +104,13 @@ class FakeSongView:
 class FakeSong:
     def __init__(self, selected_track: FakeTrack) -> None:
         self.view = FakeSongView(selected_track)
-        self.tracks = (selected_track,)
+        self.tracks = [selected_track]
+        self.duplicate_track_calls: list[int] = []
+
+    def duplicate_track(self, index: int) -> None:
+        self.duplicate_track_calls.append(index)
+        duplicate = self.tracks[index].duplicate(len(self.duplicate_track_calls))
+        self.tracks.insert(index + 1, duplicate)
 
 
 class RemoteScriptAdapterTests(unittest.TestCase):
@@ -108,7 +124,8 @@ class RemoteScriptAdapterTests(unittest.TestCase):
         self.assertEqual(health["protocol_version"], PROTOCOL_VERSION)
         self.assertIn("read_selected_context", health["capabilities"])
         self.assertIn("plan_drum_rack_extraction", health["capabilities"])
-        self.assertIn("create_track", health["unsupported_capabilities"])
+        self.assertIn("scaffold_drum_rack_extraction", health["capabilities"])
+        self.assertIn("write_midi_notes", health["unsupported_capabilities"])
 
     def test_selected_context_reports_track_and_selected_drum_rack(self) -> None:
         drum_rack = FakeDevice("Drum Rack", "DrumGroupDevice")
@@ -216,3 +233,95 @@ class RemoteScriptAdapterTests(unittest.TestCase):
             "Skipped 1 drum pad without matching MIDI notes: Closed Hat",
             plan["warnings"],
         )
+
+    def test_scaffold_drum_rack_extraction_requires_confirmation(self) -> None:
+        adapter = RemoteScriptAdapter(song=drum_rack_song(), live_version="12.4.0")
+
+        with self.assertRaisesRegex(Exception, "requires confirmation"):
+            adapter.handle_request("workflow.scaffold_drum_rack_extraction", {})
+
+    def test_scaffold_drum_rack_extraction_duplicates_renames_and_returns_manifest(self) -> None:
+        song = drum_rack_song()
+        adapter = RemoteScriptAdapter(song=song, live_version="12.4.0")
+
+        result = adapter.handle_request(
+            "workflow.scaffold_drum_rack_extraction",
+            {"confirm": True},
+        )
+
+        self.assertEqual(result["operation"], "split_drum_rack")
+        self.assertEqual(result["mode"], "scaffold_tracks")
+        self.assertEqual(result["preserved_tracks"], ["track-drums"])
+        self.assertEqual(song.duplicate_track_calls, [0, 1])
+        self.assertEqual(
+            [track.name for track in song.tracks],
+            ["Drums", "Drums - Kick", "Drums - Snare"],
+        )
+        self.assertEqual([track.color_index for track in song.tracks[1:]], [5, 7])
+        self.assertEqual(
+            [track["name"] for track in result["created_tracks"]],
+            ["Drums - Kick", "Drums - Snare"],
+        )
+        self.assertEqual(
+            [track["source_pad"]["name"] for track in result["created_tracks"]],
+            ["Kick", "Snare"],
+        )
+        self.assertEqual(
+            result["verification"],
+            {
+                "source_track_preserved": True,
+                "created_track_count": 2,
+                "midi_filtering_applied": False,
+                "saved_live_set": False,
+                "mutates_real_ableton_set": True,
+            },
+        )
+        self.assertIn("Use Live Undo", result["backout"]["primary"])
+
+
+def drum_rack_song() -> FakeSong:
+    kick_chain = FakeChain(
+        "Kick Chain",
+        (FakeDevice("Kick Sampler", "OriginalSimpler"),),
+        color_index=5,
+    )
+    snare_chain = FakeChain(
+        "Snare Chain",
+        (
+            FakeDevice("Snare Sampler", "OriginalSimpler"),
+            FakeDevice("Compressor", "Compressor2"),
+        ),
+        color_index=7,
+    )
+    hat_chain = FakeChain(
+        "Hat Chain",
+        (FakeDevice("Hat Sampler", "OriginalSimpler"),),
+        color_index=9,
+    )
+    drum_rack = FakeDevice(
+        "Drum Rack",
+        "DrumGroupDevice",
+        drum_pads=(
+            FakeDrumPad(36, "Kick", (kick_chain,)),
+            FakeDrumPad(38, "Snare", (snare_chain,)),
+            FakeDrumPad(42, "Closed Hat", (hat_chain,)),
+        ),
+        live_id="device-drum-rack",
+    )
+    clip = FakeClip(
+        "Beat",
+        (
+            {"pitch": 36, "start_time": 0.0, "duration": 0.25, "velocity": 108},
+            {"pitch": 38, "start_time": 0.5, "duration": 0.25, "velocity": 96},
+            {"pitch": 36, "start_time": 1.0, "duration": 0.25, "velocity": 104},
+        ),
+    )
+    return FakeSong(
+        FakeTrack(
+            "Drums",
+            (drum_rack,),
+            clip_slots=(FakeClipSlot(clip),),
+            color_index=3,
+            live_id="track-drums",
+        )
+    )

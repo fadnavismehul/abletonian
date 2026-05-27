@@ -1,4 +1,4 @@
-"""Read-only Ableton Remote Script adapter core."""
+"""Ableton Remote Script adapter core."""
 
 from __future__ import annotations
 
@@ -10,27 +10,27 @@ from typing import Any
 from abletonian.bridge.protocol import PROTOCOL_VERSION
 
 REMOTE_SCRIPT_ADAPTER_VERSION = "0.1.0"
-REMOTE_SCRIPT_READ_CAPABILITIES = (
+REMOTE_SCRIPT_CAPABILITIES = (
     "read_project_state",
     "read_selected_context",
     "read_drum_rack",
     "plan_drum_rack_extraction",
+    "scaffold_drum_rack_extraction",
 )
 REMOTE_SCRIPT_UNSUPPORTED_CAPABILITIES = (
     "create_track",
-    "duplicate_track",
     "write_midi_notes",
     "execute_drum_rack_extraction",
 )
 
 
 class RemoteScriptAdapterError(RuntimeError):
-    """Raised when the read-only Remote Script adapter cannot satisfy a request."""
+    """Raised when the Remote Script adapter cannot satisfy a request."""
 
 
 @dataclass(frozen=True)
 class RemoteScriptAdapter:
-    """Read-only adapter over an Ableton Live Remote Script song object."""
+    """Adapter over an Ableton Live Remote Script song object."""
 
     song: Any
     live_version: str
@@ -43,6 +43,8 @@ class RemoteScriptAdapter:
             return self._selected_context()
         if method == "workflow.plan_drum_rack_extraction":
             return self._plan_drum_rack_extraction()
+        if method == "workflow.scaffold_drum_rack_extraction":
+            return self._scaffold_drum_rack_extraction(request_params)
         raise RemoteScriptAdapterError(f"unsupported Remote Script method '{method}'")
 
     def _health(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -58,7 +60,7 @@ class RemoteScriptAdapter:
             "live_version": self.live_version,
             "python_runtime": sys.version.split()[0],
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": list(REMOTE_SCRIPT_READ_CAPABILITIES),
+            "capabilities": list(REMOTE_SCRIPT_CAPABILITIES),
             "unsupported_capabilities": list(REMOTE_SCRIPT_UNSUPPORTED_CAPABILITIES),
         }
 
@@ -139,6 +141,66 @@ class RemoteScriptAdapter:
             "warnings": warnings,
         }
 
+    def _scaffold_drum_rack_extraction(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("confirm") is not True:
+            raise RemoteScriptAdapterError(
+                "workflow.scaffold_drum_rack_extraction requires confirmation"
+            )
+
+        song = self.song
+        source_track = self._selected_track()
+        source_track_index = _track_index(song, source_track)
+        duplicate_index = source_track_index
+        plan = self._plan_drum_rack_extraction()
+        warnings = [
+            *plan["warnings"],
+            "Scaffold tracks are full duplicates; MIDI clips have not been filtered yet.",
+        ]
+        created_tracks: list[dict[str, Any]] = []
+
+        for output in plan["output_tracks"]:
+            created_track = _duplicate_track_after(song, duplicate_index)
+            _assign_track_name(created_track, str(output["name"]), warnings)
+            _assign_track_color(created_track, output.get("color"), warnings)
+            created_track_index = _track_index(song, created_track)
+            created_tracks.append(
+                {
+                    "id": _object_id(created_track),
+                    "name": _string_attr(created_track, "name"),
+                    "track_index": created_track_index,
+                    "source_pad": output["source_pad"],
+                    "midi_filter": output["midi_filter"],
+                    "clip_note_count": output["clip_note_count"],
+                    "devices": output["devices"],
+                    "color": _optional_attr(created_track, "color_index"),
+                    "contains_unfiltered_clips": True,
+                }
+            )
+            duplicate_index = created_track_index
+
+        return {
+            "operation": "split_drum_rack",
+            "mode": "scaffold_tracks",
+            "target": plan["target"],
+            "preserved_tracks": [_object_id(source_track)],
+            "touched_tracks": [track["id"] for track in created_tracks],
+            "created_tracks": created_tracks,
+            "warnings": warnings,
+            "backout": {
+                "primary": (
+                    f"Use Live Undo {len(created_tracks)} times to remove the scaffold tracks."
+                ),
+                "fallback": "Close the Live Set without saving to discard scaffold tracks.",
+            },
+            "verification": {
+                "source_track_preserved": True,
+                "created_track_count": len(created_tracks),
+                "midi_filtering_applied": False,
+                "saved_live_set": False,
+                "mutates_real_ableton_set": True,
+            },
+        }
+
     def _selected_track(self) -> Any:
         try:
             return self.song.view.selected_track
@@ -186,6 +248,53 @@ def _session_midi_clips(track: Any) -> tuple[Any, ...]:
         if clip is not None and bool(getattr(clip, "is_midi_clip", False)):
             clips.append(clip)
     return tuple(clips)
+
+
+def _track_index(song: Any, target_track: Any) -> int:
+    target_id = _object_id(target_track)
+    for index, track in enumerate(_song_tracks(song)):
+        if track is target_track or _object_id(track) == target_id:
+            return index
+    raise RemoteScriptAdapterError(f"track '{_string_attr(target_track, 'name')}' is unavailable")
+
+
+def _song_tracks(song: Any) -> tuple[Any, ...]:
+    return _as_tuple(getattr(song, "tracks", ()))
+
+
+def _duplicate_track_after(song: Any, source_index: int) -> Any:
+    before = _song_tracks(song)
+    duplicate_track = getattr(song, "duplicate_track", None)
+    if not callable(duplicate_track):
+        raise RemoteScriptAdapterError("Remote Script song cannot duplicate tracks")
+    returned = duplicate_track(source_index)
+    after = _song_tracks(song)
+    if returned is not None:
+        return returned
+    if len(after) != len(before) + 1:
+        raise RemoteScriptAdapterError("Live did not report a duplicated track")
+    created_index = source_index + 1
+    if created_index >= len(after):
+        raise RemoteScriptAdapterError("duplicated track index is unavailable")
+    return after[created_index]
+
+
+def _assign_track_name(track: Any, name: str, warnings: list[str]) -> None:
+    try:
+        track.name = name
+    except Exception as exc:
+        warnings.append(f"Could not rename scaffold track to '{name}': {exc}")
+
+
+def _assign_track_color(track: Any, color: Any, warnings: list[str]) -> None:
+    if color is None:
+        return
+    try:
+        track.color_index = int(color)
+    except (TypeError, ValueError):
+        warnings.append(f"Could not apply non-integer scaffold color '{color}'")
+    except Exception as exc:
+        warnings.append(f"Could not color scaffold track '{_string_attr(track, 'name')}': {exc}")
 
 
 def _clip_notes(clip: Any) -> tuple[dict[str, Any], ...]:

@@ -6,8 +6,9 @@
 **Related Docs:** [Product Vision](../../vision.md), [Design Philosophy](../../../design/philosophy.md), [Integration Options](../../../engineering/integration-options.md), [Robustness and Safety](../../../engineering/robustness-and-safety.md)  
 **Implementation Status:** Started: fake adapter health, bridge dispatch,
 RTFM lookup, MCP dry-run tools, read-only Remote Script adapter core, real
-Remote Script Drum Rack dry-run planning, and manual Live 12.4 validation are
-implemented for foundation workflow validation.
+Remote Script Drum Rack dry-run planning, additive Drum Rack scaffold track
+duplication, and manual Live 12.4 validation are implemented for foundation
+workflow validation.
 
 ## Goal
 
@@ -295,12 +296,19 @@ Backout:
   - 2026-05-27 Live validation passed for real
     `workflow.plan_drum_rack_extraction`: the Remote Script returned output pads
     `Snare`, `Kick`, and `Closed Hi Hat` with MIDI filters `38`, `41`, and `42`.
+  - 2026-05-27 Live validation passed for real
+    `workflow.scaffold_drum_rack_extraction` with `confirm=True`: the Remote
+    Script duplicated the selected Drum Rack track into
+    `1-C78 Core Kit - Snare`, `1-C78 Core Kit - Kick`, and
+    `1-C78 Core Kit - Closed Hi Hat`; the manifest reported
+    `created_track_count=3`, `midi_filtering_applied=False`, and
+    `saved_live_set=False`.
 - **Commit tags:** none yet
 - **Open follow-ups:**
-  - Add manual Ableton verification documentation before mutating real Live
-    adapter workflows.
-  - Add additive write APIs only after fake adapter execution tests and manual
-    verification criteria are in place.
+  - Add real MIDI clip filtering only after a tighter Live API write-note
+    prototype and before/after validation checklist exist.
+  - Add cleanup/undo automation only if Live's API exposes a safe operation that
+    is no riskier than the user's built-in Undo path.
 - **Deviations from proposal:**
   - 2026-05-27: started with an in-process fake adapter rather than a networked
     fake bridge server so Drum Rack workflow logic can be tested before bridge
@@ -327,3 +335,9 @@ Backout:
   - 2026-05-27: added read-only real Remote Script Drum Rack extraction planning.
     It reports a dry-run plan only; execution remains unsupported by the real
     adapter.
+  - 2026-05-27: added additive real Remote Script scaffold execution before MIDI
+    filtering. The workflow duplicates and renames tracks only, returns an
+    operation manifest, and leaves the Live Set unsaved.
+  - 2026-05-27: the first live scaffold attempt exposed that mutating Live APIs
+    must not run directly on the socket worker thread. The bridge now dispatches
+    requests through `ControlSurface.schedule_message` when Live provides it.

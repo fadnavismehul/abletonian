@@ -1,4 +1,4 @@
-"""Read-only Abletonian bridge server for Ableton Live Remote Scripts."""
+"""Abletonian bridge server for Ableton Live Remote Scripts."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ PORT = 9877
 PROTOCOL_VERSION = "abletonian.bridge.v1"
 ADAPTER_VERSION = "0.1.0"
 MAX_FRAME_BYTES = 4 * 1024 * 1024
+REQUEST_DISPATCH_TIMEOUT_SECONDS = 20.0
 
 
 class AbletonianBridgeControlSurface(ControlSurface):
@@ -60,6 +61,8 @@ class AbletonianBridgeControlSurface(ControlSurface):
             return self._selected_context()
         if method == "workflow.plan_drum_rack_extraction":
             return self._plan_drum_rack_extraction()
+        if method == "workflow.scaffold_drum_rack_extraction":
+            return self._scaffold_drum_rack_extraction(params)
         raise RuntimeError(f"unsupported Abletonian Remote Script method '{method}'")
 
     def _health(self, params):
@@ -78,10 +81,10 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "read_selected_context",
                 "read_drum_rack",
                 "plan_drum_rack_extraction",
+                "scaffold_drum_rack_extraction",
             ],
             "unsupported_capabilities": [
                 "create_track",
-                "duplicate_track",
                 "write_midi_notes",
                 "execute_drum_rack_extraction",
             ],
@@ -164,6 +167,64 @@ class AbletonianBridgeControlSurface(ControlSurface):
             "warnings": warnings,
         }
 
+    def _scaffold_drum_rack_extraction(self, params):
+        if params.get("confirm") is not True:
+            raise RuntimeError("workflow.scaffold_drum_rack_extraction requires confirmation")
+
+        song = _live_object(self, "song")
+        source_track = song.view.selected_track
+        source_track_index = _track_index(song, source_track)
+        duplicate_index = source_track_index
+        plan = self._plan_drum_rack_extraction()
+        warnings = [
+            *plan["warnings"],
+            "Scaffold tracks are full duplicates; MIDI clips have not been filtered yet.",
+        ]
+        created_tracks = []
+
+        for output in plan["output_tracks"]:
+            created_track = _duplicate_track_after(song, duplicate_index)
+            _assign_track_name(created_track, str(output["name"]), warnings)
+            _assign_track_color(created_track, output.get("color"), warnings)
+            created_track_index = _track_index(song, created_track)
+            created_tracks.append(
+                {
+                    "id": _object_id(created_track),
+                    "name": _string_attr(created_track, "name"),
+                    "track_index": created_track_index,
+                    "source_pad": output["source_pad"],
+                    "midi_filter": output["midi_filter"],
+                    "clip_note_count": output["clip_note_count"],
+                    "devices": output["devices"],
+                    "color": getattr(created_track, "color_index", None),
+                    "contains_unfiltered_clips": True,
+                }
+            )
+            duplicate_index = created_track_index
+
+        return {
+            "operation": "split_drum_rack",
+            "mode": "scaffold_tracks",
+            "target": plan["target"],
+            "preserved_tracks": [_object_id(source_track)],
+            "touched_tracks": [track["id"] for track in created_tracks],
+            "created_tracks": created_tracks,
+            "warnings": warnings,
+            "backout": {
+                "primary": (
+                    f"Use Live Undo {len(created_tracks)} times to remove the scaffold tracks."
+                ),
+                "fallback": "Close the Live Set without saving to discard scaffold tracks.",
+            },
+            "verification": {
+                "source_track_preserved": True,
+                "created_track_count": len(created_tracks),
+                "midi_filtering_applied": False,
+                "saved_live_set": False,
+                "mutates_real_ableton_set": True,
+            },
+        }
+
     def _log(self, message):
         try:
             self.log_message(f"[Abletonian] {message}")
@@ -224,7 +285,7 @@ def _dispatch_frame(surface, frame):
         request_id = _request_id(request)
         method = _method(request)
         params = _params(request)
-        result = surface.handle_request(method, params)
+        result = _call_surface(surface, method, params)
         return _encode_frame({"id": request_id, "ok": True, "result": result})
     except Exception as exc:
         return _encode_frame(
@@ -240,6 +301,30 @@ def _dispatch_frame(surface, frame):
                 },
             }
         )
+
+
+def _call_surface(surface, method, params):
+    schedule_message = getattr(surface, "schedule_message", None)
+    if not callable(schedule_message):
+        return surface.handle_request(method, params)
+
+    completed = threading.Event()
+    state = {}
+
+    def run_request():
+        try:
+            state["result"] = surface.handle_request(method, params)
+        except Exception as exc:
+            state["error"] = exc
+        finally:
+            completed.set()
+
+    schedule_message(0, run_request)
+    if not completed.wait(REQUEST_DISPATCH_TIMEOUT_SECONDS):
+        raise TimeoutError("Live scheduler did not complete bridge request")
+    if "error" in state:
+        raise state["error"]
+    return state["result"]
 
 
 def _recv_frame(sock):
@@ -335,6 +420,54 @@ def _session_midi_clips(track):
         if clip is not None and bool(getattr(clip, "is_midi_clip", False)):
             clips.append(clip)
     return tuple(clips)
+
+
+def _track_index(song, target_track):
+    target_id = _object_id(target_track)
+    for index, track in enumerate(_song_tracks(song)):
+        if track is target_track or _object_id(track) == target_id:
+            return index
+    raise RuntimeError(f"track '{_string_attr(target_track, 'name')}' is unavailable")
+
+
+def _song_tracks(song):
+    return _as_tuple(getattr(song, "tracks", ()))
+
+
+def _duplicate_track_after(song, source_index):
+    before = _song_tracks(song)
+    duplicate_track = getattr(song, "duplicate_track", None)
+    if not callable(duplicate_track):
+        raise RuntimeError("Abletonian Remote Script cannot duplicate tracks")
+    returned = duplicate_track(source_index)
+    after = _song_tracks(song)
+    if returned is not None:
+        return returned
+    if len(after) != len(before) + 1:
+        raise RuntimeError("Live did not report a duplicated track")
+    created_index = source_index + 1
+    if created_index >= len(after):
+        raise RuntimeError("duplicated track index is unavailable")
+    return after[created_index]
+
+
+def _assign_track_name(track, name, warnings):
+    try:
+        track.name = name
+    except Exception as exc:
+        warnings.append(f"Could not rename scaffold track to '{name}': {exc}")
+
+
+def _assign_track_color(track, color, warnings):
+    if color is None:
+        return
+    try:
+        track.color_index = int(color)
+    except (TypeError, ValueError):
+        warnings.append(f"Could not apply non-integer scaffold color '{color}'")
+    except Exception as exc:
+        track_name = _string_attr(track, "name")
+        warnings.append(f"Could not color scaffold track '{track_name}': {exc}")
 
 
 def _clip_notes(clip):
