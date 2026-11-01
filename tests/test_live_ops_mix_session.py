@@ -190,6 +190,81 @@ class DeleteDeviceTests(unittest.TestCase):
         self.assertEqual(result["device"]["name"], "Utility")
         self.assertEqual([d.name for d in self.track.devices], ["Glue Compressor"])
 
+    def batch(self, *operations):
+        return live_ops.handle(self.song, "ableton.batch", {"operations": list(operations)})
+
+    def add_second_utility(self):
+        live_ops.handle(self.song, "ableton.insert_device", {"track": 0, "device_name": "Utility"})
+        self.assertEqual(
+            [d.name for d in self.track.devices], ["Utility", "Glue Compressor", "Utility"]
+        )
+
+    def test_batch_deletes_by_index_refer_to_the_set_before_the_batch(self):
+        # Review of PR #21: deleting 0 then 1 used to remove the third device.
+        self.add_second_utility()
+
+        result = self.batch(
+            {
+                "method": "ableton.delete_device",
+                "params": {"track": 0, "device": 0, "confirm": True},
+            },
+            {
+                "method": "ableton.delete_device",
+                "params": {"track": 0, "device": 1, "confirm": True},
+            },
+        )
+
+        self.assertIsNone(result["failed"])
+        self.assertEqual(
+            [r["device"]["name"] for r in result["completed"]], ["Utility", "Glue Compressor"]
+        )
+        self.assertEqual([d.name for d in self.track.devices], ["Utility"])
+        self.assertIs(self.track.devices[0], self.track.devices[-1])
+
+    def test_batch_deleting_the_same_device_twice_fails_the_second(self):
+        result = self.batch(
+            {
+                "method": "ableton.delete_device",
+                "params": {"track": 0, "device": 0, "confirm": True},
+            },
+            {
+                "method": "ableton.delete_device",
+                "params": {"track": 0, "device": "Utility", "confirm": True},
+            },
+        )
+
+        self.assertEqual(result["failed"]["index"], 1)
+        self.assertIn("no longer there", result["failed"]["error"])
+
+    def test_batch_with_an_unconfirmed_delete_changes_nothing(self):
+        for confirm in (None, False, "true"):
+            params = {"track": 0, "device": 0}
+            if confirm is not None:
+                params["confirm"] = confirm
+            with self.subTest(confirm=confirm):
+                with self.assertRaisesRegex(LiveOpsError, 'needs "confirm": true'):
+                    self.batch(
+                        {
+                            "method": "ableton.set_track_properties",
+                            "params": {"track": 0, "name": "X"},
+                        },
+                        {"method": "ableton.delete_device", "params": params},
+                    )
+                self.assertEqual(self.track.name, "Kick")
+                self.assertEqual(len(self.track.devices), 2)
+        self.assertEqual(self.song.undo_steps, [])
+
+    def test_batch_with_an_unknown_delete_target_changes_nothing(self):
+        with self.assertRaisesRegex(LiveOpsError, "operation 1: no device named 'Limiter'"):
+            self.batch(
+                {"method": "ableton.set_track_properties", "params": {"track": 0, "name": "X"}},
+                {
+                    "method": "ableton.delete_device",
+                    "params": {"track": 0, "device": "Limiter", "confirm": True},
+                },
+            )
+        self.assertEqual(self.track.name, "Kick")
+
     def test_unknown_device_lists_the_choices(self):
         with self.assertRaisesRegex(LiveOpsError, "Devices: Utility, Glue Compressor"):
             self.delete(device="Limiter", confirm=True)

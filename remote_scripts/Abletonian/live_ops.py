@@ -357,11 +357,18 @@ def create_return_track(song, params):
     }
 
 
-def delete_device(song, params):
-    """Delete a device. Destructive: without ``confirm=true`` it only previews."""
+def delete_device(song, params, target=None):
+    """Delete a device. Destructive: without ``confirm=true`` it only previews.
 
-    kind, index, track = resolve_track(song, _required(params, "track"))
-    path, device_index, device, owner = resolve_device_path(track, _required(params, "device"))
+    ``target`` is set by ``batch``: the device resolved before the batch ran,
+    so earlier deletes in the same batch cannot shift which device an index
+    or name points at.
+    """
+
+    if target is None:
+        target = _resolve_delete_target(song, params)
+    kind, index, track, path, device, owner = target
+    device_index = _current_index(owner, device, path)
     preview = {
         "track": _track_ref_payload(kind, index, track),
         "device": {
@@ -387,6 +394,21 @@ def delete_device(song, params):
     return {"deleted": True, **preview, "undo": "Live's Undo restores the device and settings."}
 
 
+def _resolve_delete_target(song, params):
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    path, _device_index, device, owner = resolve_device_path(track, _required(params, "device"))
+    return kind, index, track, path, device, owner
+
+
+def _current_index(owner, device, path):
+    for position, candidate in enumerate(_tuple(owner.devices)):
+        if candidate is device:
+            return position
+    raise LiveOpsError(
+        f"device '{path}' is no longer there (was it deleted earlier in this batch?)"
+    )
+
+
 def batch(song, params):
     operations = _required(params, "operations")
     if not isinstance(operations, list) or not operations:
@@ -399,6 +421,25 @@ def batch(song, params):
                 f"allowed: {', '.join(BATCHABLE_METHODS)}"
             )
 
+    # Deletes are checked and resolved before anything runs: an unconfirmed
+    # delete rejects the whole batch (rather than "completing" as a preview),
+    # and each target is pinned to the device the caller saw, so deleting
+    # index 0 does not make a later "index 1" point at a different device.
+    delete_targets = {}
+    for position, operation in enumerate(operations):
+        if operation["method"] != "ableton.delete_device":
+            continue
+        operation_params = operation.get("params", {})
+        if operation_params.get("confirm") is not True:
+            raise LiveOpsError(
+                f"operation {position} (ableton.delete_device) needs \"confirm\": true "
+                "inside a batch; nothing was changed"
+            )
+        try:
+            delete_targets[position] = _resolve_delete_target(song, operation_params)
+        except LiveOpsError as exc:
+            raise LiveOpsError(f"operation {position}: {exc}; nothing was changed") from exc
+
     results = []
     begin = getattr(song, "begin_undo_step", None)
     end = getattr(song, "end_undo_step", None)
@@ -408,7 +449,12 @@ def batch(song, params):
     try:
         for position, operation in enumerate(operations):
             try:
-                results.append(_HANDLERS[operation["method"]](song, operation.get("params", {})))
+                operation_params = operation.get("params", {})
+                if position in delete_targets:
+                    result = delete_device(song, operation_params, delete_targets[position])
+                else:
+                    result = _HANDLERS[operation["method"]](song, operation_params)
+                results.append(result)
             except Exception as exc:
                 return {
                     "completed": results,

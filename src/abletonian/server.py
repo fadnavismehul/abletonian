@@ -7,6 +7,7 @@ import webbrowser
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from pydantic import StrictBool
 
 from abletonian.bridge.client import BridgeClient, BridgeConnectionError
 from abletonian.cockpit import CockpitError, MacroCockpitSpec, rack_fingerprint, render_cockpit_text
@@ -284,7 +285,7 @@ def build_mcp(
         return live_request("ableton.create_return_track", without_none(name=name, color=color))
 
     @mcp.tool()
-    def delete_device(track: int | str, device: int | str, confirm: bool = False) -> str:
+    def delete_device(track: int | str, device: int | str, confirm: StrictBool = False) -> str:
         """Delete a device from a track, or from inside a rack by its path
         (see list_devices). Destructive.
 
