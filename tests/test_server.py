@@ -42,6 +42,40 @@ class FakeAdapterBridge:
         return self.adapter.handle_request(method, params)
 
 
+class RecordingOnlyBridge:
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict[str, object]]] = []
+
+    def request(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
+        self.requests.append((method, params or {}))
+        return {"ok": True}
+
+
+class DeleteDeviceToolTests(unittest.TestCase):
+    """Review of PR #21: the tool must not turn "true", 1, "yes" into confirm=True."""
+
+    def call(self, confirm: object) -> RecordingOnlyBridge:
+        bridge = RecordingOnlyBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+        try:
+            asyncio.run(
+                mcp.call_tool("delete_device", {"track": 0, "device": 0, "confirm": confirm})
+            )
+        except Exception:  # noqa: BLE001 - a validation error is an acceptable refusal
+            pass
+        return bridge
+
+    def test_non_boolean_confirm_never_reaches_the_bridge_as_true(self) -> None:
+        for confirm in ("true", "yes", 1, "1", "on", "True"):
+            with self.subTest(confirm=confirm):
+                sent = [params.get("confirm") for _m, params in self.call(confirm).requests]
+                self.assertNotIn(True, sent)
+
+    def test_boolean_confirm_passes_through(self) -> None:
+        self.assertEqual(self.call(True).requests[0][1]["confirm"], True)
+        self.assertEqual(self.call(False).requests[0][1]["confirm"], False)
+
+
 class ServerToolTests(unittest.TestCase):
     def test_generate_macro_cockpit_reads_rack_and_returns_spec_and_text(self) -> None:
         adapter = FakeAbletonAdapter(
@@ -52,9 +86,7 @@ class ServerToolTests(unittest.TestCase):
                         id="t0",
                         name="Keys",
                         devices=(
-                            FakeRackDevice(
-                                "r", "Keys Rack", (FakeRackMacro(1, "Cutoff", 100.0),)
-                            ),
+                            FakeRackDevice("r", "Keys Rack", (FakeRackMacro(1, "Cutoff", 100.0),)),
                         ),
                     ),
                 ),
@@ -99,9 +131,7 @@ class ServerToolTests(unittest.TestCase):
         bridge = RecordingBridge()
         mcp = build_mcp(AbletonianConfig(), bridge=bridge)
 
-        result = asyncio.run(
-            mcp.call_tool("execute_drum_rack_extraction", {"confirm": True})
-        )
+        result = asyncio.run(mcp.call_tool("execute_drum_rack_extraction", {"confirm": True}))
 
         self.assertEqual(
             bridge.requests,

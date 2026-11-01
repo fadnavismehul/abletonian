@@ -23,6 +23,8 @@ PARAMETER_ALIASES = {
 
 # Live 12 racks have up to 16 macros.
 MAX_RACK_MACROS = 16
+# Racks inside racks are listed this deep; deeper chains are marked truncated.
+MAX_RACK_DEPTH = 4
 
 BATCHABLE_METHODS = (
     "ableton.set_device_parameter",
@@ -30,6 +32,8 @@ BATCHABLE_METHODS = (
     "ableton.set_track_properties",
     "ableton.set_mixer",
     "ableton.insert_device",
+    "ableton.create_return_track",
+    "ableton.delete_device",
 )
 
 
@@ -47,21 +51,34 @@ def handle(song, method, params):
 
 
 def list_tracks(song, params):
+    """List tracks. ``detail`` is "full" (default) or "compact".
+
+    Compact leaves out the available routing options and gives volume, pan,
+    and sends as display text only, so large sets fit in one tool result.
+    ``name`` keeps tracks whose name contains it (case-insensitive).
+    """
+
     include_returns = params.get("include_returns", True)
     include_master = params.get("include_master", True)
+    detail = params.get("detail", "full")
+    if detail not in ("full", "compact"):
+        raise LiveOpsError(f"detail must be 'full' or 'compact', got '{detail}'")
+    name_filter = params.get("name")
+    name_filter = str(name_filter).lower() if name_filter else None
     return_names = [_str(track.name) for track in _tuple(song.return_tracks)]
-    tracks = [
-        _track_payload(track, "track", index, return_names)
-        for index, track in enumerate(_tuple(song.tracks))
-    ]
+    items = [("track", i, t) for i, t in enumerate(_tuple(song.tracks))]
     if include_returns:
-        tracks.extend(
-            _track_payload(track, "return", index, return_names)
-            for index, track in enumerate(_tuple(song.return_tracks))
-        )
+        items.extend(("return", i, t) for i, t in enumerate(_tuple(song.return_tracks)))
     if include_master:
-        tracks.append(_track_payload(song.master_track, "master", 0, return_names))
-    return {"tracks": tracks, "return_track_names": return_names}
+        items.append(("master", 0, song.master_track))
+    if name_filter is not None:
+        items = [item for item in items if name_filter in _str(item[2].name).lower()]
+    payload = _compact_track_payload if detail == "compact" else _track_payload
+    return {
+        "tracks": [payload(track, kind, index, return_names) for kind, index, track in items],
+        "return_track_names": return_names,
+        "detail": detail,
+    }
 
 
 def list_devices(song, params):
@@ -162,13 +179,13 @@ def get_selected_rack_macros(song, params):
 
 def set_device_parameter(song, params):
     kind, index, track = resolve_track(song, _required(params, "track"))
-    device_index, device = resolve_device(track, _required(params, "device"))
+    path, device_index, device, _owner = resolve_device_path(track, _required(params, "device"))
     parameter = resolve_parameter(device, _required(params, "parameter"))
     before = _param_payload(parameter)
     set_parameter_value(parameter, _required(params, "value"))
     return {
         "track": _track_ref_payload(kind, index, track),
-        "device": {"index": device_index, "name": _str(device.name)},
+        "device": {"index": device_index, "name": _str(device.name), "path": path},
         "before": before,
         "after": _param_payload(parameter),
     }
@@ -205,7 +222,10 @@ def set_track_properties(song, params):
     kind, index, track = resolve_track(song, _required(params, "track"))
     before = {"name": _str(track.name), "color_index": _get(track, "color_index")}
     if params.get("name") is not None:
-        track.name = str(params["name"])
+        name = str(params["name"])
+        if kind == "return":
+            name = _without_return_prefix(name, index)
+        track.name = name
     if params.get("color_index") is not None:
         track.color_index = int(params["color_index"])
     if params.get("color") is not None:
@@ -312,6 +332,83 @@ def insert_device(song, params):
     }
 
 
+def create_return_track(song, params):
+    """Add a return track at the end (``Song.create_return_track``). Additive."""
+
+    create = getattr(song, "create_return_track", None)
+    if not callable(create):
+        raise LiveOpsError("this version of Live cannot create return tracks from a script")
+    before = len(_tuple(song.return_tracks))
+    create()
+    returns = _tuple(song.return_tracks)
+    if len(returns) != before + 1:
+        raise LiveOpsError("Live did not add a return track")
+    index = len(returns) - 1
+    track = returns[index]
+    if params.get("name") is not None:
+        track.name = _without_return_prefix(str(params["name"]), index)
+    if params.get("color") is not None:
+        track.color = _parse_color(params["color"])
+    return {
+        "track": _track_ref_payload("return", index, track),
+        "letter": chr(ord("A") + index) if index < 26 else None,
+        "color": _hex_color(_get(track, "color")),
+        "note": "Every track now has a send to this return; check send levels before playing.",
+    }
+
+
+def delete_device(song, params, target=None):
+    """Delete a device. Destructive: without ``confirm=true`` it only previews.
+
+    ``target`` is set by ``batch``: the device resolved before the batch ran,
+    so earlier deletes in the same batch cannot shift which device an index
+    or name points at.
+    """
+
+    if target is None:
+        target = _resolve_delete_target(song, params)
+    kind, index, track, path, device, owner = target
+    device_index = _current_index(owner, device, path)
+    preview = {
+        "track": _track_ref_payload(kind, index, track),
+        "device": {
+            "index": device_index,
+            "name": _str(device.name),
+            "path": path,
+            "class_name": _str(_get(device, "class_name", "")),
+            "parameters": {
+                _str(p.name): _shown(p) for p in _tuple(_get(device, "parameters", ()))
+            },
+        },
+    }
+    if params.get("confirm") is not True:
+        return {
+            "deleted": False,
+            "would_delete": preview,
+            "hint": "Nothing was changed. Call again with confirm=true to delete this device.",
+        }
+    remove = getattr(owner, "delete_device", None)
+    if not callable(remove):
+        raise LiveOpsError(f"Live cannot delete devices inside '{_str(owner.name)}' from a script")
+    remove(device_index)
+    return {"deleted": True, **preview, "undo": "Live's Undo restores the device and settings."}
+
+
+def _resolve_delete_target(song, params):
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    path, _device_index, device, owner = resolve_device_path(track, _required(params, "device"))
+    return kind, index, track, path, device, owner
+
+
+def _current_index(owner, device, path):
+    for position, candidate in enumerate(_tuple(owner.devices)):
+        if candidate is device:
+            return position
+    raise LiveOpsError(
+        f"device '{path}' is no longer there (was it deleted earlier in this batch?)"
+    )
+
+
 def batch(song, params):
     operations = _required(params, "operations")
     if not isinstance(operations, list) or not operations:
@@ -324,6 +421,25 @@ def batch(song, params):
                 f"allowed: {', '.join(BATCHABLE_METHODS)}"
             )
 
+    # Deletes are checked and resolved before anything runs: an unconfirmed
+    # delete rejects the whole batch (rather than "completing" as a preview),
+    # and each target is pinned to the device the caller saw, so deleting
+    # index 0 does not make a later "index 1" point at a different device.
+    delete_targets = {}
+    for position, operation in enumerate(operations):
+        if operation["method"] != "ableton.delete_device":
+            continue
+        operation_params = operation.get("params", {})
+        if operation_params.get("confirm") is not True:
+            raise LiveOpsError(
+                f"operation {position} (ableton.delete_device) needs \"confirm\": true "
+                "inside a batch; nothing was changed"
+            )
+        try:
+            delete_targets[position] = _resolve_delete_target(song, operation_params)
+        except LiveOpsError as exc:
+            raise LiveOpsError(f"operation {position}: {exc}; nothing was changed") from exc
+
     results = []
     begin = getattr(song, "begin_undo_step", None)
     end = getattr(song, "end_undo_step", None)
@@ -333,7 +449,12 @@ def batch(song, params):
     try:
         for position, operation in enumerate(operations):
             try:
-                results.append(_HANDLERS[operation["method"]](song, operation.get("params", {})))
+                operation_params = operation.get("params", {})
+                if position in delete_targets:
+                    result = delete_device(song, operation_params, delete_targets[position])
+                else:
+                    result = _HANDLERS[operation["method"]](song, operation_params)
+                results.append(result)
             except Exception as exc:
                 return {
                     "completed": results,
@@ -426,6 +547,80 @@ def resolve_device(track, ref):
     raise LiveOpsError(f"no device named '{text}' on '{_str(track.name)}'. Devices: {names}")
 
 
+def resolve_device_path(track, ref):
+    """Resolve a device anywhere on a track. Returns ``(path, index, device, owner)``.
+
+    ``ref`` is an index, a top-level device name, or a path through racks:
+    ``"Instrument Rack/Piano/Reverb"`` (rack / chain / device, repeated for
+    nested racks) or ``"Drum Rack/returns/0/Limiter"`` for a Drum Rack return
+    chain. Names or indexes work for every segment. A top-level device whose
+    whole name matches wins, so names containing "/" still work. ``owner`` is
+    the track or chain holding the device; ``index`` is its position there.
+    Uses RackDevice.chains, RackDevice.return_chains, and Chain.devices from
+    the Live Object Model (issue #17; return chains not yet confirmed in Live).
+    """
+
+    if isinstance(ref, int) or "/" not in str(ref) or _has_device_named(track, str(ref)):
+        index, device = resolve_device(track, ref)
+        return _str(device.name), index, device, track
+    segments = [part.strip() for part in str(ref).split("/")]
+    if any(not part for part in segments):
+        raise LiveOpsError(f"device path '{ref}' has an empty part")
+    index, device = resolve_device(track, segments[0])
+    path = [_str(device.name)]
+    owner = track
+    rest = segments[1:]
+    while rest:
+        if not bool(_get(device, "can_have_chains", False)):
+            raise LiveOpsError(
+                f"'{'/'.join(path)}' is not a Rack, so it has no chain '{rest[0]}'"
+            )
+        if rest[0].lower() == "returns":
+            chains = _tuple(_get(device, "return_chains", ()))
+            label = "return chain"
+            path.append("returns")
+            rest = rest[1:]
+            if not rest:
+                raise LiveOpsError(f"device path '{ref}' needs a return chain after 'returns'")
+        else:
+            chains = _tuple(_get(device, "chains", ()))
+            label = "chain"
+        _chain_index, chain = _pick(chains, rest[0], label, "/".join(path))
+        path.append(_str(chain.name))
+        if len(rest) < 2:
+            raise LiveOpsError(f"device path '{ref}' ends at a chain; add a device name")
+        index, device = _pick(_tuple(chain.devices), rest[1], "device", "/".join(path))
+        path.append(_str(device.name))
+        owner = chain
+        rest = rest[2:]
+    return "/".join(path), index, device, owner
+
+
+def _has_device_named(track, name):
+    return any(_str(d.name).lower() == name.lower() for d in _tuple(track.devices))
+
+
+def _pick(items, ref, label, where):
+    """Pick from a Live list by index or name (exact, then case-insensitive)."""
+
+    text = str(ref).strip()
+    if isinstance(ref, int) and not isinstance(ref, bool) or text.isdigit():
+        position = int(text)
+        if 0 <= position < len(items):
+            return position, items[position]
+    for matcher in (lambda n: n == text, lambda n: n.lower() == text.lower()):
+        matches = [(i, item) for i, item in enumerate(items) if matcher(_str(item.name))]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise LiveOpsError(
+                f"{label} name '{text}' is ambiguous in '{where}'; use an index: "
+                + ", ".join(str(i) for i, _ in matches)
+            )
+    names = ", ".join(f"{i}:{_str(item.name)}" for i, item in enumerate(items)) or "(none)"
+    raise LiveOpsError(f"no {label} '{text}' in '{where}'. Choices: {names}")
+
+
 def resolve_parameter(device, ref):
     parameters = _tuple(device.parameters)
     if isinstance(ref, int) and not isinstance(ref, bool):
@@ -493,57 +688,107 @@ def value_for_display(parameter, text):
     if target is None:
         raise LiveOpsError(f"could not read a number from '{text}'")
     low, high = float(parameter.min), float(parameter.max)
-    low_number = _display_number(parameter, low)
-    high_number = _display_number(parameter, high)
+    original = float(parameter.value)
+    try:
+        reader = _display_reader(parameter, low, high)
+        return _search_display(parameter, reader, low, high, target, text, quantized)
+    finally:
+        # Probing may have moved the parameter; put it back so a failed match
+        # changes nothing and a found one is set once, by the caller.
+        if float(parameter.value) != original:
+            parameter.value = original
+
+
+def _display_reader(parameter, low, high):
+    """Pick how to read the display text for a raw value.
+
+    Native devices format any value with ``str_for_value``. For some plugin
+    parameters it appears to return the display of the current value
+    whatever value is passed (issue #16, not yet confirmed in Live), so every
+    probe looks the same. Then the value is set briefly and read back with
+    ``str(parameter)``, which Live's own control surface scripts use to show
+    a parameter's current value; the caller restores the original value.
+    """
+
+    if high <= low or _display(parameter, low) != _display(parameter, high):
+        return _display
+
+    def probe(param, value):
+        param.value = value
+        return str(param)
+
+    if probe(parameter, low) == probe(parameter, high):
+        return _display  # The display really is constant; report it below.
+    return probe
+
+
+def _search_display(parameter, reader, low, high, target, text, quantized):
+    def number(value):
+        return parse_display_number(reader(parameter, value))
+
+    low_number, high_number = number(low), number(high)
     if low_number is None or high_number is None:
-        raise LiveOpsError(f"'{_str(parameter.name)}' does not show numeric values")
+        raise LiveOpsError(
+            f"'{_str(parameter.name)}' does not show numeric values "
+            f"(it shows '{reader(parameter, low)}' to '{reader(parameter, high)}')"
+        )
+    if low_number == high_number:
+        raise LiveOpsError(
+            f"'{_str(parameter.name)}' shows '{reader(parameter, low)}' for every value, so "
+            "display text cannot be matched. Use a raw value between "
+            f"{low} and {high} instead."
+        )
     rising = high_number >= low_number
     bottom, top = (low_number, high_number) if rising else (high_number, low_number)
     if target <= bottom or target >= top:
         edge = (low if rising else high) if target <= bottom else (high if rising else low)
-        _check_display_match(parameter, edge, target, text)
+        _check_display_match(parameter, reader, edge, target, text, low, high)
         return edge
     # Displays are rounded, so many raw values show the same number. Find the
     # span of raw values that display the target and aim for its middle.
-    start = _first_raw_where(parameter, low, high, rising, lambda n: n >= target)
-    stop = _first_raw_where(parameter, low, high, rising, lambda n: n > target)
-    if _display_number(parameter, start) == target and stop > start:
+    # Probing writes the parameter on every step, so use fewer steps there:
+    # 24 halvings still resolve a millionth of the range.
+    steps = 60 if reader is _display else 24
+    start = _first_raw_where(number, low, high, rising, lambda n: n >= target, steps)
+    stop = _first_raw_where(number, low, high, rising, lambda n: n > target, steps)
+    if number(start) == target and stop > start:
         result = (start + stop) / 2.0
     else:
         result = start
     if quantized:
         result = float(round(result))
-    _check_display_match(parameter, result, target, text)
+    _check_display_match(parameter, reader, result, target, text, low, high)
     return result
 
 
-def _check_display_match(parameter, raw, target, text):
+def _check_display_match(parameter, reader, raw, target, text, low, high):
     # Guards against displays the bisection cannot follow, such as a parameter
     # whose numbers are not monotonic.
-    shown = _display_number(parameter, raw)
+    shown = parse_display_number(reader(parameter, raw))
     if shown is None or math.isinf(target) or math.isinf(shown):
         return
     tolerance = max(abs(target) * 0.05, 0.051)
     if abs(shown - target) > tolerance:
         raise LiveOpsError(
             f"could not find a value of '{_str(parameter.name)}' that shows '{text}'; "
-            f"closest was '{_display(parameter, raw)}'. Use a raw value instead."
+            f"closest was '{reader(parameter, raw)}' (range '{reader(parameter, low)}' to "
+            f"'{reader(parameter, high)}'). Use a raw value between {low} and {high} instead."
         )
 
 
-def _first_raw_where(parameter, low, high, rising, predicate):
+def _first_raw_where(number, low, high, rising, predicate, steps=60):
     """Bisect for the first raw value whose display number satisfies predicate.
 
     ``rising`` says whether display numbers grow with the raw value; for a
     falling parameter the search runs from the high end.
     """
 
-    for _ in range(60):
+    for _ in range(steps):
         middle = (low + high) / 2.0
-        number = _display_number(parameter, middle)
-        if number is None:
+        shown = number(middle)
+        if shown is None:
             break
-        if predicate(number) == rising:
+        if predicate(shown) == rising:
             high = middle
         else:
             low = middle
@@ -581,8 +826,8 @@ def parse_display_number(text):
     return number
 
 
-def _display_number(parameter, value):
-    return parse_display_number(_display(parameter, value))
+def _shown(parameter):
+    return _display(parameter, float(parameter.value))
 
 
 def _display(parameter, value):
@@ -623,6 +868,33 @@ def _track_payload(track, kind, index, return_names):
     return payload
 
 
+def _compact_track_payload(track, kind, index, return_names):
+    mixer = track.mixer_device
+    group = _get(track, "group_track")
+    routing = _get(track, "output_routing_type")
+    payload = {
+        **_track_ref_payload(kind, index, track),
+        "color": _hex_color(_get(track, "color")),
+        "group": _str(group.name) if group is not None else None,
+        "output": _str(_get(routing, "display_name", "")) if routing is not None else None,
+        "volume": _shown(mixer.volume),
+        "pan": _shown(mixer.panning),
+        "sends": {
+            (return_names[i] if i < len(return_names) else str(i)): _shown(send)
+            for i, send in enumerate(_tuple(_get(mixer, "sends", ())))
+        },
+        "devices": [_str(device.name) for device in _tuple(track.devices)],
+    }
+    if bool(_get(track, "is_foldable", False)):
+        payload["is_group"] = True
+    if kind != "master":
+        if bool(_get(track, "mute", False)):
+            payload["mute"] = True
+        if bool(_get(track, "solo", False)):
+            payload["solo"] = True
+    return payload
+
+
 def _track_ref_payload(kind, index, track):
     return {"kind": kind, "index": index, "name": _str(track.name)}
 
@@ -639,25 +911,55 @@ def _routing_payload(track):
     return payload
 
 
-def _device_payload(device, index, include_parameters):
+def _device_payload(device, index, include_parameters, path=None, depth=0):
+    path = path or _str(device.name)
     payload = {
         "index": index,
         "name": _str(device.name),
+        "path": path,
         "class_name": _str(_get(device, "class_name", "")),
         "class_display_name": _str(_get(device, "class_display_name", "")),
         "is_active": bool(_get(device, "is_active", True)),
     }
     if bool(_get(device, "can_have_chains", False)):
-        payload["chains"] = [
-            {"name": _str(chain.name), "devices": [_str(d.name) for d in _tuple(chain.devices)]}
-            for chain in _tuple(_get(device, "chains", ()))
-        ]
+        payload["chains"] = _chains_payload(
+            _get(device, "chains", ()), path, include_parameters, depth
+        )
+        return_chains = _tuple(_get(device, "return_chains", ()))
+        if return_chains:
+            payload["return_chains"] = _chains_payload(
+                return_chains, f"{path}/returns", include_parameters, depth
+            )
     if include_parameters:
         payload["parameters"] = [
             {"index": i, **_param_payload(parameter)}
             for i, parameter in enumerate(_tuple(device.parameters))
         ]
     return payload
+
+
+def _chains_payload(chains, prefix, include_parameters, depth):
+    if depth >= MAX_RACK_DEPTH:
+        return [{"name": _str(chain.name), "truncated": True} for chain in _tuple(chains)]
+    result = []
+    for chain in _tuple(chains):
+        chain_path = f"{prefix}/{_str(chain.name)}"
+        result.append(
+            {
+                "name": _str(chain.name),
+                "devices": [
+                    _device_payload(
+                        device,
+                        i,
+                        include_parameters,
+                        f"{chain_path}/{_str(device.name)}",
+                        depth + 1,
+                    )
+                    for i, device in enumerate(_tuple(chain.devices))
+                ],
+            }
+        )
+    return result
 
 
 def _param_payload(parameter, compact=False):
@@ -674,6 +976,20 @@ def _param_payload(parameter, compact=False):
 
 
 # Helpers ------------------------------------------------------------------
+
+
+def _without_return_prefix(name, return_index):
+    """Drop a leading "A-" from a name for return A.
+
+    Live shows a return's letter in front of its name, so storing "A-Room" on
+    return A shows "A-A-Room" (seen in Live 12.4.16, issue #15). A different
+    letter ("B-Room" on return A) is kept as the user typed it.
+    """
+
+    letter = chr(ord("A") + return_index) if return_index < 26 else None
+    if letter and len(name) > 2 and name[:2].upper() == f"{letter}-":
+        return name[2:].lstrip() or name
+    return name
 
 
 def _locate_track(song, target):
@@ -807,6 +1123,8 @@ _HANDLERS = {
     "ableton.set_track_properties": set_track_properties,
     "ableton.set_mixer": set_mixer,
     "ableton.insert_device": insert_device,
+    "ableton.create_return_track": create_return_track,
+    "ableton.delete_device": delete_device,
     "ableton.batch": batch,
     "ableton.undo": undo,
 }

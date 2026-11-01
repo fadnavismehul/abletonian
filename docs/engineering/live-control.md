@@ -27,7 +27,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 
 | MCP tool | Bridge method | What it does |
 | --- | --- | --- |
-| `list_tracks` | `ableton.list_tracks` | Names, group parent, colour, output routing and the options for it, volume, pan, sends, mute/solo, device names. Covers regular, return, and main tracks. |
+| `list_tracks` | `ableton.list_tracks` | Names, group parent, colour, output routing, volume, pan, sends, mute/solo, device names. Covers regular, return, and main tracks. The tool defaults to `detail="compact"` (levels as display text, no routing options), about a quarter of the size, so large sets fit; `detail="full"` adds raw values and the output routing choices. `name` keeps tracks whose name contains it. |
 | `list_devices` | `ableton.list_devices` | Devices per track (or all tracks), rack chains, and every parameter with raw value, range, display text, and options. |
 | `generate_macro_cockpit` | `ableton.get_selected_rack_macros` | Read the selected Rack's macros (read-only) and return a grouped Macro Cockpit spec plus a text summary. See [RFC 0002](../rfcs/0002-selected-rack-macro-cockpit.md). |
 | `save_macro_cockpit` | none | Save a cockpit generated in this session as a JSON file, so it can be reopened. Cockpits are temporary until saved. |
@@ -36,9 +36,11 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `show_macro_cockpit` | none | Write a cockpit (generated this session, or saved) as a self-contained HTML page under the cockpit folder's `views/`, and open it in the browser. Display only. |
 | `set_device_parameter` | `ableton.set_device_parameter` | Set by raw value or by display text (`"-3 dB"`, `"2.5 kHz"`, `"Off"`). |
 | `set_track_output_routing` | `ableton.set_track_output_routing` | Set Audio To / MIDI To by display name, such as `Main` or a group name. |
-| `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). |
+| `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). Live shows a return's letter in front of its name, so a leading `A-` is dropped when renaming return A. |
 | `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. |
 | `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, and set its parameters right away. |
+| `create_return_track` | `ableton.create_return_track` | Add a return track at the end (`Song.create_return_track`), with an optional name and colour. Additive. |
+| `delete_device` | `ableton.delete_device` | Delete a device (`Track.delete_device`). Destructive: without `confirm=true` it only returns the device and its current settings. The tool accepts only a real boolean, so `"true"` or `1` is refused. In `apply_batch`, every delete needs `"confirm": true` or the whole batch is refused before anything runs, and delete targets refer to the set as it was before the batch, so deleting index 0 does not shift a later index 1. |
 | `apply_batch` | `ableton.batch` | Run many changes as one Live undo step. Stops at the first failure. |
 | `undo_last_change` | `ableton.undo` | Live Undo once. |
 
@@ -53,6 +55,16 @@ Every `track` argument accepts:
 
 Ambiguous names return an error listing the matching indexes.
 
+### Devices inside racks
+
+`device` arguments also take a path through racks, as `list_devices`
+shows it: `"Instrument Rack/Piano/Reverb"` (rack, chain, device, repeated
+for racks inside racks) or `"Drum Rack/returns/0/Limiter"` for a Drum Rack
+return chain. Each part can be a name or an index. A top-level device whose
+whole name matches is used first, so names that contain `/` still work.
+`list_devices` lists chain devices four racks deep. Return chains are not
+yet confirmed in Live (issue #17).
+
 ### Values by display text
 
 Live's raw parameter values are often not in the units you see. Utility
@@ -60,6 +72,14 @@ Gain, for example, is not stored in dB. When a value is a string, the script
 searches for the raw value whose display text matches, using the parameter's
 own `str_for_value`. That way `"-3 dB"` or `"25L"` lands where Live shows that
 number. Quantized parameters match an option name instead.
+
+Plugin parameters can behave differently. If `str_for_value` gives the
+same text at both ends of the range (suspected for some VST/AU parameters,
+issue #16, not yet confirmed in Live), the script instead sets the value
+briefly, reads `str(parameter)`, and puts the original value back before
+the real change. That probing takes about 55 writes. If the display still
+cannot be matched, the error shows the range of display text and asks for
+a raw value.
 
 Some API names differ from the device UI. Utility's gain knob is `Output` in
 the API; `Gain` is accepted as an alias. `list_devices` shows the API names.

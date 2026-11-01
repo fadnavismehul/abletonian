@@ -7,6 +7,7 @@ import webbrowser
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from pydantic import StrictBool
 
 from abletonian.bridge.client import BridgeClient, BridgeConnectionError
 from abletonian.cockpit import CockpitError, MacroCockpitSpec, rack_fingerprint, render_cockpit_text
@@ -143,9 +144,19 @@ def build_mcp(
         return {key: value for key, value in params.items() if value is not None}
 
     @mcp.tool()
-    def list_tracks(include_returns: bool = True, include_master: bool = True) -> str:
+    def list_tracks(
+        include_returns: bool = True,
+        include_master: bool = True,
+        detail: str = "compact",
+        name: str | None = None,
+    ) -> str:
         """List tracks in the open Live Set: names, groups, colours, output routing,
-        volume, pan, sends, mute/solo, and device names.
+        volume, pan, sends, mute/solo, and device names. Read-only.
+
+        detail "compact" (default) gives levels as display text and leaves out
+        routing options, so large sets fit; use "full" (ideally with name) for
+        raw values and the available output routing choices. name keeps tracks
+        whose name contains it.
 
         Track references used by other tools accept an index into this list's
         regular tracks, a track name, "A"/"B"/... or "return:N" for returns, and
@@ -154,13 +165,21 @@ def build_mcp(
 
         return live_request(
             "ableton.list_tracks",
-            {"include_returns": include_returns, "include_master": include_master},
+            without_none(
+                include_returns=include_returns,
+                include_master=include_master,
+                detail=detail,
+                name=name,
+            ),
         )
 
     @mcp.tool()
     def list_devices(track: int | str | None = None, include_parameters: bool = True) -> str:
         """List devices on one track (or every track when track is omitted), with
-        each parameter's raw value, range, display text, and options."""
+        each parameter's raw value, range, display text, and options. Devices
+        inside racks are listed under their chains (and Drum Rack return
+        chains) with a "path" that set_device_parameter and delete_device
+        accept. Read-only."""
 
         return live_request(
             "ableton.list_devices",
@@ -176,8 +195,11 @@ def build_mcp(
     ) -> str:
         """Set a device parameter in the open Live Set.
 
-        value is either a raw number within the parameter's min..max, or display
-        text such as "-3 dB", "2.5 kHz", "25L", or an option name like "Off".
+        device is an index, a device name, or a path to a device inside racks
+        from list_devices, such as "Instrument Rack/Piano/Reverb" or
+        "Drum Rack/returns/0/Limiter". value is either a raw number within the
+        parameter's min..max, or display text such as "-3 dB", "2.5 kHz",
+        "25L", or an option name like "Off".
         """
 
         return live_request(
@@ -254,12 +276,35 @@ def build_mcp(
         )
 
     @mcp.tool()
+    def create_return_track(name: str | None = None, color: str | None = None) -> str:
+        """Add a return track after the existing ones, optionally named and
+        coloured ("#RRGGBB"). Additive. Every track gets a send to the new
+        return; tell the user to check send levels. Live adds the letter
+        itself, so pass "Room" (or "E-Room") for "E-Room"."""
+
+        return live_request("ableton.create_return_track", without_none(name=name, color=color))
+
+    @mcp.tool()
+    def delete_device(track: int | str, device: int | str, confirm: StrictBool = False) -> str:
+        """Delete a device from a track, or from inside a rack by its path
+        (see list_devices). Destructive.
+
+        Without confirm=true nothing changes: it returns the device and its
+        current settings so you can show the user what would be removed. Only
+        pass confirm=true after the user agrees. Live's Undo brings it back."""
+
+        return live_request(
+            "ableton.delete_device", {"track": track, "device": device, "confirm": confirm}
+        )
+
+    @mcp.tool()
     def apply_batch(operations: list[dict[str, Any]]) -> str:
         """Run several changes in one go, as a single Live undo step.
 
         Each operation is {"method": ..., "params": {...}}. Methods:
         ableton.set_device_parameter, ableton.set_track_output_routing,
-        ableton.set_track_properties, ableton.set_mixer, ableton.insert_device.
+        ableton.set_track_properties, ableton.set_mixer, ableton.insert_device,
+        ableton.create_return_track, ableton.delete_device (needs "confirm": true).
         params use the same names as the matching tools. The batch stops at the
         first failure and reports what completed.
         """
