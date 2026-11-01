@@ -10,6 +10,8 @@ import threading
 import traceback
 from collections import Counter
 
+from . import live_ops
+
 try:
     from ableton.v2.control_surface import ControlSurface
 except Exception:
@@ -35,7 +37,7 @@ except Exception:
 HOST = "127.0.0.1"
 PORT = 9877
 PROTOCOL_VERSION = "abletonian.bridge.v1"
-ADAPTER_VERSION = "0.1.0"
+ADAPTER_VERSION = "0.2.0"
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 REQUEST_DISPATCH_TIMEOUT_SECONDS = 20.0
 UNFILTERED_SCAFFOLD_WARNING = (
@@ -68,6 +70,9 @@ class AbletonianBridgeControlSurface(ControlSurface):
             return self._scaffold_drum_rack_extraction(params)
         if method == "workflow.execute_drum_rack_extraction":
             return self._execute_drum_rack_extraction(params)
+        result = live_ops.handle(_live_object(self, "song"), method, params)
+        if result is not None:
+            return result
         raise RuntimeError(f"unsupported Abletonian Remote Script method '{method}'")
 
     def _health(self, params):
@@ -88,9 +93,20 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "plan_drum_rack_extraction",
                 "scaffold_drum_rack_extraction",
                 "execute_drum_rack_extraction",
+                "list_tracks",
+                "list_devices",
+                "set_device_parameter",
+                "set_track_output_routing",
+                "set_track_properties",
+                "set_mixer",
+                "insert_device",
+                "batch",
+                "undo",
             ],
             "unsupported_capabilities": [
                 "create_track",
+                "group_tracks",
+                "reorder_tracks",
                 "write_midi_notes",
             ],
         }

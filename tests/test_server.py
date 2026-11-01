@@ -83,3 +83,54 @@ class ServerToolTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "ok")
         self.assertGreaterEqual(len(payload["citations"]), 1)
+
+
+class PassthroughBridge:
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict[str, object]]] = []
+
+    def request(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
+        self.requests.append((method, params or {}))
+        return {"ok": True}
+
+
+class LiveControlToolTests(unittest.TestCase):
+    def test_insert_device_drops_unset_arguments(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(
+            mcp.call_tool(
+                "insert_device",
+                {"track": "Kick", "device_name": "Utility", "parameters": {"Gain": "-3 dB"}},
+            )
+        )
+
+        self.assertEqual(
+            bridge.requests,
+            [
+                (
+                    "ableton.insert_device",
+                    {"track": "Kick", "device_name": "Utility", "parameters": {"Gain": "-3 dB"}},
+                )
+            ],
+        )
+
+    def test_track_accepts_index_or_name(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(mcp.call_tool("set_track_output_routing", {"track": 3, "routing_type": "Main"}))
+        asyncio.run(mcp.call_tool("set_mixer", {"track": "Vox", "sends": {"A": "-12 dB"}}))
+
+        self.assertEqual(bridge.requests[0][1], {"track": 3, "routing_type": "Main"})
+        self.assertEqual(bridge.requests[1][1], {"track": "Vox", "sends": {"A": "-12 dB"}})
+
+    def test_batch_passes_operations_through(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+        operations = [{"method": "ableton.set_mixer", "params": {"track": 0, "mute": True}}]
+
+        asyncio.run(mcp.call_tool("apply_batch", {"operations": operations}))
+
+        self.assertEqual(bridge.requests, [("ableton.batch", {"operations": operations})])
