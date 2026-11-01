@@ -91,7 +91,7 @@ to older ones, so answers can be pinned to an edition.
 | Target DAW | `--target-daw` | `ABLETONIAN_TARGET_DAW` | `ableton` |
 | Bridge host | `--bridge-host` | `ABLETONIAN_BRIDGE_HOST` | `127.0.0.1` |
 | Bridge port | `--bridge-port` | `ABLETONIAN_BRIDGE_PORT` | `9877` |
-| Bridge timeout | `--bridge-timeout` | `ABLETONIAN_BRIDGE_TIMEOUT` | `10.0` |
+| Bridge timeout | `--bridge-timeout` | `ABLETONIAN_BRIDGE_TIMEOUT` | `35.0` |
 | Manual folder | | `ABLETONIAN_MANUAL_DIR` | `docs/ableton-manual` |
 
 ## Strategic Directions

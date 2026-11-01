@@ -60,6 +60,17 @@ class ManualFetchAndSearchTests(unittest.TestCase):
         self.assertNotIn("Footer", markdown)
         self.assertNotIn("Not the manual", markdown)
 
+    def test_paragraphs_inside_list_items_and_cells_stay_inside(self) -> None:
+        markdown = chapter_markdown(
+            '<div id="chapter_content"><ul><li><p>Item one</p></li></ul>'
+            "<table><tr><th><p>Key</p></th><th>Action</th></tr>"
+            "<tr><td><p>Cmd</p></td><td>Save</td></tr></table></div>"
+        )
+
+        self.assertIn("- Item one", markdown)
+        self.assertIn("| Key | Action |", markdown)
+        self.assertIn("| Cmd | Save |", markdown)
+
     def test_index_parsing(self) -> None:
         index = (
             '<a href="/en/live-manual/12/mixing/">x</a><a href="/en/live-manual/12/mixing/#a">'

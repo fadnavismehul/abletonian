@@ -71,6 +71,35 @@ class RemoteScriptBridgeTests(unittest.TestCase):
         self.assertEqual(surface.scheduled_delay, 0)
         self.assertEqual(response["result"], {"method": "example.method", "params": {"x": 1}})
 
+    def test_request_live_never_starts_is_cancelled(self) -> None:
+        from remote_scripts.Abletonian import bridge_server
+
+        class Surface:
+            def __init__(self):
+                self.pending = []
+                self.handled = False
+
+            def schedule_message(self, delay, callback):
+                self.pending.append(callback)
+
+            def handle_request(self, method, params):
+                self.handled = True
+                return {}
+
+        surface = Surface()
+        frame = _encode_frame({"id": "r1", "method": "ableton.set_mixer", "params": {}})
+        original = bridge_server.REQUEST_START_TIMEOUT_SECONDS
+        bridge_server.REQUEST_START_TIMEOUT_SECONDS = 0.05
+        try:
+            response = _decode_frame(_dispatch_frame(surface, frame))
+        finally:
+            bridge_server.REQUEST_START_TIMEOUT_SECONDS = original
+        surface.pending[0]()
+
+        self.assertFalse(response["ok"])
+        self.assertIn("nothing changed", response["error"]["message"])
+        self.assertFalse(surface.handled)
+
     def test_bridge_surface_plans_drum_rack_extraction(self) -> None:
         class Clip:
             name = "Beat"

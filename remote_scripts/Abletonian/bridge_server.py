@@ -7,6 +7,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 import traceback
 from collections import Counter
 
@@ -39,7 +40,11 @@ PORT = 9877
 PROTOCOL_VERSION = "abletonian.bridge.v1"
 ADAPTER_VERSION = "0.2.0"
 MAX_FRAME_BYTES = 4 * 1024 * 1024
-REQUEST_DISPATCH_TIMEOUT_SECONDS = 20.0
+# Live must start a request within this time or it is cancelled unrun, so a
+# client that gives up never sees its change applied later.
+REQUEST_START_TIMEOUT_SECONDS = 5.0
+# Once started, a request (such as a long batch) may run this long.
+REQUEST_RUN_TIMEOUT_SECONDS = 25.0
 UNFILTERED_SCAFFOLD_WARNING = (
     "Scaffold tracks are full duplicates; MIDI clips have not been filtered yet."
 )
@@ -306,6 +311,17 @@ class _BridgeServer:
         self._thread.daemon = True
 
     def start(self):
+        # Bind here, on Live's main thread, so a reload that stops the old
+        # instance first always frees the port before this one binds.
+        for attempt in range(5):
+            try:
+                self._socket = _listen_socket()
+                break
+            except OSError as exc:
+                if attempt == 4:
+                    self._surface._log(f"bridge failed to start: {exc}")
+                    return
+                time.sleep(0.2)
         self._thread.start()
 
     def stop(self):
@@ -315,19 +331,11 @@ class _BridgeServer:
                 self._socket.close()
             except OSError:
                 pass
+        if self._thread.is_alive():
+            self._thread.join(1.0)
 
     def _serve(self):
-        try:
-            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server.bind((HOST, PORT))
-            server.listen(4)
-            server.settimeout(0.5)
-            self._socket = server
-        except Exception as exc:
-            self._surface._log(f"bridge failed to start: {exc}")
-            return
-
+        server = self._socket
         while not self._stop_event.is_set():
             try:
                 client, _address = server.accept()
@@ -341,6 +349,19 @@ class _BridgeServer:
                     client.sendall(_dispatch_frame(self._surface, frame))
                 except Exception:
                     self._surface._log(traceback.format_exc())
+
+
+def _listen_socket():
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        server.bind((HOST, PORT))
+        server.listen(4)
+    except OSError:
+        server.close()
+        raise
+    server.settimeout(0.5)
+    return server
 
 
 def _dispatch_frame(surface, frame):
@@ -373,10 +394,16 @@ def _call_surface(surface, method, params):
     if not callable(schedule_message):
         return surface.handle_request(method, params)
 
+    started = threading.Event()
     completed = threading.Event()
-    state = {}
+    lock = threading.Lock()
+    state = {"cancelled": False}
 
     def run_request():
+        with lock:
+            if state["cancelled"]:
+                return
+            started.set()
         try:
             state["result"] = surface.handle_request(method, params)
         except Exception as exc:
@@ -385,8 +412,13 @@ def _call_surface(surface, method, params):
             completed.set()
 
     schedule_message(0, run_request)
-    if not completed.wait(REQUEST_DISPATCH_TIMEOUT_SECONDS):
-        raise TimeoutError("Live scheduler did not complete bridge request")
+    if not started.wait(REQUEST_START_TIMEOUT_SECONDS):
+        with lock:
+            if not started.is_set():
+                state["cancelled"] = True
+                raise TimeoutError("Live was busy and did not start the request; nothing changed")
+    if not completed.wait(REQUEST_RUN_TIMEOUT_SECONDS):
+        raise TimeoutError("Live started the request but did not finish it in time")
     if "error" in state:
         raise state["error"]
     return state["result"]

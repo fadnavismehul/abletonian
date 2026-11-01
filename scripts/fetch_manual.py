@@ -78,7 +78,12 @@ class ChapterToMarkdown(HTMLParser):
         self.list_counters: list[int] = []
         self.cells: list[str] = []
         self.table_rows = 0
+        self.in_cell = False
         self.skip = 0
+
+    def _paragraph_inside_block(self, tag: str) -> bool:
+        # <li><p>..</p></li> and <td><p>..</p></td> keep the outer block.
+        return tag == "p" and (self.in_cell or self.block == "li")
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
@@ -93,6 +98,9 @@ class ChapterToMarkdown(HTMLParser):
             self.skip += 1
         if self.skip:
             return
+        if self._paragraph_inside_block(tag):
+            self.buffer.append(" ")
+            return
         if tag in ("ul", "ol"):
             self.flush()
             self.lists.append(tag)
@@ -102,6 +110,7 @@ class ChapterToMarkdown(HTMLParser):
             self.table_rows = 0
         elif tag in ("td", "th"):
             self.buffer = []
+            self.in_cell = True
         elif tag in self.BLOCKS:
             self.flush()
             self.block = tag
@@ -134,6 +143,9 @@ class ChapterToMarkdown(HTMLParser):
             return
         if self.skip:
             return
+        if self._paragraph_inside_block(tag):
+            self.buffer.append(" ")
+            return
         if tag in ("ul", "ol"):
             self.flush()
             if self.lists:
@@ -142,6 +154,7 @@ class ChapterToMarkdown(HTMLParser):
         elif tag in ("td", "th"):
             self.cells.append(_clean("".join(self.buffer)).replace("|", "\\|"))
             self.buffer = []
+            self.in_cell = False
         elif tag == "tr":
             if self.cells:
                 self.lines.append("| " + " | ".join(self.cells) + " |")

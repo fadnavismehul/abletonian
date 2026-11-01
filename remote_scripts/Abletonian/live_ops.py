@@ -62,8 +62,11 @@ def list_tracks(song, params):
 
 
 def list_devices(song, params):
-    include_parameters = params.get("include_parameters", True)
     track_ref = params.get("track")
+    include_parameters = params.get("include_parameters")
+    if include_parameters is None:
+        # Every parameter of every device can exceed the bridge frame limit.
+        include_parameters = track_ref is not None
     if track_ref is None:
         targets = _all_tracks(song)
     else:
@@ -101,13 +104,21 @@ def set_track_output_routing(song, params):
     routing_type = _required(params, "routing_type")
     routing_channel = params.get("routing_channel")
     before = _routing_payload(track)
+    previous_type = track.output_routing_type
     track.output_routing_type = _match_routing(
         track.available_output_routing_types, routing_type, "output routing type"
     )
     if routing_channel is not None:
-        track.output_routing_channel = _match_routing(
-            track.available_output_routing_channels, routing_channel, "output routing channel"
-        )
+        # Channel options depend on the type, so match after setting it and
+        # put the old type back if the channel does not exist.
+        try:
+            channel = _match_routing(
+                track.available_output_routing_channels, routing_channel, "output routing channel"
+            )
+        except LiveOpsError:
+            track.output_routing_type = previous_type
+            raise
+        track.output_routing_channel = channel
     return {
         "track": _track_ref_payload(kind, index, track),
         "before": before,
@@ -138,29 +149,39 @@ def set_track_properties(song, params):
 def set_mixer(song, params):
     kind, index, track = resolve_track(song, _required(params, "track"))
     mixer = track.mixer_device
-    changed = {}
+    return_names = [_str(t.name) for t in _tuple(song.return_tracks)]
+    send_params = _tuple(_get(mixer, "sends", ()))
+
+    # Work out every change before applying any, so a bad argument leaves the
+    # track untouched.
+    planned = []
     for key in ("volume", "panning"):
         if params.get(key) is not None:
             parameter = getattr(mixer, key)
-            set_parameter_value(parameter, params[key])
-            changed[key] = _param_payload(parameter)
-    sends = params.get("sends") or {}
-    if sends:
-        changed["sends"] = {}
-        return_names = [_str(t.name) for t in _tuple(song.return_tracks)]
-        send_params = _tuple(mixer.sends)
-        for send_ref, value in sends.items():
-            send_index = _resolve_send(send_ref, return_names, len(send_params))
-            set_parameter_value(send_params[send_index], value)
-            changed["sends"][return_names[send_index]] = _param_payload(send_params[send_index])
+            planned.append((key, None, parameter, _raw_value(parameter, params[key])))
+    for send_ref, value in (params.get("sends") or {}).items():
+        send_index = _resolve_send(send_ref, return_names, len(send_params))
+        parameter = send_params[send_index]
+        planned.append(("sends", return_names[send_index], parameter, _raw_value(parameter, value)))
+    switches = []
     for key in ("mute", "solo"):
         if params.get(key) is not None:
             if kind == "master":
                 raise LiveOpsError(f"the main track has no {key} switch")
-            setattr(track, key, bool(params[key]))
-            changed[key] = bool(getattr(track, key))
-    if not changed:
+            switches.append((key, bool(params[key])))
+    if not planned and not switches:
         raise LiveOpsError("set_mixer needs at least one of volume, panning, sends, mute, solo")
+
+    changed = {}
+    for key, send_name, parameter, raw in planned:
+        parameter.value = raw
+        if key == "sends":
+            changed.setdefault("sends", {})[send_name] = _param_payload(parameter)
+        else:
+            changed[key] = _param_payload(parameter)
+    for key, value in switches:
+        setattr(track, key, value)
+        changed[key] = bool(getattr(track, key))
     return {"track": _track_ref_payload(kind, index, track), "changed": changed}
 
 
@@ -171,7 +192,8 @@ def insert_device(song, params):
     insert = getattr(track, "insert_device", None)
     if not callable(insert):
         raise LiveOpsError("Track.insert_device is unavailable; it needs Live 12.3 or later")
-    count_before = len(_tuple(track.devices))
+    devices_before = _tuple(track.devices)
+    count_before = len(devices_before)
     if position is None:
         position = count_before
     position = int(position)
@@ -187,6 +209,13 @@ def insert_device(song, params):
     devices = _tuple(track.devices)
     if len(devices) != count_before + 1:
         raise LiveOpsError(f"Live did not report a new device after inserting '{device_name}'")
+    # Live may place the device elsewhere (device order rules on MIDI tracks),
+    # so find it by identity rather than trusting the requested position.
+    new_positions = [
+        i for i, device in enumerate(devices) if not any(device is old for old in devices_before)
+    ]
+    if len(new_positions) == 1:
+        position = new_positions[0]
     device = devices[position]
     changed = []
     try:
@@ -265,6 +294,13 @@ def resolve_track(song, ref):
         raise LiveOpsError(f"track index {ref} is out of range (0..{len(tracks) - 1})")
     text = str(ref).strip()
     lowered = text.lower()
+    candidates = _all_tracks(song)
+
+    # A real track name wins over the shorthand forms below, so tracks named
+    # "808" or "A" stay reachable.
+    exact = [item for item in candidates if _str(item[2].name) == text]
+    if len(exact) == 1:
+        return exact[0]
     if lowered in ("master", "main"):
         return ("master", 0, song.master_track)
     if lowered.startswith("return:"):
@@ -278,7 +314,6 @@ def resolve_track(song, ref):
     if text.isdigit():
         return resolve_track(song, int(text))
 
-    candidates = _all_tracks(song)
     for matcher in (lambda name: name == text, lambda name: name.lower() == lowered):
         matches = [item for item in candidates if matcher(_str(item[2].name))]
         if len(matches) == 1:
@@ -310,6 +345,8 @@ def resolve_device(track, ref):
                 f"device name '{text}' is ambiguous on '{_str(track.name)}'; use an index: "
                 + ", ".join(str(i) for i, _ in matches)
             )
+    if text.strip().isdigit():
+        return resolve_device(track, int(text))
     names = ", ".join(_str(d.name) for d in devices) or "(none)"
     raise LiveOpsError(f"no device named '{text}' on '{_str(track.name)}'. Devices: {names}")
 
@@ -327,6 +364,8 @@ def resolve_parameter(device, ref):
         for parameter in parameters:
             if _str(_get(parameter, attribute, "")).lower() == lowered:
                 return parameter
+    if str(ref).strip().isdigit():
+        return resolve_parameter(device, int(str(ref)))
     names = ", ".join(_str(p.name) for p in parameters)
     raise LiveOpsError(f"no parameter '{ref}' on '{_str(device.name)}'. Parameters: {names}")
 
@@ -337,8 +376,17 @@ def resolve_parameter(device, ref):
 def set_parameter_value(parameter, value):
     """Set a raw number, or a display string such as ``"-6 dB"`` or ``"25L"``."""
 
+    parameter.value = _raw_value(parameter, value)
+
+
+def _raw_value(parameter, value):
+    """Validate ``value`` for ``parameter`` and return the raw value to set."""
+
     if not bool(_get(parameter, "is_enabled", True)):
-        raise LiveOpsError(f"parameter '{_str(parameter.name)}' is disabled or automated")
+        raise LiveOpsError(
+            f"parameter '{_str(parameter.name)}' is not editable right now "
+            "(it may be controlled by a macro or modulation)"
+        )
     if isinstance(value, bool):
         value = float(value)
     if isinstance(value, (int, float)):
@@ -350,14 +398,15 @@ def set_parameter_value(parameter, value):
         raise LiveOpsError(
             f"value {raw} is outside '{_str(parameter.name)}' range {low}..{high}"
         )
-    parameter.value = raw
+    return raw
 
 
 def value_for_display(parameter, text):
     """Find the raw value whose display matches ``text``."""
 
-    if bool(_get(parameter, "is_quantized", False)):
-        items = [str(item) for item in _tuple(_get(parameter, "value_items", ()))]
+    items = [str(item) for item in _tuple(_get(parameter, "value_items", ()))]
+    quantized = bool(_get(parameter, "is_quantized", False))
+    if quantized and items:
         for item_index, item in enumerate(items):
             if item.lower() == text.strip().lower():
                 return float(parameter.min) + item_index
@@ -375,17 +424,36 @@ def value_for_display(parameter, text):
         raise LiveOpsError(f"'{_str(parameter.name)}' does not show numeric values")
     rising = high_number >= low_number
     bottom, top = (low_number, high_number) if rising else (high_number, low_number)
-    if target <= bottom:
-        return low if rising else high
-    if target >= top:
-        return high if rising else low
+    if target <= bottom or target >= top:
+        edge = (low if rising else high) if target <= bottom else (high if rising else low)
+        _check_display_match(parameter, edge, target, text)
+        return edge
     # Displays are rounded, so many raw values show the same number. Find the
     # span of raw values that display the target and aim for its middle.
     start = _first_raw_where(parameter, low, high, rising, lambda n: n >= target)
     stop = _first_raw_where(parameter, low, high, rising, lambda n: n > target)
     if _display_number(parameter, start) == target and stop > start:
-        return (start + stop) / 2.0
-    return start
+        result = (start + stop) / 2.0
+    else:
+        result = start
+    if quantized:
+        result = float(round(result))
+    _check_display_match(parameter, result, target, text)
+    return result
+
+
+def _check_display_match(parameter, raw, target, text):
+    # Guards against displays the bisection cannot follow, such as a parameter
+    # whose numbers are not monotonic.
+    shown = _display_number(parameter, raw)
+    if shown is None or math.isinf(target) or math.isinf(shown):
+        return
+    tolerance = max(abs(target) * 0.05, 0.051)
+    if abs(shown - target) > tolerance:
+        raise LiveOpsError(
+            f"could not find a value of '{_str(parameter.name)}' that shows '{text}'; "
+            f"closest was '{_display(parameter, raw)}'. Use a raw value instead."
+        )
 
 
 def _first_raw_where(parameter, low, high, rising, predicate):
@@ -407,12 +475,15 @@ def _first_raw_where(parameter, low, high, rising, predicate):
     return high if rising else low
 
 
-_NUMBER = re.compile(r"(-?inf|[-+]?\d*\.?\d+)\s*([kK])?")
+_NUMBER = re.compile(r"(-?inf|[-+]?\d*\.?\d+)\s*(khz|hz|ms|s|k)?(?![a-z])", re.IGNORECASE)
+# Scale to a base unit so displays that switch unit ("850 ms" to "1.00 s",
+# "999 Hz" to "1.00 kHz") still compare in order.
+_UNIT_SCALE = {"k": 1000.0, "khz": 1000.0, "hz": 1.0, "ms": 0.001, "s": 1.0}
 _PAN = re.compile(r"^\s*(\d*\.?\d+)\s*([LR])\s*$", re.IGNORECASE)
 
 
 def parse_display_number(text):
-    """Read a number from Live display text: ``-6.0 dB``, ``2.5 kHz``, ``25L``, ``C``."""
+    """Read a number from Live display text: ``-6.0 dB``, ``2.5 kHz``, ``850 ms``, ``25L``."""
 
     text = text.strip()
     if text.upper() == "C":
@@ -431,7 +502,7 @@ def parse_display_number(text):
         return math.inf
     number = float(raw)
     if match.group(2):
-        number *= 1000.0
+        number *= _UNIT_SCALE[match.group(2).lower()]
     return number
 
 

@@ -162,3 +162,9 @@ All three are MIT licensed. None of them used `Track.insert_device` at the
 time of writing; they load devices through the browser. LiveMCP and
 ableton-mcp also listen on port 9877, and the Abletonian Remote Script has
 that port fixed, so do not enable them in Live at the same time.
+
+## Known follow-ups
+
+- `schedule_message` is called from the bridge thread, as in ableton-mcp and
+  LiveMCP. It worked in testing, but Live does not document it as
+  thread-safe. A safer design is a `queue.Queue` drained on the main thread.

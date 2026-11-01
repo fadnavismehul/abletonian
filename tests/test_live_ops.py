@@ -39,6 +39,12 @@ def pan_display(value):
     return f"{abs(value) * 50:.0f}{'L' if value < 0 else 'R'}"
 
 
+def time_display(value):
+    # Log-style time: raw 0..1 maps 1 ms..60 s and switches unit at 1 s.
+    seconds = 0.001 * (60000 ** value)
+    return f"{seconds * 1000:.0f} ms" if seconds < 1 else f"{seconds:.2f} s"
+
+
 class Routing:
     def __init__(self, display_name):
         self.display_name = display_name
@@ -243,6 +249,96 @@ class LiveOpsTests(unittest.TestCase):
         self.assertEqual(live_ops.parse_display_number("2.5 kHz"), 2500.0)
         self.assertEqual(live_ops.parse_display_number("C"), 0.0)
         self.assertEqual(live_ops.parse_display_number("30R"), 30.0)
+
+    def test_display_values_follow_unit_changes(self):
+        decay = Param("Decay", 0.0, display=time_display)
+
+        live_ops.set_parameter_value(decay, "500 ms")
+        self.assertEqual(time_display(decay.value), "500 ms")
+        live_ops.set_parameter_value(decay, "1.5 s")
+        self.assertEqual(time_display(decay.value), "1.50 s")
+
+    def test_display_value_that_cannot_be_matched_raises(self):
+        # Not monotonic: shows 10 at both ends and 0 in the middle.
+        odd = Param("Odd", 0.0, display=lambda v: f"{abs(v - 0.5) * 20:.1f}")
+
+        with self.assertRaises(LiveOpsError):
+            live_ops.set_parameter_value(odd, "3")
+
+    def test_quantized_parameter_without_options_uses_numbers(self):
+        steps = Param("Transpose", 0.0, -48.0, 48.0, display=lambda v: f"{v:.0f} st")
+        steps.is_quantized = True
+
+        live_ops.set_parameter_value(steps, "12 st")
+
+        self.assertEqual(steps.value, 12.0)
+
+    def test_numeric_strings_select_device_and_parameter_by_index(self):
+        self.call("ableton.insert_device", track=0, device_name="Utility")
+
+        result = self.call(
+            "ableton.set_device_parameter", track="0", device="0", parameter="1", value=0.5
+        )
+
+        self.assertEqual(result["after"]["name"], "Output")
+
+    def test_real_track_names_win_over_shorthand(self):
+        self.song.tracks[0].name = "808"
+        self.song.tracks[1].name = "A"
+
+        self.assertEqual(live_ops.resolve_track(self.song, "808")[1], 0)
+        self.assertEqual(live_ops.resolve_track(self.song, "A")[:2], ("track", 1))
+        self.assertEqual(live_ops.resolve_track(self.song, "B")[0], "return")
+
+    def test_set_mixer_checks_everything_before_changing(self):
+        master_volume = self.song.master_track.mixer_device.volume.value
+
+        with self.assertRaises(LiveOpsError):
+            self.call("ableton.set_mixer", track="main", volume="-3 dB", mute=True)
+        with self.assertRaises(LiveOpsError):
+            self.call("ableton.set_mixer", track=0, volume="-3 dB", sends={"Z-Missing": 0.5})
+
+        self.assertEqual(self.song.master_track.mixer_device.volume.value, master_volume)
+        self.assertEqual(self.song.tracks[0].mixer_device.volume.value, 0.85)
+
+    def test_routing_reverts_type_when_channel_is_unknown(self):
+        with self.assertRaises(LiveOpsError):
+            self.call(
+                "ableton.set_track_output_routing",
+                track=0,
+                routing_type="Main",
+                routing_channel="Nope",
+            )
+
+        self.assertEqual(self.song.tracks[0].output_routing_type.display_name, "Master")
+
+    def test_insert_device_finds_device_that_live_placed_elsewhere(self):
+        track = self.song.tracks[0]
+        track.devices = [SimpleNamespace(name="Synth", parameters=())]
+        original_insert = track.insert_device
+
+        def insert_at_end(device_name, index):
+            original_insert(device_name, len(track.devices))
+
+        track.insert_device = insert_at_end
+
+        with self.assertRaises(LiveOpsError):
+            self.call(
+                "ableton.insert_device",
+                track=0,
+                device_name="Utility",
+                index=0,
+                parameters={"Missing": 1},
+            )
+
+        self.assertEqual([d.name for d in track.devices], ["Synth"])
+
+    def test_list_devices_for_whole_set_skips_parameters_by_default(self):
+        self.call("ableton.insert_device", track=0, device_name="Utility")
+
+        result = self.call("ableton.list_devices")
+
+        self.assertNotIn("parameters", result["tracks"][0]["devices"][0])
 
     def test_bridge_surface_dispatches_live_ops(self):
         surface = AbletonianBridgeControlSurface.__new__(AbletonianBridgeControlSurface)
