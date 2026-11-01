@@ -175,7 +175,10 @@ def build_mcp(
     @mcp.tool()
     def list_devices(track: int | str | None = None, include_parameters: bool = True) -> str:
         """List devices on one track (or every track when track is omitted), with
-        each parameter's raw value, range, display text, and options."""
+        each parameter's raw value, range, display text, and options. Devices
+        inside racks are listed under their chains (and Drum Rack return
+        chains) with a "path" that set_device_parameter and delete_device
+        accept. Read-only."""
 
         return live_request(
             "ableton.list_devices",
@@ -191,8 +194,11 @@ def build_mcp(
     ) -> str:
         """Set a device parameter in the open Live Set.
 
-        value is either a raw number within the parameter's min..max, or display
-        text such as "-3 dB", "2.5 kHz", "25L", or an option name like "Off".
+        device is an index, a device name, or a path to a device inside racks
+        from list_devices, such as "Instrument Rack/Piano/Reverb" or
+        "Drum Rack/returns/0/Limiter". value is either a raw number within the
+        parameter's min..max, or display text such as "-3 dB", "2.5 kHz",
+        "25L", or an option name like "Off".
         """
 
         return live_request(
@@ -279,7 +285,8 @@ def build_mcp(
 
     @mcp.tool()
     def delete_device(track: int | str, device: int | str, confirm: bool = False) -> str:
-        """Delete a device from a track. Destructive.
+        """Delete a device from a track, or from inside a rack by its path
+        (see list_devices). Destructive.
 
         Without confirm=true nothing changes: it returns the device and its
         current settings so you can show the user what would be removed. Only

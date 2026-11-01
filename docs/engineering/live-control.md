@@ -55,6 +55,16 @@ Every `track` argument accepts:
 
 Ambiguous names return an error listing the matching indexes.
 
+### Devices inside racks
+
+`device` arguments also take a path through racks, as `list_devices`
+shows it: `"Instrument Rack/Piano/Reverb"` (rack, chain, device, repeated
+for racks inside racks) or `"Drum Rack/returns/0/Limiter"` for a Drum Rack
+return chain. Each part can be a name or an index. A top-level device whose
+whole name matches is used first, so names that contain `/` still work.
+`list_devices` lists chain devices four racks deep. Return chains are not
+yet confirmed in Live (issue #17).
+
 ### Values by display text
 
 Live's raw parameter values are often not in the units you see. Utility

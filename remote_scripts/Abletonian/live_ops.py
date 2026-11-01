@@ -23,6 +23,8 @@ PARAMETER_ALIASES = {
 
 # Live 12 racks have up to 16 macros.
 MAX_RACK_MACROS = 16
+# Racks inside racks are listed this deep; deeper chains are marked truncated.
+MAX_RACK_DEPTH = 4
 
 BATCHABLE_METHODS = (
     "ableton.set_device_parameter",
@@ -177,13 +179,13 @@ def get_selected_rack_macros(song, params):
 
 def set_device_parameter(song, params):
     kind, index, track = resolve_track(song, _required(params, "track"))
-    device_index, device = resolve_device(track, _required(params, "device"))
+    path, device_index, device, _owner = resolve_device_path(track, _required(params, "device"))
     parameter = resolve_parameter(device, _required(params, "parameter"))
     before = _param_payload(parameter)
     set_parameter_value(parameter, _required(params, "value"))
     return {
         "track": _track_ref_payload(kind, index, track),
-        "device": {"index": device_index, "name": _str(device.name)},
+        "device": {"index": device_index, "name": _str(device.name), "path": path},
         "before": before,
         "after": _param_payload(parameter),
     }
@@ -359,12 +361,13 @@ def delete_device(song, params):
     """Delete a device. Destructive: without ``confirm=true`` it only previews."""
 
     kind, index, track = resolve_track(song, _required(params, "track"))
-    device_index, device = resolve_device(track, _required(params, "device"))
+    path, device_index, device, owner = resolve_device_path(track, _required(params, "device"))
     preview = {
         "track": _track_ref_payload(kind, index, track),
         "device": {
             "index": device_index,
             "name": _str(device.name),
+            "path": path,
             "class_name": _str(_get(device, "class_name", "")),
             "parameters": {
                 _str(p.name): _shown(p) for p in _tuple(_get(device, "parameters", ()))
@@ -377,7 +380,10 @@ def delete_device(song, params):
             "would_delete": preview,
             "hint": "Nothing was changed. Call again with confirm=true to delete this device.",
         }
-    track.delete_device(device_index)
+    remove = getattr(owner, "delete_device", None)
+    if not callable(remove):
+        raise LiveOpsError(f"Live cannot delete devices inside '{_str(owner.name)}' from a script")
+    remove(device_index)
     return {"deleted": True, **preview, "undo": "Live's Undo restores the device and settings."}
 
 
@@ -493,6 +499,80 @@ def resolve_device(track, ref):
         return resolve_device(track, int(text))
     names = ", ".join(_str(d.name) for d in devices) or "(none)"
     raise LiveOpsError(f"no device named '{text}' on '{_str(track.name)}'. Devices: {names}")
+
+
+def resolve_device_path(track, ref):
+    """Resolve a device anywhere on a track. Returns ``(path, index, device, owner)``.
+
+    ``ref`` is an index, a top-level device name, or a path through racks:
+    ``"Instrument Rack/Piano/Reverb"`` (rack / chain / device, repeated for
+    nested racks) or ``"Drum Rack/returns/0/Limiter"`` for a Drum Rack return
+    chain. Names or indexes work for every segment. A top-level device whose
+    whole name matches wins, so names containing "/" still work. ``owner`` is
+    the track or chain holding the device; ``index`` is its position there.
+    Uses RackDevice.chains, RackDevice.return_chains, and Chain.devices from
+    the Live Object Model (issue #17; return chains not yet confirmed in Live).
+    """
+
+    if isinstance(ref, int) or "/" not in str(ref) or _has_device_named(track, str(ref)):
+        index, device = resolve_device(track, ref)
+        return _str(device.name), index, device, track
+    segments = [part.strip() for part in str(ref).split("/")]
+    if any(not part for part in segments):
+        raise LiveOpsError(f"device path '{ref}' has an empty part")
+    index, device = resolve_device(track, segments[0])
+    path = [_str(device.name)]
+    owner = track
+    rest = segments[1:]
+    while rest:
+        if not bool(_get(device, "can_have_chains", False)):
+            raise LiveOpsError(
+                f"'{'/'.join(path)}' is not a Rack, so it has no chain '{rest[0]}'"
+            )
+        if rest[0].lower() == "returns":
+            chains = _tuple(_get(device, "return_chains", ()))
+            label = "return chain"
+            path.append("returns")
+            rest = rest[1:]
+            if not rest:
+                raise LiveOpsError(f"device path '{ref}' needs a return chain after 'returns'")
+        else:
+            chains = _tuple(_get(device, "chains", ()))
+            label = "chain"
+        _chain_index, chain = _pick(chains, rest[0], label, "/".join(path))
+        path.append(_str(chain.name))
+        if len(rest) < 2:
+            raise LiveOpsError(f"device path '{ref}' ends at a chain; add a device name")
+        index, device = _pick(_tuple(chain.devices), rest[1], "device", "/".join(path))
+        path.append(_str(device.name))
+        owner = chain
+        rest = rest[2:]
+    return "/".join(path), index, device, owner
+
+
+def _has_device_named(track, name):
+    return any(_str(d.name).lower() == name.lower() for d in _tuple(track.devices))
+
+
+def _pick(items, ref, label, where):
+    """Pick from a Live list by index or name (exact, then case-insensitive)."""
+
+    text = str(ref).strip()
+    if isinstance(ref, int) and not isinstance(ref, bool) or text.isdigit():
+        position = int(text)
+        if 0 <= position < len(items):
+            return position, items[position]
+    for matcher in (lambda n: n == text, lambda n: n.lower() == text.lower()):
+        matches = [(i, item) for i, item in enumerate(items) if matcher(_str(item.name))]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise LiveOpsError(
+                f"{label} name '{text}' is ambiguous in '{where}'; use an index: "
+                + ", ".join(str(i) for i, _ in matches)
+            )
+    names = ", ".join(f"{i}:{_str(item.name)}" for i, item in enumerate(items)) or "(none)"
+    raise LiveOpsError(f"no {label} '{text}' in '{where}'. Choices: {names}")
 
 
 def resolve_parameter(device, ref):
@@ -785,25 +865,55 @@ def _routing_payload(track):
     return payload
 
 
-def _device_payload(device, index, include_parameters):
+def _device_payload(device, index, include_parameters, path=None, depth=0):
+    path = path or _str(device.name)
     payload = {
         "index": index,
         "name": _str(device.name),
+        "path": path,
         "class_name": _str(_get(device, "class_name", "")),
         "class_display_name": _str(_get(device, "class_display_name", "")),
         "is_active": bool(_get(device, "is_active", True)),
     }
     if bool(_get(device, "can_have_chains", False)):
-        payload["chains"] = [
-            {"name": _str(chain.name), "devices": [_str(d.name) for d in _tuple(chain.devices)]}
-            for chain in _tuple(_get(device, "chains", ()))
-        ]
+        payload["chains"] = _chains_payload(
+            _get(device, "chains", ()), path, include_parameters, depth
+        )
+        return_chains = _tuple(_get(device, "return_chains", ()))
+        if return_chains:
+            payload["return_chains"] = _chains_payload(
+                return_chains, f"{path}/returns", include_parameters, depth
+            )
     if include_parameters:
         payload["parameters"] = [
             {"index": i, **_param_payload(parameter)}
             for i, parameter in enumerate(_tuple(device.parameters))
         ]
     return payload
+
+
+def _chains_payload(chains, prefix, include_parameters, depth):
+    if depth >= MAX_RACK_DEPTH:
+        return [{"name": _str(chain.name), "truncated": True} for chain in _tuple(chains)]
+    result = []
+    for chain in _tuple(chains):
+        chain_path = f"{prefix}/{_str(chain.name)}"
+        result.append(
+            {
+                "name": _str(chain.name),
+                "devices": [
+                    _device_payload(
+                        device,
+                        i,
+                        include_parameters,
+                        f"{chain_path}/{_str(device.name)}",
+                        depth + 1,
+                    )
+                    for i, device in enumerate(_tuple(chain.devices))
+                ],
+            }
+        )
+    return result
 
 
 def _param_payload(parameter, compact=False):

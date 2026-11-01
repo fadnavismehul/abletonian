@@ -2,9 +2,10 @@
 
 import json
 import unittest
+from types import SimpleNamespace
 
 import _bootstrap  # noqa: F401
-from test_live_ops import Song, Track
+from test_live_ops import Param, Song, Track
 
 from remote_scripts.Abletonian import live_ops
 from remote_scripts.Abletonian.live_ops import LiveOpsError
@@ -292,6 +293,130 @@ class PluginDisplayTextTests(unittest.TestCase):
 
         self.assertIsNotNone(utility)
         self.assertAlmostEqual(gain.value * 35, -3.0, places=1)
+
+
+def plain(name, value=1.0):
+    return SimpleNamespace(
+        name=name,
+        class_name="Reverb",
+        can_have_chains=False,
+        parameters=(Param("Device On", value, items=("Off", "On")),),
+    )
+
+
+class Chain:
+    def __init__(self, name, devices):
+        self.name = name
+        self.devices = list(devices)
+
+    def delete_device(self, index):
+        del self.devices[index]
+
+
+def rack(name, chains, return_chains=(), class_name="InstrumentGroupDevice"):
+    return SimpleNamespace(
+        name=name,
+        class_name=class_name,
+        can_have_chains=True,
+        chains=tuple(chains),
+        return_chains=tuple(return_chains),
+        parameters=(Param("Device On", 1.0, items=("Off", "On")),),
+    )
+
+
+class NestedDeviceTests(unittest.TestCase):
+    """Issue #17."""
+
+    def setUp(self):
+        self.song = Song()
+        self.track = self.song.tracks[0]
+        self.inner = rack("Inner Rack", [Chain("Deep", [plain("Reverb")])])
+        self.synth = rack(
+            "Drama Synth",
+            [Chain("Piano", [plain("Reverb"), plain("Echo")]), Chain("Pad", [self.inner])],
+        )
+        self.kit = rack(
+            "Kit",
+            [Chain("Kick", [plain("Saturator")])],
+            return_chains=[Chain("Room", [plain("Limiter")])],
+            class_name="DrumGroupDevice",
+        )
+        self.track.devices = [self.synth, self.kit, plain("Slash/Name")]
+
+    def turn_off(self, device):
+        return live_ops.handle(
+            self.song,
+            "ableton.set_device_parameter",
+            {"track": 0, "device": device, "parameter": "Device On", "value": "Off"},
+        )
+
+    def test_sets_a_parameter_inside_a_rack_chain(self):
+        result = self.turn_off("Drama Synth/Piano/Reverb")
+
+        self.assertEqual(result["device"]["path"], "Drama Synth/Piano/Reverb")
+        self.assertEqual(self.synth.chains[0].devices[0].parameters[0].value, 0.0)
+        self.assertEqual(self.synth.chains[0].devices[1].parameters[0].value, 1.0)
+
+    def test_nested_racks_indexes_and_case(self):
+        result = self.turn_off("0/pad/inner rack/0/0")
+
+        self.assertEqual(result["device"]["path"], "Drama Synth/Pad/Inner Rack/Deep/Reverb")
+        self.assertEqual(self.inner.chains[0].devices[0].parameters[0].value, 0.0)
+
+    def test_drum_rack_return_chains(self):
+        result = self.turn_off("Kit/returns/Room/Limiter")
+
+        self.assertEqual(result["device"]["path"], "Kit/returns/Room/Limiter")
+        self.assertEqual(self.kit.return_chains[0].devices[0].parameters[0].value, 0.0)
+
+    def test_a_top_level_name_with_a_slash_still_works(self):
+        self.assertEqual(self.turn_off("Slash/Name")["device"]["path"], "Slash/Name")
+
+    def test_errors_name_the_place_and_the_choices(self):
+        cases = {
+            "Drama Synth/Drums/Reverb": "no chain 'Drums' in 'Drama Synth'. Choices: 0:Piano",
+            "Drama Synth/Piano/Delay": "no device 'Delay' in 'Drama Synth/Piano'",
+            "Drama Synth/Piano": "ends at a chain",
+            "Drama Synth/Piano/Reverb/X/Y": "is not a Rack",
+            "Kit/returns": "needs a return chain",
+            "Drama Synth//Reverb": "empty part",
+        }
+        for path, message in cases.items():
+            with self.subTest(path=path), self.assertRaisesRegex(LiveOpsError, message):
+                self.turn_off(path)
+
+    def test_list_devices_shows_nested_devices_and_return_chains_with_paths(self):
+        result = live_ops.handle(
+            self.song, "ableton.list_devices", {"track": 0, "include_parameters": False}
+        )
+
+        synth, kit, _ = result["tracks"][0]["devices"]
+        self.assertEqual(
+            [d["path"] for d in synth["chains"][0]["devices"]],
+            ["Drama Synth/Piano/Reverb", "Drama Synth/Piano/Echo"],
+        )
+        inner = synth["chains"][1]["devices"][0]
+        self.assertEqual(
+            inner["chains"][0]["devices"][0]["path"], "Drama Synth/Pad/Inner Rack/Deep/Reverb"
+        )
+        self.assertEqual(kit["return_chains"][0]["devices"][0]["path"], "Kit/returns/Room/Limiter")
+
+    def test_deletes_a_device_inside_a_chain(self):
+        preview = live_ops.handle(
+            self.song, "ableton.delete_device", {"track": 0, "device": "Kit/returns/Room/Limiter"}
+        )
+        self.assertFalse(preview["deleted"])
+        self.assertEqual(len(self.kit.return_chains[0].devices), 1)
+
+        result = live_ops.handle(
+            self.song,
+            "ableton.delete_device",
+            {"track": 0, "device": "Drama Synth/Piano/Echo", "confirm": True},
+        )
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual([d.name for d in self.synth.chains[0].devices], ["Reverb"])
+        self.assertEqual(len(self.track.devices), 3)
 
 
 if __name__ == "__main__":
