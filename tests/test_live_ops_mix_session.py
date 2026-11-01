@@ -743,7 +743,11 @@ class UndoStepTests(unittest.TestCase):
             )
 
     def test_undo_count(self):
-        result = self.call("ableton.undo", count=3)
+        with self.assertRaisesRegex(LiveOpsError, "confirm"):
+            self.call("ableton.undo", count=3)
+        self.assertEqual(self.song.undone, 0)
+
+        result = self.call("ableton.undo", count=3, confirm=True)
 
         self.assertEqual(result["steps"], 3)
         self.assertEqual(self.song.undone, 3)
@@ -756,7 +760,7 @@ class UndoStepTests(unittest.TestCase):
             song.can_undo = song.undone < 2
 
         song.undo = undo
-        result = self.call("ableton.undo", count=5)
+        result = self.call("ableton.undo", count=5, confirm=True)
 
         self.assertEqual(result["steps"], 2)
         self.assertIn("only 2", result["note"])
@@ -829,3 +833,21 @@ class PathCollisionTests(unittest.TestCase):
             )
 
         self.assertEqual(result["device"]["path"], "1")
+
+    def test_hash_index_wins_over_a_device_named_like_it(self):
+        named, reverb = plain("#1"), plain("Reverb")
+
+        printed = self.resolves([named, reverb], [named, reverb])
+
+        self.assertEqual(printed, ["0", "Reverb"])
+        song = Song()
+        song.tracks[0].devices = [named, reverb]
+        _path, index, found, _owner = live_ops.resolve_device_path(song.tracks[0], "#1")
+        self.assertIs(found, reverb)
+
+    def test_no_null_paths_when_index_names_are_taken(self):
+        first, second, zero, hash_zero = plain("X"), plain("X"), plain("0"), plain("#0")
+
+        printed = self.resolves([first, second, zero, hash_zero], [first, second, zero, hash_zero])
+
+        self.assertEqual(printed[0], "#0")

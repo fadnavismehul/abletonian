@@ -380,7 +380,8 @@ def build_mcp(
                 "the user's own edits, so check with them first. Nothing was changed."
             )
         try:
-            result = bridge_client.request("ableton.undo", {"count": count} if count > 1 else {})
+            params = {"count": count, "confirm": True} if count > 1 else {}
+            result = bridge_client.request("ableton.undo", params)
         except BridgeConnectionError as exc:
             return f"Bridge error: {exc}"
         if count > 1 and isinstance(result, dict) and "steps" not in result:

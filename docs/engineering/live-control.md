@@ -76,9 +76,9 @@ chains both called "Guiro Short", issue #24), that part of the path is the
 index instead, as in `C78 Core Kit/4/Guiro Short`. Chain and device names
 that would be misread also get the index: names that are only digits, a
 chain named "returns", names with leading or trailing spaces, and names
-containing `/`. For the top-level device, `#N` always means index N; it is
-printed instead of `N` when another device is literally named `N`. Not yet
-run in Live.
+containing `/`. For the top-level device, `#N` always means index N, even
+if a device is named `#N`; it is printed instead of `N` when another device
+is literally named `N`. Not yet run in Live.
 
 ### Values by display text
 
@@ -132,7 +132,8 @@ above did. And the musician's own edits share the same history.
 
 `undo_last_change` takes a `count` (1 to 20) and reports how many steps it
 undid, stopping early when `Song.can_undo` is false. A count above 1 needs
-`confirm=true`, because it can reach the musician's own edits. Every step
+`confirm=true` (checked by both the MCP tool and the Remote Script), because
+it can reach the musician's own edits. Every step
 still shows as "Custom Action": the Live API gives no way to name it.
 
 If setting `parameters` on a newly inserted device fails, `insert_device`

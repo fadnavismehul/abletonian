@@ -267,7 +267,7 @@ class UndoToolTests(unittest.TestCase):
             bridge.requests,
             [
                 ("ableton.batch", {"operations": operations, "atomic": False}),
-                ("ableton.undo", {"count": 3}),
+                ("ableton.undo", {"count": 3, "confirm": True}),
                 ("ableton.undo", {}),
             ],
         )

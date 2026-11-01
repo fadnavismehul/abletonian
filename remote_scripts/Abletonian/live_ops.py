@@ -542,12 +542,18 @@ MAX_UNDO_COUNT = 20
 
 
 def undo(song, params):
-    """Run Live's Undo ``count`` times (default 1). Stops early when Live has
-    nothing left to undo, and reports how many steps were undone."""
+    """Run Live's Undo ``count`` times (default 1; above 1 needs ``confirm``).
+    Stops early when Live has nothing left to undo, and reports how many
+    steps were undone."""
 
     count = params.get("count", 1)
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_UNDO_COUNT:
         raise LiveOpsError(f"undo count must be an integer from 1 to {MAX_UNDO_COUNT}")
+    if count > 1 and params.get("confirm") is not True:
+        raise LiveOpsError(
+            f"undoing {count} steps needs \"confirm\": true; Live's undo history also holds "
+            "the user's own edits. Nothing was changed."
+        )
     undone = 0
     while undone < count and bool(getattr(song, "can_undo", True)):
         song.undo()
@@ -618,6 +624,9 @@ def resolve_device(track, ref):
             f"device index {ref} is out of range on '{_str(track.name)}' ({len(devices)} devices)"
         )
     text = str(ref)
+    # "#N" always means index N, even if a device is named "#N" (issue #24).
+    if re.fullmatch(r"#\d+", text.strip()):
+        return resolve_device(track, int(text.strip()[1:]))
     for matcher in (lambda d: _str(d.name) == text, lambda d: _str(d.name).lower() == text.lower()):
         matches = [(i, d) for i, d in enumerate(devices) if matcher(d)]
         if len(matches) == 1:
@@ -629,10 +638,6 @@ def resolve_device(track, ref):
             )
     if text.strip().isdigit():
         return resolve_device(track, int(text))
-    # "#N" is always an index; list_devices prints it when a device is
-    # literally named "N" (issue #24).
-    if re.fullmatch(r"#\d+", text.strip()):
-        return resolve_device(track, int(text.strip()[1:]))
     names = ", ".join(_str(d.name) for d in devices) or "(none)"
     raise LiveOpsError(f"no device named '{text}' on '{_str(track.name)}'. Devices: {names}")
 
@@ -726,27 +731,37 @@ def _printable_path(track, top_index, tail, device):
 
     ``tail`` holds the segments below the top-level device; ``_path_segment``
     makes those unambiguous on its own, because chain and chain-device
-    lookups read digits as an index first. Top-level lookups try names first
-    (and a whole-name match before splitting on "/"), so the top segment is
-    picked by trying the device's name, then ``N``, then ``#N``, and keeping
-    the first whose full path resolves to this same device (issue #24).
+    lookups read digits as an index first. Top-level lookups try a whole
+    device name before splitting on "/", then names, then digits, so the top
+    segment is the device's name if that is unique, else ``N`` if no device
+    is named "N", else ``#N``, which ``resolve_device`` always reads as an
+    index. A candidate is skipped if the whole path equals some top-level
+    device's name, since that lookup would win (issue #24). These rules are
+    checked without re-resolving, because list_devices runs on Live's main
+    thread; tests resolve every printed path to check them.
     """
 
     devices = _tuple(track.devices)
     name = _str(devices[top_index].name)
     unique = sum(1 for d in devices if _str(d.name) == name) == 1
     candidates = []
-    if unique and name and name == name.strip() and (not tail or "/" not in name):
+    if (
+        unique
+        and name
+        and name == name.strip()
+        and (not tail or "/" not in name)
+        and not re.fullmatch(r"#\d+", name)
+    ):
         candidates.append(name)
-    candidates += [str(top_index), f"#{top_index}"]
+    index_text = str(top_index)
+    if not any(_str(d.name).strip() == index_text for d in devices):
+        candidates.append(index_text)
+    candidates.append(f"#{top_index}")
     for top in candidates:
         text = "/".join([top, *tail])
-        try:
-            _path, _index, found, _owner = resolve_device_path(track, text, _render=False)
-        except LiveOpsError:
+        if tail and _has_device_named(track, text):
             continue
-        if _same(found, device):
-            return text
+        return text
     return None
 
 
