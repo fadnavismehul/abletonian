@@ -4,6 +4,13 @@ import unittest
 
 import _bootstrap  # noqa: F401
 
+from abletonian.adapters.fake import (
+    FakeAbletonAdapter,
+    FakeAbletonState,
+    FakeRackDevice,
+    FakeRackMacro,
+    FakeTrack,
+)
 from abletonian.config import AbletonianConfig
 from abletonian.server import build_mcp
 
@@ -25,7 +32,45 @@ def tool_text(result: object) -> str:
     return result[0][0].text  # type: ignore[index, no-any-return]
 
 
+class FakeAdapterBridge:
+    def __init__(self, adapter: FakeAbletonAdapter) -> None:
+        self.adapter = adapter
+        self.methods: list[str] = []
+
+    def request(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
+        self.methods.append(method)
+        return self.adapter.handle_request(method, params)
+
+
 class ServerToolTests(unittest.TestCase):
+    def test_generate_macro_cockpit_reads_rack_and_returns_spec_and_text(self) -> None:
+        adapter = FakeAbletonAdapter(
+            FakeAbletonState(
+                live_version="12.4.16",
+                tracks=(
+                    FakeTrack(
+                        id="t0",
+                        name="Keys",
+                        devices=(
+                            FakeRackDevice(
+                                "r", "Keys Rack", (FakeRackMacro(1, "Cutoff", 100.0),)
+                            ),
+                        ),
+                    ),
+                ),
+                selected_track_id="t0",
+            )
+        )
+        bridge = FakeAdapterBridge(adapter)
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        result = json.loads(tool_text(asyncio.run(mcp.call_tool("generate_macro_cockpit", {}))))
+
+        self.assertEqual(bridge.methods, ["ableton.get_selected_rack_macros", "daw.health"])
+        self.assertEqual(result["cockpit"]["title"], "Keys Rack Macro Cockpit")
+        self.assertEqual(result["cockpit"]["groups"][0]["id"], "tone")
+        self.assertIn("[ 1] Cutoff", result["text"])
+
     def test_plan_drum_rack_extraction_delegates_to_bridge(self) -> None:
         bridge = RecordingBridge()
         mcp = build_mcp(AbletonianConfig(), bridge=bridge)

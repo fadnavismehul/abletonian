@@ -8,6 +8,8 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from abletonian.bridge.client import BridgeClient, BridgeConnectionError
+from abletonian.cockpit import CockpitError, render_cockpit_text
+from abletonian.cockpit import generate_macro_cockpit as build_macro_cockpit
 from abletonian.config import AbletonianConfig
 from abletonian.daws import get_daw_profile, list_daw_profiles
 from abletonian.manual import list_manual_editions, lookup_manual, search_manual
@@ -258,6 +260,36 @@ def build_mcp(config: AbletonianConfig, bridge: BridgeClient | None = None) -> F
         """Run Live's Undo once. A whole apply_batch counts as one step."""
 
         return live_request("ableton.undo", {})
+
+    @mcp.tool()
+    def generate_macro_cockpit(
+        track: int | str | None = None,
+        device: int | str | None = None,
+    ) -> str:
+        """Generate a read-only Macro Cockpit for the selected Rack.
+
+        Reads the rack's existing macros (never changes the Live Set) and
+        returns a MacroCockpitSpec that groups and labels them, plus a text
+        summary to show the user. Unmapped macros are left out. The cockpit is
+        temporary. track and device pick a rack explicitly; by default the
+        selected track's selected Rack (or its first Rack) is used.
+        """
+
+        try:
+            rack = bridge_client.request(
+                "ableton.get_selected_rack_macros", without_none(track=track, device=device)
+            )
+        except BridgeConnectionError as exc:
+            return f"Bridge error: {exc}"
+        try:
+            health = bridge_client.request("daw.health", {"target_daw": config.target_daw})
+        except BridgeConnectionError:
+            health = None
+        try:
+            spec = build_macro_cockpit(rack, health)
+        except CockpitError as exc:
+            return f"Could not build a cockpit from the rack data: {exc}"
+        return json.dumps({"text": render_cockpit_text(spec), "cockpit": spec.to_wire()}, indent=2)
 
     @mcp.tool()
     def draft_action_plan(goal: str) -> str:

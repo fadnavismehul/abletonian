@@ -1,10 +1,10 @@
 # RFC-002: Selected Rack Macro Cockpit
 
-**Status:** Proposed  
+**Status:** In Progress  
 **Created:** 2026-05-27  
 **Owner:** Core Team  
 **Related Docs:** [Product Vision](../../vision.md), [Design Philosophy](../../../design/philosophy.md), [Strategic Directions](../../../strategic-directions.md), [Robustness and Safety](../../../engineering/robustness-and-safety.md)  
-**Implementation Status:** Not started
+**Implementation Status:** Read-only slice shipped (plan steps 1-6); Live validation, web renderer, sidecars, and macro control pending
 
 ## Goal
 
@@ -347,9 +347,58 @@ Backout:
 
 ## Implementation Tracking
 
-- **Lifecycle folder:** `proposed/`
-- **Code entry points:** not started
-- **Verification:** not started
-- **Commit tags:** none yet
-- **Open follow-ups:** all acceptance criteria are pending
-- **Deviations from proposal:** none
+- **Lifecycle folder:** `inprogress/`
+- **Code entry points:**
+  - `src/abletonian/cockpit.py`: `MacroCockpitSpec`, `MacroCockpitGroup`,
+    `MacroCockpitControl`, `generate_macro_cockpit`, `rack_fingerprint`,
+    `render_cockpit_text`, and `MacroCockpitSpec.from_wire` for loading.
+  - `src/abletonian/adapters/fake.py`: `FakeRackDevice`, `FakeRackMacro`,
+    `FakePlainDevice`, macros on `FakeDrumRackDevice`, and
+    `ableton.get_selected_rack_macros`.
+  - `remote_scripts/Abletonian/live_ops.py`: `get_selected_rack_macros`
+    (read-only, runs on Live's main thread like every bridge call).
+  - `remote_scripts/Abletonian/bridge_server.py`: adapter 0.3.0 advertises
+    `read_rack_macros` and lists `set_rack_macro_value` as unsupported.
+  - `src/abletonian/server.py`: MCP tool `generate_macro_cockpit`.
+  - `tests/test_cockpit.py`, `tests/test_live_ops.py` (`RackMacroTests`),
+    `tests/test_server.py`.
+- **Verification:**
+  - 2026-11-01: `.venv/bin/python -m unittest discover -s tests` passed
+    (101 tests); `.venv/bin/ruff check src tests remote_scripts` passed.
+  - Not yet validated in Ableton Live.
+- **Commit tags:** `RFC: RFC-002`
+- **Acceptance criteria status:**
+  - Done: spec generation without mutating the Live Set (fake and LOM-shaped
+    fakes); spec carries source context, controls, groups, labels,
+    descriptions, permissions, and renderer hints; temporary by default; text
+    fallback; no macros are created, removed, or remapped; unit tests for
+    schema validation and for named, unnamed, unmapped, and missing macros.
+  - Pending: Remote Script read validation in Live (record Live version,
+    selected rack, macro names, values, capability list); local web renderer
+    and its tests; explicit sidecar save/load; policy-gated
+    `ableton.set_rack_macro_value` with manual validation.
+- **Open follow-ups:**
+  - Confirm in Live what `DeviceParameter.name` reports for a macro that is
+    mapped but not renamed. If Live shows the mapped parameter's name, those
+    macros land in a named group rather than `Inspect`, which is acceptable.
+  - Confirm that `macros_mapped` and `visible_macro_count` exist on Live
+    12.4 racks and that macros are `parameters[1:17]` in order.
+  - `src/abletonian/adapters/remote_script.py` (the in-package copy of the
+    early Remote Script adapter) does not have the macro read; the code that
+    runs inside Live is `remote_scripts/Abletonian/`.
+- **Deviations from proposal:**
+  - 2026-11-01: V1 labels keep the macro name exactly as Live reports it.
+    The RFC example relabels `Macro 1` as `Brightness`; generating new labels
+    needs model assistance, which is an open question, so the rule-based V1
+    does not invent labels.
+  - 2026-11-01: Unmapped macros are left out of the controls and listed in
+    `omitted_macros`, so the cockpit never shows a knob that does nothing.
+  - 2026-11-01: The spec adds `connection` (`simulated`, `read_only`, or
+    `connected`) so renderers can disclose control state, a `fingerprint` in
+    `source` (hash of rack class, name, chains, and macro layout, not values)
+    for stale-sidecar detection, and `normalized_value` per control. Values
+    are reported raw with `min`/`max` rather than as `value_unit:
+    normalized`.
+  - 2026-11-01: When the selected device is not a Rack, the first Rack on the
+    selected track is used and the cockpit carries a warning. `track` and
+    `device` arguments pick a rack explicitly.

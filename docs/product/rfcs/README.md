@@ -86,4 +86,4 @@ These rules are enforced for agents by `docs/product/rfcs/AGENTS.md`.
 | RFC | Status | Location | Summary |
 | --- | --- | --- | --- |
 | RFC-001 | Implemented | `docs/product/rfcs/done/RFC-001-ableton-deep-integration-foundation.md` | Establish the hybrid Ableton integration foundation and first workflow wedge. |
-| RFC-002 | Proposed | `docs/product/rfcs/proposed/RFC-002-selected-rack-macro-cockpit.md` | Define generated Macro Cockpit specs for selected Ableton Rack macros. |
+| RFC-002 | In Progress | `docs/product/rfcs/inprogress/RFC-002-selected-rack-macro-cockpit.md` | Define generated Macro Cockpit specs for selected Ableton Rack macros. |

@@ -29,6 +29,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | --- | --- | --- |
 | `list_tracks` | `ableton.list_tracks` | Names, group parent, colour, output routing and the options for it, volume, pan, sends, mute/solo, device names. Covers regular, return, and main tracks. |
 | `list_devices` | `ableton.list_devices` | Devices per track (or all tracks), rack chains, and every parameter with raw value, range, display text, and options. |
+| `generate_macro_cockpit` | `ableton.get_selected_rack_macros` | Read the selected Rack's macros (read-only) and return a grouped Macro Cockpit spec plus a text summary. See [RFC-002](../product/rfcs/inprogress/RFC-002-selected-rack-macro-cockpit.md). |
 | `set_device_parameter` | `ableton.set_device_parameter` | Set by raw value or by display text (`"-3 dB"`, `"2.5 kHz"`, `"Off"`). |
 | `set_track_output_routing` | `ableton.set_track_output_routing` | Set Audio To / MIDI To by display name, such as `Main` or a group name. |
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). |
@@ -113,6 +114,8 @@ deletes that device again, so a failed call leaves the track unchanged.
 - "Colour the drum tracks red and rename track 4 to Lead Vox."
 - "Set the Vox send to Reverb at -12 dB."
 - "Put a Glue Compressor first on the Drums group."
+- "Make me a macro cockpit for the selected rack." Claude calls
+  `generate_macro_cockpit`; the macros are read, never changed.
 
 ## Validation log
 
