@@ -18,9 +18,23 @@ Pick the lightest path that fits:
 | New tool, workflow, or behaviour change | Open a feature issue first and wait for a maintainer to agree on the shape. PRs for features nobody discussed may be closed without review. |
 | Bridge protocol, safety model, new DAW adapter, new UI surface, or anything spanning several layers | Write an RFC (see [`docs/rfcs/`](docs/rfcs/README.md)), then build it in small PRs that link the RFC's tracking issue. |
 
-Issues labelled `good first issue` are scoped to be doable without deep
-Live knowledge. Issues labelled `needs-live-validation` need someone with
-Ableton Live to run something and report back, and need no code at all.
+## Issues
+
+- **Kind** is a GitHub issue type: **Bug**, **Feature**, or **Task**. The
+  issue forms set it for you.
+- **Labels** say where and in what state. Areas are `area: remote-script`,
+  `area: mcp-server`, `area: cockpit`, `area: adapters`, `area: manual`,
+  `area: docs`, and `area: ci`. Status labels are `needs-triage`,
+  `needs-live-validation`, `blocked`, and `needs-rfc`. The full list, with
+  descriptions, is `.github/labels.yml`. Change labels by editing that file;
+  a workflow syncs it to GitHub.
+- **Big work is split into sub-issues.** A feature or RFC tracking issue
+  holds the plan, and each sub-issue is one PR's worth of work.
+- **Claim before you start.** Comment on the issue so two people (or agents)
+  do not build the same thing. A maintainer will assign it to you.
+- `good first issue` is scoped to be doable without deep Live knowledge.
+  `needs-live-validation` needs someone with Ableton Live to run something
+  and report back, and needs no code at all.
 
 ## Setup
 

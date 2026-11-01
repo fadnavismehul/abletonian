@@ -1,6 +1,7 @@
 name: Live validation report
 description: You ran abletonian against real Ableton Live. Tell us what worked and what did not. No code needed.
-labels: ["live-validation"]
+type: Task
+labels: ["needs-live-validation"]
 body:
   - type: input
     id: what

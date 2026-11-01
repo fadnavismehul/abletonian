@@ -1,6 +1,7 @@
 name: Feature request
 description: Propose a new tool, workflow, or behaviour change. Agree on the shape here before opening a PR.
-labels: ["enhancement"]
+type: Feature
+labels: ["needs-triage"]
 body:
   - type: textarea
     id: problem
