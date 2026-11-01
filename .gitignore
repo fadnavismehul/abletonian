@@ -19,3 +19,6 @@ build/
 
 # Ableton project fixtures keep one canonical set; autosave backups are noisy.
 testing/**/Backup/
+
+# Ableton manual text is fetched locally by scripts/fetch_manual.py; it is Ableton's copyright.
+docs/ableton-manual/*/

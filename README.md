@@ -62,6 +62,27 @@ Claude Desktop or another MCP client can start it over stdio:
 }
 ```
 
+## Control the open Live Set
+
+The Abletonian Remote Script reads and changes the Live Set that is open now:
+tracks, groups, routing, mixer levels and sends, device parameters, names and
+colours, and native device insertion with `Track.insert_device` (Live 12.3+).
+Setup, the tool list, and how to register the server with Claude Code are in
+[`docs/engineering/live-control.md`](docs/engineering/live-control.md).
+
+## Ableton manual search
+
+`search_ableton_manual` searches a local Markdown copy of the Live Reference
+Manual and cites ableton.com section links. The manual is Ableton's copyright,
+so it is not committed. Fetch it into `docs/ableton-manual/<major>/<edition>/`:
+
+```bash
+.venv/bin/python -m scripts.fetch_manual --live-major 12
+```
+
+Each run stores the edition Ableton publishes (for example `2026-10-01`) next
+to older ones, so answers can be pinned to an edition.
+
 ## Configuration
 
 | Setting | CLI | Environment | Default |
@@ -70,7 +91,8 @@ Claude Desktop or another MCP client can start it over stdio:
 | Target DAW | `--target-daw` | `ABLETONIAN_TARGET_DAW` | `ableton` |
 | Bridge host | `--bridge-host` | `ABLETONIAN_BRIDGE_HOST` | `127.0.0.1` |
 | Bridge port | `--bridge-port` | `ABLETONIAN_BRIDGE_PORT` | `9877` |
-| Bridge timeout | `--bridge-timeout` | `ABLETONIAN_BRIDGE_TIMEOUT` | `10.0` |
+| Bridge timeout | `--bridge-timeout` | `ABLETONIAN_BRIDGE_TIMEOUT` | `35.0` |
+| Manual folder | | `ABLETONIAN_MANUAL_DIR` | `docs/ableton-manual` |
 
 ## Strategic Directions
 

@@ -31,6 +31,11 @@ class BridgeClient:
                 sock.settimeout(self.timeout)
                 sock.sendall(payload)
                 response = decode_frame(_recv_exact(sock))
+        except TimeoutError as exc:
+            raise BridgeConnectionError(
+                f"timed out waiting for {self.host}:{self.port}; "
+                "Live may still apply the change, so check state before retrying"
+            ) from exc
         except OSError as exc:
             raise BridgeConnectionError(
                 f"could not connect to {self.host}:{self.port}"
