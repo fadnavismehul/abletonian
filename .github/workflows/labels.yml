@@ -1,0 +1,22 @@
+name: labels
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/labels.yml]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EndBug/label-sync@v2
+        with:
+          config-file: .github/labels.yml
+          # Keep labels that are not in the file (for example "bug" and
+          # "enhancement" on old issues) instead of deleting them.
+          delete-other-labels: false

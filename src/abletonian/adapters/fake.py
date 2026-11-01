@@ -16,9 +16,11 @@ FAKE_ADAPTER_CAPABILITIES = (
     "read_drum_rack",
     "plan_drum_rack_extraction",
     "execute_drum_rack_extraction",
+    "read_rack_macros",
 )
 FAKE_ADAPTER_UNSUPPORTED_CAPABILITIES = (
     "manual_rtfm_lookup",
+    "set_rack_macro_value",
 )
 
 
@@ -53,12 +55,60 @@ class FakeDrumPad:
 
 
 @dataclass(frozen=True)
+class FakeRackMacro:
+    """One rack macro. ``name`` equals ``original_name`` until the user renames it."""
+
+    index: int
+    name: str
+    value: float = 0.0
+    is_mapped: bool = True
+    original_name: str | None = None
+    min: float = 0.0
+    max: float = 127.0
+
+    def wire(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "name": self.name,
+            "original_name": self.original_name or f"Macro {self.index}",
+            "value": self.value,
+            "min": self.min,
+            "max": self.max,
+            "display": f"{self.value:.0f}",
+            "is_mapped": self.is_mapped,
+            "is_enabled": True,
+        }
+
+
+@dataclass(frozen=True)
 class FakeDrumRackDevice:
     """A minimal Drum Rack device with pads."""
 
     id: str
     name: str
     pads: tuple[FakeDrumPad, ...] = ()
+    macros: tuple[FakeRackMacro, ...] = ()
+    class_name: str = "DrumGroupDevice"
+
+
+@dataclass(frozen=True)
+class FakeRackDevice:
+    """An Instrument, Audio Effect, or MIDI Effect Rack with macros."""
+
+    id: str
+    name: str
+    macros: tuple[FakeRackMacro, ...] = ()
+    class_name: str = "InstrumentGroupDevice"
+    chain_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FakePlainDevice:
+    """A device that is not a rack, such as a Utility."""
+
+    id: str
+    name: str
+    class_name: str = "StereoGain"
 
 
 @dataclass(frozen=True)
@@ -69,7 +119,7 @@ class FakeTrack:
     name: str
     color: str | None = None
     clips: tuple[FakeClip, ...] = ()
-    devices: tuple[FakeDrumRackDevice, ...] = ()
+    devices: tuple[FakeDrumRackDevice | FakeRackDevice | FakePlainDevice, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -95,14 +145,37 @@ class FakeAbletonState:
         """Return the selected Drum Rack device on the selected track."""
 
         track = self.selected_track()
+        drum_racks = [d for d in track.devices if isinstance(d, FakeDrumRackDevice)]
         if self.selected_device_id is not None:
             for device in track.devices:
                 if device.id == self.selected_device_id:
-                    return device
-            raise FakeAdapterError(f"selected device '{self.selected_device_id}' was not found")
-        if not track.devices:
+                    if isinstance(device, FakeDrumRackDevice):
+                        return device
+                    break
+            else:
+                raise FakeAdapterError(
+                    f"selected device '{self.selected_device_id}' was not found"
+                )
+        if not drum_racks:
             raise FakeAdapterError(f"selected track '{track.name}' has no Drum Rack device")
-        return track.devices[0]
+        return drum_racks[0]
+
+    def selected_rack(self) -> tuple[int, FakeDrumRackDevice | FakeRackDevice, str]:
+        """Return (device index, rack, how it was chosen) on the selected track."""
+
+        track = self.selected_track()
+        racks = [
+            (index, device)
+            for index, device in enumerate(track.devices)
+            if isinstance(device, (FakeDrumRackDevice, FakeRackDevice))
+        ]
+        if self.selected_device_id is not None:
+            for index, device in racks:
+                if device.id == self.selected_device_id:
+                    return index, device, "selected_device"
+        if not racks:
+            raise FakeAdapterError(f"track '{track.name}' has no Rack")
+        return racks[0][0], racks[0][1], "first_rack_on_track"
 
 
 class FakeAdapterError(RuntimeError):
@@ -125,6 +198,8 @@ class FakeAbletonAdapter:
             return self._health(request_params)
         if method == "ableton.get_selected_context":
             return self._selected_context()
+        if method == "ableton.get_selected_rack_macros":
+            return self._selected_rack_macros()
         if method == "workflow.plan_drum_rack_extraction":
             return self._plan_drum_rack_extraction()
         if method == "workflow.execute_drum_rack_extraction":
@@ -159,6 +234,32 @@ class FakeAbletonAdapter:
                 "name": device.name,
                 "type": "drum_rack",
             },
+        }
+
+    def _selected_rack_macros(self) -> dict[str, Any]:
+        track = self.state.selected_track()
+        track_index = self.state.tracks.index(track)
+        device_index, device, selection = self.state.selected_rack()
+        if isinstance(device, FakeDrumRackDevice):
+            chain_names = [pad.chain_name for pad in device.pads]
+            device_type = "drum_rack"
+        else:
+            chain_names = list(device.chain_names)
+            device_type = "rack"
+        return {
+            "track": {"kind": "track", "index": track_index, "name": track.name,
+                      "color": track.color},
+            "device": {
+                "index": device_index,
+                "name": device.name,
+                "class_name": device.class_name,
+                "class_display_name": device.name,
+                "type": device_type,
+                "chain_names": chain_names,
+            },
+            "selection": selection,
+            "visible_macro_count": len(device.macros),
+            "macros": [macro.wire() for macro in device.macros],
         }
 
     def _plan_drum_rack_extraction(self) -> dict[str, Any]:

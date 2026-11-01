@@ -1,0 +1,43 @@
+name: Feature request
+description: Propose a new tool, workflow, or behaviour change. Agree on the shape here before opening a PR.
+type: Feature
+labels: ["needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The musician's problem
+      description: What tedious or error-prone work in Live should this remove? A concrete session story helps most.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What the user asks for, what abletonian reads, and what it changes in the Live Set.
+    validations:
+      required: true
+  - type: dropdown
+    id: safety
+    attributes:
+      label: Most invasive operation involved
+      description: See docs/engineering/robustness-and-safety.md.
+      options:
+        - Read-only
+        - Additive (creates new material)
+        - Transformative (changes existing material)
+        - Destructive (deletes or replaces)
+        - Realtime (transport or live parameters)
+    validations:
+      required: true
+  - type: textarea
+    id: live-api
+    attributes:
+      label: Live API notes
+      description: Which Live Object Model calls this needs, if you know. Link sources; say when you are guessing.
+  - type: checkboxes
+    id: rfc
+    attributes:
+      label: Scope
+      options:
+        - label: This changes the bridge protocol, the safety model, adds a DAW adapter, or adds a UI surface, so it needs an RFC (docs/rfcs/).

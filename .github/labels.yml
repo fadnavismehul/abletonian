@@ -1,0 +1,67 @@
+# Labels as code. .github/workflows/labels.yml applies this file to GitHub on
+# every push to main that changes it. Issue *kind* (Bug, Feature, Task) uses
+# GitHub issue types, not labels.
+
+# Status
+- name: needs-triage
+  color: "ededed"
+  description: New; a maintainer has not looked at it yet.
+- name: needs-live-validation
+  color: "f9d0c4"
+  description: Someone with Ableton Live needs to run this and report back. No code needed.
+- name: blocked
+  color: "b60205"
+  description: Waiting on another issue or a decision; the blocker is linked in the issue.
+- name: needs-rfc
+  color: "c5def5"
+  description: Big enough to need a design in docs/rfcs/ before code.
+
+# Contributors
+- name: good first issue
+  color: "7057ff"
+  description: Small, well-scoped, and doable without deep Live knowledge.
+- name: help wanted
+  color: "008672"
+  description: Maintainers would welcome a contributor taking this.
+
+# Cross-cutting
+- name: rfc
+  color: "0052cc"
+  description: Tracking issue for an RFC in docs/rfcs/.
+- name: safety
+  color: "d93f0b"
+  description: Changes what abletonian may do to a Live Set, or how it is undone.
+
+# Areas
+- name: "area: remote-script"
+  color: "fbca04"
+  description: Code that runs inside Ableton Live (remote_scripts/).
+- name: "area: mcp-server"
+  color: "fef2c0"
+  description: MCP tools, config, and the bridge client (src/abletonian/).
+- name: "area: cockpit"
+  color: "d4c5f9"
+  description: Macro Cockpit specs and renderers (RFC 0002).
+- name: "area: adapters"
+  color: "bfdadc"
+  description: DAW adapters and the fake adapter.
+- name: "area: manual"
+  color: "e6e6e6"
+  description: Ableton manual fetching and search.
+- name: "area: docs"
+  color: "0075ca"
+  description: Documentation.
+- name: "area: ci"
+  color: "5319e7"
+  description: CI, tooling, and repo setup.
+
+# Resolutions (GitHub defaults, kept)
+- name: duplicate
+  color: "cfd3d7"
+  description: This issue or pull request already exists.
+- name: wontfix
+  color: "ffffff"
+  description: This will not be worked on.
+- name: question
+  color: "d876e3"
+  description: Further information is requested.

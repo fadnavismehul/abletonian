@@ -29,6 +29,11 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | --- | --- | --- |
 | `list_tracks` | `ableton.list_tracks` | Names, group parent, colour, output routing and the options for it, volume, pan, sends, mute/solo, device names. Covers regular, return, and main tracks. |
 | `list_devices` | `ableton.list_devices` | Devices per track (or all tracks), rack chains, and every parameter with raw value, range, display text, and options. |
+| `generate_macro_cockpit` | `ableton.get_selected_rack_macros` | Read the selected Rack's macros (read-only) and return a grouped Macro Cockpit spec plus a text summary. See [RFC 0002](../rfcs/0002-selected-rack-macro-cockpit.md). |
+| `save_macro_cockpit` | none | Save a cockpit generated in this session as a JSON file, so it can be reopened. Cockpits are temporary until saved. |
+| `list_saved_macro_cockpits` | none | List saved cockpits. |
+| `open_macro_cockpit` | `ableton.get_selected_rack_macros` | Open a saved cockpit and compare it with the selected Rack; warns when the rack or its macros changed. |
+| `show_macro_cockpit` | none | Write a cockpit (generated this session, or saved) as a self-contained HTML page under the cockpit folder's `views/`, and open it in the browser. Display only. |
 | `set_device_parameter` | `ableton.set_device_parameter` | Set by raw value or by display text (`"-3 dB"`, `"2.5 kHz"`, `"Off"`). |
 | `set_track_output_routing` | `ableton.set_track_output_routing` | Set Audio To / MIDI To by display name, such as `Main` or a group name. |
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). |
@@ -75,7 +80,7 @@ deletes that device again, so a failed call leaves the track unchanged.
 1. Install the package and the Remote Script:
 
    ```bash
-   cd /Volumes/disco/Developer/Code/abletonian
+   cd path/to/abletonian
    python -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'
    .venv/bin/python -m scripts.install_remote_script
    ```
@@ -88,16 +93,18 @@ deletes that device again, so a failed call leaves the track unchanged.
    code without a restart. The very first upgrade from 0.1.0 needs a Live
    restart, because 0.1.0 did not have the reload.
 
-4. Register the MCP server with Claude Code. For every project:
+4. Register the MCP server with Claude Code. For every project, run this
+   from the abletonian checkout:
 
    ```bash
-   claude mcp add abletonian --scope user -- /Volumes/disco/Developer/Code/abletonian/.venv/bin/abletonian
+   claude mcp add abletonian --scope user -- "$PWD/.venv/bin/abletonian"
    ```
 
-   Or only for your Ableton projects folder, run this from that folder:
+   Or only for your Ableton projects folder, run this from that folder, with
+   the full path to your checkout:
 
    ```bash
-   claude mcp add abletonian --scope project -- /Volumes/disco/Developer/Code/abletonian/.venv/bin/abletonian
+   claude mcp add abletonian --scope project -- /path/to/abletonian/.venv/bin/abletonian
    ```
 
    The project scope writes `.mcp.json` in that folder. Check it with
@@ -113,12 +120,22 @@ deletes that device again, so a failed call leaves the track unchanged.
 - "Colour the drum tracks red and rename track 4 to Lead Vox."
 - "Set the Vox send to Reverb at -12 dB."
 - "Put a Glue Compressor first on the Drums group."
+- "Make me a macro cockpit for the selected rack." Claude calls
+  `generate_macro_cockpit`; the macros are read, never changed. "Save it"
+  calls `save_macro_cockpit`. Saved cockpits are JSON files in
+  `~/Library/Application Support/abletonian/cockpits` on macOS,
+  `%APPDATA%\abletonian\cockpits` on Windows, and
+  `~/.local/share/abletonian/cockpits` on Linux, unless
+  `ABLETONIAN_COCKPIT_DIR` or `--cockpit-dir` says otherwise. "Show it"
+  calls `show_macro_cockpit`, which opens a local page with the grouped
+  macros. The page has no running scripts and loads nothing from the network.
 
 ## Validation log
 
 ### 2026-11-01, Live 12.4.16 Suite, macOS
 
-Set: `testing/First Light Project/First Light.als`, not saved afterwards.
+Set: `testing/First Light Project/First Light After Extraction.als` (the
+First Light set after a real Drum Rack extraction), not saved afterwards.
 
 - `daw.health` reported adapter 0.2.0 on Live 12.4.16, Python 3.11.6.
 - `list_tracks` returned 7 tracks, 2 returns, and Main with routing, levels,

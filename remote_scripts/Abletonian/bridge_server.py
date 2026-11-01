@@ -38,7 +38,7 @@ except Exception:
 HOST = "127.0.0.1"
 PORT = 9877
 PROTOCOL_VERSION = "abletonian.bridge.v1"
-ADAPTER_VERSION = "0.2.0"
+ADAPTER_VERSION = "0.3.0"
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 # Live must start a request within this time or it is cancelled unrun, so a
 # client that gives up never sees its change applied later.
@@ -100,6 +100,7 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "execute_drum_rack_extraction",
                 "list_tracks",
                 "list_devices",
+                "read_rack_macros",
                 "set_device_parameter",
                 "set_track_output_routing",
                 "set_track_properties",
@@ -113,6 +114,7 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "group_tracks",
                 "reorder_tracks",
                 "write_midi_notes",
+                "set_rack_macro_value",
             ],
         }
 

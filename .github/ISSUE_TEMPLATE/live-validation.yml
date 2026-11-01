@@ -1,0 +1,58 @@
+name: Live validation report
+description: You ran abletonian against real Ableton Live. Tell us what worked and what did not. No code needed.
+type: Task
+labels: ["needs-live-validation"]
+body:
+  - type: input
+    id: what
+    attributes:
+      label: What you validated
+      description: Tool, workflow, PR, or issue number.
+      placeholder: generate_macro_cockpit on an Instrument Rack (#12)
+    validations:
+      required: true
+  - type: input
+    id: live
+    attributes:
+      label: Ableton Live version and edition
+      placeholder: 12.4.16 Suite
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: macOS 15.5
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: abletonian commit and adapter version
+      description: git rev-parse --short HEAD, and adapter_version from check_bridge_health.
+    validations:
+      required: true
+  - type: textarea
+    id: set
+    attributes:
+      label: Live Set and selection
+      description: Which set (a testing/ fixture or describe your own) and what was selected.
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: Each step you ran, what you expected, and what Live showed. Paste tool output where useful.
+    validations:
+      required: true
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options: ["Worked as documented", "Partly worked", "Did not work"]
+    validations:
+      required: true
+  - type: dropdown
+    id: undo
+    attributes:
+      label: If anything changed the set, did Undo restore it?
+      options: ["Nothing changed (read-only)", "Yes", "Partly", "No"]

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import pathlib
+import sys
 from dataclasses import dataclass
 
 from abletonian.daws import DEFAULT_TARGET_DAW, SUPPORTED_DAW_SLUGS, normalize_daw_slug
@@ -24,6 +26,13 @@ class AbletonianConfig:
     bridge_host: str = DEFAULT_BRIDGE_HOST
     bridge_port: int = DEFAULT_BRIDGE_PORT
     bridge_timeout: float = DEFAULT_BRIDGE_TIMEOUT
+    # Where explicitly saved Macro Cockpits are stored. None means
+    # default_cockpit_dir().
+    cockpit_dir: pathlib.Path | None = None
+
+    @property
+    def resolved_cockpit_dir(self) -> pathlib.Path:
+        return self.cockpit_dir or default_cockpit_dir()
 
     @classmethod
     def from_env(cls) -> AbletonianConfig:
@@ -37,6 +46,7 @@ class AbletonianConfig:
             bridge_timeout=_parse_float(
                 os.getenv("ABLETONIAN_BRIDGE_TIMEOUT"), DEFAULT_BRIDGE_TIMEOUT
             ),
+            cockpit_dir=_parse_path(os.getenv("ABLETONIAN_COCKPIT_DIR")),
         )
 
     def with_args(self, args: argparse.Namespace) -> AbletonianConfig:
@@ -56,6 +66,7 @@ class AbletonianConfig:
                 if args.bridge_timeout is not None
                 else self.bridge_timeout
             ),
+            cockpit_dir=_parse_path(args.cockpit_dir) or self.cockpit_dir,
         )
 
 
@@ -89,7 +100,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help=f"DAW bridge timeout in seconds. Defaults to {DEFAULT_BRIDGE_TIMEOUT}.",
     )
+    parser.add_argument(
+        "--cockpit-dir",
+        help="Folder for saved Macro Cockpits. Defaults to a per-user data folder.",
+    )
     return parser
+
+
+def default_cockpit_dir() -> pathlib.Path:
+    """Per-user folder for saved cockpits, following each platform's convention."""
+
+    home = pathlib.Path.home()
+    if sys.platform == "darwin":
+        base = home / "Library" / "Application Support"
+    elif sys.platform == "win32":
+        base = pathlib.Path(os.getenv("APPDATA") or home / "AppData" / "Roaming")
+    else:
+        base = pathlib.Path(os.getenv("XDG_DATA_HOME") or home / ".local" / "share")
+    return base / "abletonian" / "cockpits"
 
 
 def resolve_config(argv: list[str] | None = None) -> AbletonianConfig:
@@ -118,6 +146,12 @@ def _parse_int(value: str | None, default: int) -> int:
     if value is None or value.strip() == "":
         return default
     return int(value)
+
+
+def _parse_path(value: str | None) -> pathlib.Path | None:
+    if value is None or value.strip() == "":
+        return None
+    return pathlib.Path(value.strip()).expanduser()
 
 
 def _parse_float(value: str | None, default: float) -> float:

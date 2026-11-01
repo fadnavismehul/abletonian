@@ -1,0 +1,41 @@
+name: Bug report
+description: Something does the wrong thing in Live, the MCP server, or the docs.
+type: Bug
+labels: ["needs-triage"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you asked for, what happened instead, and any error text.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the MCP tool or request you used, and what was selected in Live.
+    validations:
+      required: true
+  - type: input
+    id: live
+    attributes:
+      label: Ableton Live version and edition
+      placeholder: 12.4.16 Suite
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: macOS 15.5
+  - type: input
+    id: versions
+    attributes:
+      label: abletonian version / commit and Remote Script adapter version
+      description: The adapter version is in the check_bridge_health output.
+  - type: dropdown
+    id: set-changed
+    attributes:
+      label: Did it change your Live Set in a way you did not expect?
+      options: ["No", "Yes, and Undo fixed it", "Yes, and Undo did not fix it"]
+    validations:
+      required: true

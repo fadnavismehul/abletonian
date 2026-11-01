@@ -21,6 +21,9 @@ PARAMETER_ALIASES = {
     "StereoGain": {"gain": "Output"},  # Utility shows "Gain"; the API calls it "Output".
 }
 
+# Live 12 racks have up to 16 macros.
+MAX_RACK_MACROS = 16
+
 BATCHABLE_METHODS = (
     "ableton.set_device_parameter",
     "ableton.set_track_output_routing",
@@ -82,6 +85,78 @@ def list_devices(song, params):
             }
             for kind, index, track in targets
         ]
+    }
+
+
+def get_selected_rack_macros(song, params):
+    """Read the macros of the selected Rack. Never changes the Live Set.
+
+    ``track`` and ``device`` pick a rack explicitly. Without them the selected
+    track is used, and its selected device if that is a rack, else the first
+    rack on the track.
+    """
+
+    track_ref = params.get("track")
+    if track_ref is None:
+        kind, index, track = _locate_track(song, song.view.selected_track)
+    else:
+        kind, index, track = resolve_track(song, track_ref)
+    devices = _tuple(track.devices)
+
+    device_ref = params.get("device")
+    if device_ref is not None:
+        device_index, device = resolve_device(track, device_ref)
+        selection = "explicit"
+    else:
+        device_index, device, selection = _selected_or_first_rack(track, devices)
+    if not _is_rack(device):
+        raise LiveOpsError(
+            f"device '{_str(device.name)}' on track '{_str(track.name)}' is not a Rack"
+        )
+
+    macro_parameters = _macro_parameters(device)
+    mapped = _tuple(_get(device, "macros_mapped", None)) or None
+    visible = _get(device, "visible_macro_count", None)
+    macros = []
+    for macro_index, parameter in enumerate(macro_parameters, start=1):
+        if visible is not None and macro_index > int(visible):
+            break
+        value = float(parameter.value)
+        macros.append(
+            {
+                "index": macro_index,
+                "name": _str(parameter.name),
+                "original_name": _str(_get(parameter, "original_name", parameter.name)),
+                "value": value,
+                "min": float(parameter.min),
+                "max": float(parameter.max),
+                "display": _display(parameter, value),
+                "is_mapped": (
+                    bool(mapped[macro_index - 1])
+                    if mapped is not None and macro_index <= len(mapped)
+                    else None
+                ),
+                "is_enabled": bool(_get(parameter, "is_enabled", True)),
+            }
+        )
+
+    class_name = _str(_get(device, "class_name", ""))
+    return {
+        "track": {
+            **_track_ref_payload(kind, index, track),
+            "color": _hex_color(_get(track, "color")),
+        },
+        "device": {
+            "index": device_index,
+            "name": _str(device.name),
+            "class_name": class_name,
+            "class_display_name": _str(_get(device, "class_display_name", "")),
+            "type": "drum_rack" if class_name == "DrumGroupDevice" else "rack",
+            "chain_names": [_str(chain.name) for chain in _tuple(_get(device, "chains", ()))],
+        },
+        "selection": selection,
+        "visible_macro_count": None if visible is None else int(visible),
+        "macros": macros,
     }
 
 
@@ -601,6 +676,42 @@ def _param_payload(parameter, compact=False):
 # Helpers ------------------------------------------------------------------
 
 
+def _locate_track(song, target):
+    if target is None:
+        raise LiveOpsError("no track is selected")
+    for kind, index, track in _all_tracks(song):
+        if track is target:
+            return kind, index, track
+    raise LiveOpsError(f"selected track '{_str(_get(target, 'name'))}' was not found")
+
+
+def _is_rack(device):
+    return bool(_get(device, "can_have_chains", False)) and _str(
+        _get(device, "class_name", "")
+    ).endswith("GroupDevice")
+
+
+def _selected_or_first_rack(track, devices):
+    selected = _get(_get(track, "view"), "selected_device")
+    for device_index, device in enumerate(devices):
+        if device is selected and _is_rack(device):
+            return device_index, device, "selected_device"
+    for device_index, device in enumerate(devices):
+        if _is_rack(device):
+            return device_index, device, "first_rack_on_track"
+    raise LiveOpsError(f"track '{_str(track.name)}' has no Rack")
+
+
+def _macro_parameters(device):
+    # parameters[0] is "Device On"; the macros follow in order. Live 11+ reports
+    # one macros_mapped entry per macro, which tells how many there are.
+    parameters = _tuple(device.parameters)[1:]
+    mapped = _tuple(_get(device, "macros_mapped", None))
+    if mapped:
+        return parameters[: len(mapped)]
+    return parameters[:MAX_RACK_MACROS]
+
+
 def _all_tracks(song):
     items = [("track", i, t) for i, t in enumerate(_tuple(song.tracks))]
     items.extend(("return", i, t) for i, t in enumerate(_tuple(song.return_tracks)))
@@ -690,6 +801,7 @@ def _tuple(value):
 _HANDLERS = {
     "ableton.list_tracks": list_tracks,
     "ableton.list_devices": list_devices,
+    "ableton.get_selected_rack_macros": get_selected_rack_macros,
     "ableton.set_device_parameter": set_device_parameter,
     "ableton.set_track_output_routing": set_track_output_routing,
     "ableton.set_track_properties": set_track_properties,

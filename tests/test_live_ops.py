@@ -109,6 +109,101 @@ class Song:
         self.undone += 1
 
 
+def macro_param(index, name=None, value=0.0):
+    param = Param(name or f"Macro {index}", value, 0.0, 127.0, display=lambda v: f"{v:.0f}")
+    param.original_name = f"Macro {index}"
+    return param
+
+
+def instrument_rack(name="Keys Rack", names=None, mapped=None, visible=8):
+    names = names or {}
+    mapped = mapped if mapped is not None else (True,) * 16
+    return SimpleNamespace(
+        name=name,
+        class_name="InstrumentGroupDevice",
+        class_display_name="Instrument Rack",
+        can_have_chains=True,
+        chains=(SimpleNamespace(name="Piano", devices=()),),
+        visible_macro_count=visible,
+        macros_mapped=tuple(mapped),
+        parameters=(
+            Param("Device On", 1.0, items=("Off", "On")),
+            *(macro_param(i, names.get(i), float(i)) for i in range(1, 17)),
+        ),
+    )
+
+
+def utility():
+    return SimpleNamespace(
+        name="Utility", class_name="StereoGain", can_have_chains=False, parameters=()
+    )
+
+
+class RackMacroTests(unittest.TestCase):
+    def setUp(self):
+        self.song = Song()
+        self.track = self.song.tracks[1]
+        self.rack = instrument_rack(
+            names={1: "Brightness", 2: "Drive"},
+            mapped=(True, True, False) + (True,) * 13,
+        )
+        self.track.devices = [utility(), self.rack]
+        self.track.view = SimpleNamespace(selected_device=self.track.devices[0])
+        self.song.view = SimpleNamespace(selected_track=self.track)
+
+    def read(self, **params):
+        return live_ops.handle(self.song, "ableton.get_selected_rack_macros", params)
+
+    def test_reads_visible_macros_of_the_selected_tracks_rack(self):
+        result = self.read()
+
+        self.assertEqual(result["track"], {"kind": "track", "index": 1, "name": "Bass",
+                                           "color": "#112233"})
+        self.assertEqual(result["device"]["index"], 1)
+        self.assertEqual(result["device"]["type"], "rack")
+        self.assertEqual(result["device"]["chain_names"], ["Piano"])
+        self.assertEqual(result["selection"], "first_rack_on_track")
+        self.assertEqual(len(result["macros"]), 8)
+        first, _, third = result["macros"][:3]
+        self.assertEqual(
+            (first["index"], first["name"], first["original_name"], first["value"]),
+            (1, "Brightness", "Macro 1", 1.0),
+        )
+        self.assertEqual(first["display"], "1")
+        self.assertFalse(third["is_mapped"])
+
+    def test_prefers_the_selected_rack_and_accepts_explicit_refs(self):
+        self.track.view.selected_device = self.rack
+        self.assertEqual(self.read()["selection"], "selected_device")
+
+        result = self.read(track="Bass", device=1)
+        self.assertEqual(result["selection"], "explicit")
+
+    def test_reading_macros_does_not_change_the_set(self):
+        before = [p.value for p in self.rack.parameters]
+
+        self.read()
+
+        self.assertEqual([p.value for p in self.rack.parameters], before)
+        self.assertEqual(self.song.undo_steps, [])
+
+    def test_rejects_tracks_and_devices_that_are_not_racks(self):
+        self.track.devices = [utility()]
+        with self.assertRaisesRegex(LiveOpsError, "has no Rack"):
+            self.read()
+        with self.assertRaisesRegex(LiveOpsError, "is not a Rack"):
+            self.read(track="Bass", device=0)
+
+    def test_without_macros_mapped_reads_up_to_sixteen_macros(self):
+        del self.rack.macros_mapped
+        del self.rack.visible_macro_count
+
+        macros = self.read()["macros"]
+
+        self.assertEqual(len(macros), 16)
+        self.assertIsNone(macros[0]["is_mapped"])
+
+
 class LiveOpsTests(unittest.TestCase):
     def setUp(self):
         self.song = Song()

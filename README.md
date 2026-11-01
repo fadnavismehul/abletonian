@@ -93,19 +93,28 @@ to older ones, so answers can be pinned to an edition.
 | Bridge port | `--bridge-port` | `ABLETONIAN_BRIDGE_PORT` | `9877` |
 | Bridge timeout | `--bridge-timeout` | `ABLETONIAN_BRIDGE_TIMEOUT` | `35.0` |
 | Manual folder | | `ABLETONIAN_MANUAL_DIR` | `docs/ableton-manual` |
+| Saved cockpits folder | `--cockpit-dir` | `ABLETONIAN_COCKPIT_DIR` | per-user data folder, `abletonian/cockpits` |
 
 ## Strategic Directions
 
-Deep product and architecture options are collected in [`docs/strategic-directions.md`](docs/strategic-directions.md),
+Deep product and architecture options are collected in [`docs/exploration/strategic-directions.md`](docs/exploration/strategic-directions.md),
 including Ableton-native panels, MCP Apps, local-first music memory, adapter-standard
 work, performance tooling, education, collaboration, and custom micro-tool generation.
 
 ## DAW Targets
 
 The first-class target is `ableton`. Other planned targets are described in
-[`docs/daw-targets.md`](docs/daw-targets.md). They will not all support the same
+[`docs/exploration/daw-targets.md`](docs/exploration/daw-targets.md). They will not all support the same
 operations: `abletonian` normalizes musical intentions and lets each adapter
 advertise what it can actually do.
+
+## Contributing
+
+Contributions are welcome, including from people who use coding agents. Start
+with [`CONTRIBUTING.md`](CONTRIBUTING.md); agents should read
+[`AGENTS.md`](AGENTS.md). You can help without writing code: running a
+feature in your copy of Ableton Live and filing a Live validation report is one
+of the most useful things a contributor can do.
 
 ## License
 
