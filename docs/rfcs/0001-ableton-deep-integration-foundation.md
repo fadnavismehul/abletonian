@@ -1,9 +1,10 @@
-# RFC-001: Ableton Deep Integration Foundation
+# RFC 0001: Ableton Deep Integration Foundation
 
-**Status:** Implemented
+**Status:** Implemented  
 **Created:** 2026-05-23  
-**Owner:** Core Team  
-**Related Docs:** [Product Vision](../../vision.md), [Design Philosophy](../../../design/philosophy.md), [Integration Options](../../../engineering/integration-options.md), [Robustness and Safety](../../../engineering/robustness-and-safety.md)  
+**Owner:** @fadnavismehul  
+**Tracking issue:** none (predates the issue process)  
+**Related Docs:** [Product Vision](../product/vision.md), [Design Philosophy](../design/philosophy.md), [Integration Options](../engineering/integration-options.md), [Robustness and Safety](../engineering/robustness-and-safety.md)  
 **Implementation Status:** Implemented: fake adapter health/execution, framed
 bridge dispatch, RTFM lookup, MCP planning and confirmed execution tools, real
 Remote Script selected-context reads, Drum Rack dry-run planning, scaffold track
@@ -252,7 +253,6 @@ Backout:
 
 ## Implementation Tracking
 
-- **Lifecycle folder:** `done/`
 - **Code entry points:**
   - `src/abletonian/als.py`
   - `src/abletonian/adapters/fake.py`

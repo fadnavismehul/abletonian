@@ -1,4 +1,6 @@
-"""Macro Cockpit specs generated from a selected Ableton Rack (RFC-002).
+"""Macro Cockpit specs generated from a selected Ableton Rack (RFC 0002).
+
+See docs/rfcs/0002-selected-rack-macro-cockpit.md.
 
 A cockpit is a declarative spec, not a frontend. Renderers (text today; a
 local web panel, MCP Apps, or an in-Live surface later) consume the spec.

@@ -1,10 +1,10 @@
-# RFC-002: Selected Rack Macro Cockpit
+# RFC 0002: Selected Rack Macro Cockpit
 
-**Status:** In Progress  
+**Status:** Accepted  
 **Created:** 2026-05-27  
-**Owner:** Core Team  
-**Related Docs:** [Product Vision](../../vision.md), [Design Philosophy](../../../design/philosophy.md), [Strategic Directions](../../../strategic-directions.md), [Robustness and Safety](../../../engineering/robustness-and-safety.md)  
-**Implementation Status:** Read-only slice shipped (plan steps 1-6); Live validation, web renderer, sidecars, and macro control pending
+**Owner:** @fadnavismehul  
+**Tracking issue:** not opened yet  
+**Related Docs:** [Product Vision](../product/vision.md), [Design Philosophy](../design/philosophy.md), [Strategic Directions](../exploration/strategic-directions.md), [Robustness and Safety](../engineering/robustness-and-safety.md)  
 
 ## Goal
 
@@ -339,15 +339,17 @@ Backout:
 
 ## References
 
-- [Abletonian Product Vision](../../vision.md)
-- [Abletonian Design Philosophy](../../../design/philosophy.md)
-- [Abletonian Strategic Directions](../../../strategic-directions.md)
-- [Engineering Robustness and Safety](../../../engineering/robustness-and-safety.md)
+- [Abletonian Product Vision](../product/vision.md)
+- [Abletonian Design Philosophy](../design/philosophy.md)
+- [Abletonian Strategic Directions](../exploration/strategic-directions.md)
+- [Engineering Robustness and Safety](../engineering/robustness-and-safety.md)
 - [Ableton Live Manual: Instrument, Drum and Effect Racks](https://www.ableton.com/en/live-manual/12/instrument-drum-and-effect-racks/)
 
-## Implementation Tracking
+## Implementation Notes
 
-- **Lifecycle folder:** `inprogress/`
+Progress is tracked in the tracking issue. This section records where the
+code lives and decisions made while building it.
+
 - **Code entry points:**
   - `src/abletonian/cockpit.py`: `MacroCockpitSpec`, `MacroCockpitGroup`,
     `MacroCockpitControl`, `generate_macro_cockpit`, `rack_fingerprint`,
@@ -366,8 +368,7 @@ Backout:
   - 2026-11-01: `.venv/bin/python -m unittest discover -s tests` passed
     (101 tests); `.venv/bin/ruff check src tests remote_scripts` passed.
   - Not yet validated in Ableton Live.
-- **Commit tags:** `RFC: RFC-002`
-- **Acceptance criteria status:**
+- **Status as of 2026-11-01** (move to the tracking issue once it exists):
   - Done: spec generation without mutating the Live Set (fake and LOM-shaped
     fakes); spec carries source context, controls, groups, labels,
     descriptions, permissions, and renderer hints; temporary by default; text

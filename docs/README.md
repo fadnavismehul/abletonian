@@ -1,23 +1,29 @@
 # Abletonian Documentation
 
 `abletonian` is a FOSS DAW agent framework and MCP server. Ableton Live is the
-first target, with a product direction centered on safe, deeply integrated studio
-automation for musicians.
+first target. New here? Read the top-level `README.md`, then `CONTRIBUTING.md`.
+Coding agents start at `AGENTS.md`.
 
-## Start Here
+## Product and design
 
-- [Product Vision](product/vision.md)
-- [Design Philosophy](design/philosophy.md)
-- [Ableton Integration Options](engineering/integration-options.md)
-- [Engineering Robustness and Safety](engineering/robustness-and-safety.md)
-- [RFC Process](product/rfcs/README.md)
+- [Product Vision](product/vision.md): who it is for and what it should feel like.
+- [Design Philosophy](design/philosophy.md): trust, control, and workflow principles.
 
-## Existing Exploration
+## Engineering
 
-- [Architecture](architecture.md)
-- [DAW Targets](daw-targets.md)
-- [Strategic Directions](strategic-directions.md)
-- [Early Vision](vision.md)
+- [Live Set Control](engineering/live-control.md): setup, MCP tools, and the Live validation log.
+- [Live Validation](engineering/live-validation.md): how to check Remote Script changes in Live.
+- [Robustness and Safety](engineering/robustness-and-safety.md): operation classes and invariants.
+- [Ableton Integration Options](engineering/integration-options.md): Remote Scripts, Max for Live, OSC.
 
-The root-level docs are useful exploration material. New durable product,
-design, engineering, and RFC material should live under the taxonomy above.
+## Decisions
+
+- [RFCs](rfcs/README.md): designs for protocol, safety, adapter, and surface changes.
+
+## Background
+
+- [`exploration/`](exploration/): early architecture, DAW target, strategy, and vision notes.
+  Useful context, not a commitment.
+- [`ableton-survey/`](ableton-survey/): the 2026 Ableton Live and AI user survey.
+- [`archive/plans/`](archive/plans/): step-by-step plans agents followed for
+  RFC 0001. Kept for history; new working plans belong in PR descriptions.
