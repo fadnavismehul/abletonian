@@ -29,7 +29,7 @@ class RecordingBridge:
 
 
 def tool_text(result: object) -> str:
-    return result[0][0].text  # type: ignore[index, no-any-return]
+    return result.content[0].text  # type: ignore[attr-defined, no-any-return]
 
 
 class FakeAdapterBridge:

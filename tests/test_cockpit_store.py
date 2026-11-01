@@ -147,7 +147,7 @@ class CockpitToolTests(unittest.TestCase):
 
     def call(self, tool, **args):
         result = asyncio.run(self.mcp.call_tool(tool, args))
-        text = result[0][0].text
+        text = result.content[0].text
         try:
             return json.loads(text)
         except json.JSONDecodeError:

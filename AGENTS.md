@@ -20,7 +20,7 @@ say a change is done.
 
 | Code | Runs in | Can import |
 | --- | --- | --- |
-| `src/abletonian/` | The MCP server, Python 3.10+ | `mcp` (pinned `<2`), stdlib |
+| `src/abletonian/` | The MCP server, Python 3.10+ | `mcp` 2.x (`MCPServer`), stdlib |
 | `remote_scripts/Abletonian/` | Inside Ableton Live's embedded Python 3.11 | stdlib and Live's own modules only |
 
 The Remote Script cannot import `abletonian`, and the package must not import

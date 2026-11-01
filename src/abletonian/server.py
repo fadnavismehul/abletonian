@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from abletonian.bridge.client import BridgeClient, BridgeConnectionError
 from abletonian.cockpit import CockpitError, MacroCockpitSpec, rack_fingerprint, render_cockpit_text
@@ -20,10 +20,10 @@ def build_mcp(
     config: AbletonianConfig,
     bridge: BridgeClient | None = None,
     cockpit_store: CockpitStore | None = None,
-) -> FastMCP:
+) -> MCPServer:
     """Build an MCP server named after the configured agent."""
 
-    mcp = FastMCP(config.agent_name)
+    mcp = MCPServer(config.agent_name)
     bridge_client = bridge or BridgeClient(
         host=config.bridge_host,
         port=config.bridge_port,
