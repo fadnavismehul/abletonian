@@ -54,7 +54,7 @@ class CockpitStore:
             saved_at=saved_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
         self.root.mkdir(parents=True, exist_ok=True)
-        _write_atomic(path, json.dumps(saved.to_wire(), indent=2, sort_keys=False) + "\n")
+        write_text_atomic(path, json.dumps(saved.to_wire(), indent=2, sort_keys=False) + "\n")
         return saved
 
     def load(self, cockpit_id: str) -> MacroCockpitSpec:
@@ -113,7 +113,7 @@ class CockpitStore:
         return data
 
 
-def _write_atomic(path: pathlib.Path, text: str) -> None:
+def write_text_atomic(path: pathlib.Path, text: str) -> None:
     """Write via a temp file in the same folder, then rename over the target."""
 
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.stem}-", suffix=".tmp", dir=path.parent)

@@ -33,6 +33,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `save_macro_cockpit` | none | Save a cockpit generated in this session as a JSON file, so it can be reopened. Cockpits are temporary until saved. |
 | `list_saved_macro_cockpits` | none | List saved cockpits. |
 | `open_macro_cockpit` | `ableton.get_selected_rack_macros` | Open a saved cockpit and compare it with the selected Rack; warns when the rack or its macros changed. |
+| `show_macro_cockpit` | none | Write a cockpit (generated this session, or saved) as a self-contained HTML page under the cockpit folder's `views/`, and open it in the browser. Display only. |
 | `set_device_parameter` | `ableton.set_device_parameter` | Set by raw value or by display text (`"-3 dB"`, `"2.5 kHz"`, `"Off"`). |
 | `set_track_output_routing` | `ableton.set_track_output_routing` | Set Audio To / MIDI To by display name, such as `Main` or a group name. |
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). |
@@ -125,7 +126,9 @@ deletes that device again, so a failed call leaves the track unchanged.
   `~/Library/Application Support/abletonian/cockpits` on macOS,
   `%APPDATA%\abletonian\cockpits` on Windows, and
   `~/.local/share/abletonian/cockpits` on Linux, unless
-  `ABLETONIAN_COCKPIT_DIR` or `--cockpit-dir` says otherwise.
+  `ABLETONIAN_COCKPIT_DIR` or `--cockpit-dir` says otherwise. "Show it"
+  calls `show_macro_cockpit`, which opens a local page with the grouped
+  macros. The page has no running scripts and loads nothing from the network.
 
 ## Validation log
 

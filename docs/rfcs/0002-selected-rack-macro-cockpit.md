@@ -362,9 +362,13 @@ code lives and decisions made while building it.
   - `remote_scripts/Abletonian/bridge_server.py`: adapter 0.3.0 advertises
     `read_rack_macros` and lists `set_rack_macro_value` as unsupported.
   - `src/abletonian/server.py`: MCP tools `generate_macro_cockpit`,
-    `save_macro_cockpit`, `list_saved_macro_cockpits`, `open_macro_cockpit`.
+    `save_macro_cockpit`, `list_saved_macro_cockpits`, `open_macro_cockpit`,
+    `show_macro_cockpit`.
   - `src/abletonian/cockpit_store.py`: saved cockpits as JSON sidecars (#7).
+  - `src/abletonian/cockpit_html.py` and the `show_macro_cockpit` tool: the
+    local web renderer (#5).
   - `tests/test_cockpit.py`, `tests/test_cockpit_store.py`,
+    `tests/test_cockpit_html.py`,
     `tests/test_live_ops.py` (`RackMacroTests`), `tests/test_server.py`.
 - **Verification:**
   - 2026-11-01: `.venv/bin/python -m unittest discover -s tests` passed
@@ -390,6 +394,14 @@ code lives and decisions made while building it.
     early Remote Script adapter) does not have the macro read; the code that
     runs inside Live is `remote_scripts/Abletonian/`.
 - **Deviations from proposal:**
+  - 2026-11-01 (#5): The first local renderer is a static HTML file, not a
+    server: read-only cockpits need no event channel, and a file works with
+    a plain `pip install`. Controls are value bars (`role="meter"`), not
+    knobs, because they cannot be moved yet. All spec text is escaped (it
+    comes from the Live Set) and a Content-Security-Policy blocks scripts and
+    network loads. The spec is embedded as inert JSON for a future
+    interactive renderer, which will need a local server once macros can be
+    moved (#8).
   - 2026-11-01 (#7): Saved cockpits live in one per-user folder
     (`ABLETONIAN_COCKPIT_DIR`), not beside the project, because the MCP server
     cannot reliably learn the open `.als` path. One file per cockpit id; the
