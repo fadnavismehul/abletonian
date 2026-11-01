@@ -390,9 +390,9 @@ code lives and decisions made while building it.
     macros land in a named group rather than `Inspect`, which is acceptable.
   - Confirm that `macros_mapped` and `visible_macro_count` exist on Live
     12.4 racks and that macros are `parameters[1:17]` in order.
-  - `src/abletonian/adapters/remote_script.py` (the in-package copy of the
-    early Remote Script adapter) does not have the macro read; the code that
-    runs inside Live is `remote_scripts/Abletonian/`.
+  - 2026-11-01 (#11): The in-package copy of the early Remote Script
+    adapter (`src/abletonian/adapters/remote_script.py`) was removed; the
+    only Remote Script code is `remote_scripts/Abletonian/`.
 - **Deviations from proposal:**
   - 2026-11-01 (#5): The first local renderer is a static HTML file, not a
     server: read-only cockpits need no event channel, and a file works with

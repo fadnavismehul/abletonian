@@ -256,7 +256,6 @@ Backout:
 - **Code entry points:**
   - `src/abletonian/als.py`
   - `src/abletonian/adapters/fake.py`
-  - `src/abletonian/adapters/remote_script.py`
   - `src/abletonian/bridge/client.py`
   - `src/abletonian/bridge/dispatcher.py`
   - `src/abletonian/bridge/protocol.py`
@@ -273,7 +272,6 @@ Backout:
   - `tests/test_manual.py`
   - `tests/test_protocol.py`
   - `tests/test_remote_script_bridge.py`
-  - `tests/test_remote_script_adapter.py`
   - `tests/test_remote_script_install.py`
   - `tests/test_server.py`
 - **Verification:**

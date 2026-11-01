@@ -28,8 +28,8 @@ the Remote Script (tests may). They share only the bridge protocol: 4-byte
 length-prefixed JSON frames with request IDs on `127.0.0.1:9877`. Read
 `remote_scripts/AGENTS.md` before editing anything under `remote_scripts/`.
 
-`src/abletonian/adapters/remote_script.py` is an early copy of the Drum Rack
-adapter that only tests use. New Live features go in `remote_scripts/Abletonian/`.
+All Live-side code, including the Drum Rack workflow, lives in
+`remote_scripts/Abletonian/`; `src/abletonian/` has no copy of it.
 
 ## Adding a bridge method (the common change)
 
