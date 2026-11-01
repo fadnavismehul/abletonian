@@ -20,6 +20,12 @@ Coding agents start at `AGENTS.md`.
 
 - [RFCs](rfcs/README.md): designs for protocol, safety, adapter, and surface changes.
 
+## Research
+
+- [Landscape and direction review, November 2026](research/2026-11-landscape-and-direction-review.md):
+  the Ableton Extensions SDK, Max for Live, competing DAW MCP servers, and what
+  they mean for abletonian's architecture and roadmap.
+
 ## Background
 
 - [`exploration/`](exploration/): early architecture, DAW target, strategy, and vision notes.
