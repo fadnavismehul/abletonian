@@ -63,6 +63,14 @@ searches for the raw value whose display text matches, using the parameter's
 own `str_for_value`. That way `"-3 dB"` or `"25L"` lands where Live shows that
 number. Quantized parameters match an option name instead.
 
+Plugin parameters can behave differently. If `str_for_value` gives the
+same text at both ends of the range (suspected for some VST/AU parameters,
+issue #16, not yet confirmed in Live), the script instead sets the value
+briefly, reads `str(parameter)`, and puts the original value back before
+the real change. That probing takes about 55 writes. If the display still
+cannot be matched, the error shows the range of display text and asks for
+a raw value.
+
 Some API names differ from the device UI. Utility's gain knob is `Output` in
 the API; `Gain` is accepted as an alias. `list_devices` shows the API names.
 

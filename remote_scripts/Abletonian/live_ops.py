@@ -562,57 +562,107 @@ def value_for_display(parameter, text):
     if target is None:
         raise LiveOpsError(f"could not read a number from '{text}'")
     low, high = float(parameter.min), float(parameter.max)
-    low_number = _display_number(parameter, low)
-    high_number = _display_number(parameter, high)
+    original = float(parameter.value)
+    try:
+        reader = _display_reader(parameter, low, high)
+        return _search_display(parameter, reader, low, high, target, text, quantized)
+    finally:
+        # Probing may have moved the parameter; put it back so a failed match
+        # changes nothing and a found one is set once, by the caller.
+        if float(parameter.value) != original:
+            parameter.value = original
+
+
+def _display_reader(parameter, low, high):
+    """Pick how to read the display text for a raw value.
+
+    Native devices format any value with ``str_for_value``. For some plugin
+    parameters it appears to return the display of the current value
+    whatever value is passed (issue #16, not yet confirmed in Live), so every
+    probe looks the same. Then the value is set briefly and read back with
+    ``str(parameter)``, which Live's own control surface scripts use to show
+    a parameter's current value; the caller restores the original value.
+    """
+
+    if high <= low or _display(parameter, low) != _display(parameter, high):
+        return _display
+
+    def probe(param, value):
+        param.value = value
+        return str(param)
+
+    if probe(parameter, low) == probe(parameter, high):
+        return _display  # The display really is constant; report it below.
+    return probe
+
+
+def _search_display(parameter, reader, low, high, target, text, quantized):
+    def number(value):
+        return parse_display_number(reader(parameter, value))
+
+    low_number, high_number = number(low), number(high)
     if low_number is None or high_number is None:
-        raise LiveOpsError(f"'{_str(parameter.name)}' does not show numeric values")
+        raise LiveOpsError(
+            f"'{_str(parameter.name)}' does not show numeric values "
+            f"(it shows '{reader(parameter, low)}' to '{reader(parameter, high)}')"
+        )
+    if low_number == high_number:
+        raise LiveOpsError(
+            f"'{_str(parameter.name)}' shows '{reader(parameter, low)}' for every value, so "
+            "display text cannot be matched. Use a raw value between "
+            f"{low} and {high} instead."
+        )
     rising = high_number >= low_number
     bottom, top = (low_number, high_number) if rising else (high_number, low_number)
     if target <= bottom or target >= top:
         edge = (low if rising else high) if target <= bottom else (high if rising else low)
-        _check_display_match(parameter, edge, target, text)
+        _check_display_match(parameter, reader, edge, target, text, low, high)
         return edge
     # Displays are rounded, so many raw values show the same number. Find the
     # span of raw values that display the target and aim for its middle.
-    start = _first_raw_where(parameter, low, high, rising, lambda n: n >= target)
-    stop = _first_raw_where(parameter, low, high, rising, lambda n: n > target)
-    if _display_number(parameter, start) == target and stop > start:
+    # Probing writes the parameter on every step, so use fewer steps there:
+    # 24 halvings still resolve a millionth of the range.
+    steps = 60 if reader is _display else 24
+    start = _first_raw_where(number, low, high, rising, lambda n: n >= target, steps)
+    stop = _first_raw_where(number, low, high, rising, lambda n: n > target, steps)
+    if number(start) == target and stop > start:
         result = (start + stop) / 2.0
     else:
         result = start
     if quantized:
         result = float(round(result))
-    _check_display_match(parameter, result, target, text)
+    _check_display_match(parameter, reader, result, target, text, low, high)
     return result
 
 
-def _check_display_match(parameter, raw, target, text):
+def _check_display_match(parameter, reader, raw, target, text, low, high):
     # Guards against displays the bisection cannot follow, such as a parameter
     # whose numbers are not monotonic.
-    shown = _display_number(parameter, raw)
+    shown = parse_display_number(reader(parameter, raw))
     if shown is None or math.isinf(target) or math.isinf(shown):
         return
     tolerance = max(abs(target) * 0.05, 0.051)
     if abs(shown - target) > tolerance:
         raise LiveOpsError(
             f"could not find a value of '{_str(parameter.name)}' that shows '{text}'; "
-            f"closest was '{_display(parameter, raw)}'. Use a raw value instead."
+            f"closest was '{reader(parameter, raw)}' (range '{reader(parameter, low)}' to "
+            f"'{reader(parameter, high)}'). Use a raw value between {low} and {high} instead."
         )
 
 
-def _first_raw_where(parameter, low, high, rising, predicate):
+def _first_raw_where(number, low, high, rising, predicate, steps=60):
     """Bisect for the first raw value whose display number satisfies predicate.
 
     ``rising`` says whether display numbers grow with the raw value; for a
     falling parameter the search runs from the high end.
     """
 
-    for _ in range(60):
+    for _ in range(steps):
         middle = (low + high) / 2.0
-        number = _display_number(parameter, middle)
-        if number is None:
+        shown = number(middle)
+        if shown is None:
             break
-        if predicate(number) == rising:
+        if predicate(shown) == rising:
             high = middle
         else:
             low = middle
@@ -648,10 +698,6 @@ def parse_display_number(text):
     if match.group(2):
         number *= _UNIT_SCALE[match.group(2).lower()]
     return number
-
-
-def _display_number(parameter, value):
-    return parse_display_number(_display(parameter, value))
 
 
 def _shown(parameter):

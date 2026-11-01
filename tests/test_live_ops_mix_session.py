@@ -194,5 +194,105 @@ class DeleteDeviceTests(unittest.TestCase):
             self.delete(device="Limiter", confirm=True)
 
 
+class PluginParam:
+    """A plugin parameter whose str_for_value ignores its argument.
+
+    This is the suspected Live behaviour behind issue #16: the display can
+    only be read for the current value, through str(parameter).
+    """
+
+    def __init__(self, name, value, to_display):
+        self.name = name
+        self.original_name = name
+        self.value = value
+        self.min = 0.0
+        self.max = 1.0
+        self.is_enabled = True
+        self.is_quantized = False
+        self.value_items = ()
+        self._to_display = to_display
+        self.writes = []
+
+    def __setattr__(self, key, value):
+        if key == "value" and "writes" in self.__dict__:
+            self.writes.append(value)
+        object.__setattr__(self, key, value)
+
+    def str_for_value(self, _value):
+        return self._to_display(self.value)
+
+    def __str__(self):
+        return self._to_display(self.value)
+
+
+def linear_hz(raw):
+    return f"{10 + raw * 1990:.0f}Hz"
+
+
+def log_hz(raw):
+    return f"{20 * (1000**raw):.1f} Hz"
+
+
+class PluginDisplayTextTests(unittest.TestCase):
+    """Issue #16."""
+
+    def test_finds_raw_value_for_a_linear_plugin_parameter(self):
+        param = PluginParam("LowCut", 0.0, linear_hz)
+
+        live_ops.set_parameter_value(param, "400 Hz")
+
+        self.assertAlmostEqual(param.value, (400 - 10) / 1990, places=3)
+        self.assertEqual(str(param), "400Hz")
+
+    def test_log_mapping_and_units(self):
+        param = PluginParam("HighCut", 1.0, log_hz)
+
+        live_ops.set_parameter_value(param, "2 kHz")
+
+        self.assertEqual(str(param), "2000.0 Hz")
+
+    def test_probing_restores_the_value_before_the_final_set(self):
+        param = PluginParam("LowCut", 0.5, linear_hz)
+
+        raw = live_ops.value_for_display(param, "400 Hz")
+
+        self.assertEqual(param.value, 0.5)
+        self.assertNotEqual(raw, 0.5)
+        self.assertLess(len(param.writes), 60)  # bounded probing
+
+    def test_unmatched_text_restores_and_shows_the_range(self):
+        param = PluginParam("Mode", 0.3, lambda raw: "Mode 1" if raw < 0.5 else "Mode 2")
+
+        with self.assertRaisesRegex(LiveOpsError, "Use a raw value between 0.0 and 1.0"):
+            live_ops.set_parameter_value(param, "400 Hz")
+
+        self.assertEqual(param.value, 0.3)
+
+    def test_constant_display_is_reported_without_guessing(self):
+        param = PluginParam("Locked", 0.3, lambda raw: "12 Hz")
+
+        with self.assertRaisesRegex(LiveOpsError, "shows '12 Hz' for every value"):
+            live_ops.set_parameter_value(param, "400 Hz")
+
+        self.assertEqual(param.value, 0.3)
+
+    def test_native_parameters_never_probe(self):
+        song = Song()
+        utility = live_ops.handle(
+            song, "ableton.insert_device", {"track": 0, "device_name": "Utility"}
+        )
+        gain = song.tracks[0].devices[0].parameters[1]
+        gain.value = 0.0
+
+        live_ops.handle(
+            song,
+            "ableton.set_device_parameter",
+            {"track": 0, "device": "Utility", "parameter": "Gain", "value": "-3 dB"},
+        )
+
+        self.assertIsNotNone(utility)
+        self.assertAlmostEqual(gain.value * 35, -3.0, places=1)
+
+
 if __name__ == "__main__":
     unittest.main()
