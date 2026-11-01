@@ -270,6 +270,111 @@ class DeleteDeviceTests(unittest.TestCase):
             self.delete(device="Limiter", confirm=True)
 
 
+class LiveProxy:
+    """A fresh wrapper per read, as Live's Python API hands out for LOM objects.
+
+    Two wrappers of the same device are equal and share ``_live_ptr`` but are
+    not the same Python object.
+    """
+
+    def __init__(self, target):
+        object.__setattr__(self, "_target", target)
+        object.__setattr__(self, "_live_ptr", id(target))
+
+    def __getattr__(self, name):
+        return getattr(self._target, name)
+
+    def __eq__(self, other):
+        return isinstance(other, LiveProxy) and other._live_ptr == self._live_ptr
+
+    def __hash__(self):
+        return self._live_ptr
+
+
+class ProxyTrack(Track):
+    @property
+    def devices(self):
+        return tuple(LiveProxy(device) for device in self._devices)
+
+    @devices.setter
+    def devices(self, value):
+        self._devices = list(value)
+
+    def insert_device(self, device_name, index):
+        devices = self._devices
+        Track.insert_device(SimpleNamespace(devices=devices), device_name, index)
+
+    def delete_device(self, index):
+        del self._devices[index]
+
+
+class DeleteDeviceLiveProxyTests(unittest.TestCase):
+    """Found in Live 12.4: every delete failed with "is no longer there",
+    because a device read twice from the LOM is equal but not identical."""
+
+    def setUp(self):
+        self.song = Song()
+        self.song.tracks = (ProxyTrack("1-Audio"),)
+        for name in ("Utility", "Glue Compressor", "Utility"):
+            live_ops.handle(self.song, "ableton.insert_device", {"track": 0, "device_name": name})
+        self.track = self.song.tracks[0]
+
+    def names(self):
+        return [d.name for d in self.track.devices]
+
+    def test_preview_and_delete_work_when_each_read_gives_a_new_wrapper(self):
+        preview = live_ops.handle(
+            self.song, "ableton.delete_device", {"track": 0, "device": "Glue Compressor"}
+        )
+        self.assertFalse(preview["deleted"])
+        self.assertEqual(preview["would_delete"]["device"]["index"], 1)
+
+        result = live_ops.handle(
+            self.song,
+            "ableton.delete_device",
+            {"track": 0, "device": "Glue Compressor", "confirm": True},
+        )
+        self.assertTrue(result["deleted"])
+        self.assertEqual(self.names(), ["Utility", "Utility"])
+
+    def test_batch_deletes_by_index_still_refer_to_the_set_before_the_batch(self):
+        result = live_ops.handle(
+            self.song,
+            "ableton.batch",
+            {
+                "operations": [
+                    {
+                        "method": "ableton.delete_device",
+                        "params": {"track": 0, "device": 0, "confirm": True},
+                    },
+                    {
+                        "method": "ableton.delete_device",
+                        "params": {"track": 0, "device": 1, "confirm": True},
+                    },
+                ]
+            },
+        )
+
+        self.assertIsNone(result["failed"])
+        self.assertEqual(self.names(), ["Utility"])
+
+    def test_a_failed_insert_removes_only_the_new_device(self):
+        with self.assertRaises(LiveOpsError):
+            live_ops.handle(
+                self.song,
+                "ableton.insert_device",
+                {
+                    "track": 0,
+                    "device_name": "Glue Compressor",
+                    "index": 3,
+                    "parameters": {"No Such Parameter": 1},
+                },
+            )
+
+        self.assertEqual(self.names(), ["Utility", "Glue Compressor", "Utility"])
+        self.assertEqual(len({d._live_ptr for d in self.track.devices}), 3)
+
+
 class PluginParam:
     """A plugin parameter whose str_for_value ignores its argument.
 

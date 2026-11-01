@@ -62,8 +62,10 @@ shows it: `"Instrument Rack/Piano/Reverb"` (rack, chain, device, repeated
 for racks inside racks) or `"Drum Rack/returns/0/Limiter"` for a Drum Rack
 return chain. Each part can be a name or an index. A top-level device whose
 whole name matches is used first, so names that contain `/` still work.
-`list_devices` lists chain devices four racks deep. Return chains are not
-yet confirmed in Live (issue #17).
+`list_devices` lists chain devices four racks deep. Drum Rack return chains
+work in Live 12.4.16. When two chains share a name, `list_devices` shows the
+same path for both and that path is refused as ambiguous; use the chain index
+the error lists instead.
 
 ### Values by display text
 
@@ -74,12 +76,14 @@ own `str_for_value`. That way `"-3 dB"` or `"25L"` lands where Live shows that
 number. Quantized parameters match an option name instead.
 
 Plugin parameters can behave differently. If `str_for_value` gives the
-same text at both ends of the range (suspected for some VST/AU parameters,
-issue #16, not yet confirmed in Live), the script instead sets the value
-briefly, reads `str(parameter)`, and puts the original value back before
-the real change. That probing takes about 55 writes. If the display still
-cannot be matched, the error shows the range of display text and asks for
-a raw value.
+same text at both ends of the range (issue #16), the script instead sets the
+value briefly, reads `str(parameter)`, and puts the original value back
+before the real change. In Live 12.4.16 this did not work for Valhalla
+Supermassive: `str(parameter)` still showed an earlier value's text when
+read in the same call, so LowCut "400 Hz" and Mix "30 %" were refused with
+"shows ... for every value", and option names such as Mode "Andromeda" are
+not recognised. The parameter is put back, but Live records the probe as a
+"Custom Action" undo step. Use raw values for plugins for now.
 
 Some API names differ from the device UI. Utility's gain knob is `Output` in
 the API; `Gain` is accepted as an alias. `list_devices` shows the API names.
@@ -91,6 +95,12 @@ the API; `Gain` is accepted as an alias. `list_devices` shows the API names.
 changes, and a whole batch of device inserts. When the batch ended with a
 parameter change on a newly inserted device, Live recorded that last change
 as its own step, so expect one or two Undos per batch.
+
+Single tool calls are not wrapped. In Live 12.4.16, separate calls made in
+a row (a rename, a new return, a device insert; or a parameter change and
+then a delete) were merged into one undo step, so one Undo reverted all of
+them. Every step shows as "Custom Action": the Live API gives no way to
+name it (issue #3).
 
 If setting `parameters` on a newly inserted device fails, `insert_device`
 deletes that device again, so a failed call leaves the track unchanged.
@@ -152,6 +162,36 @@ deletes that device again, so a failed call leaves the track unchanged.
 
 ## Validation log
 
+### 2026-11-01 (after PR #21), Live 12.4.16 Suite, macOS
+
+Set: `testing/First Light Project/First Light.als` as it was open in Live
+(an earlier version of the file, before main replaced it), not saved
+afterwards. Calls went through the MCP tools from main, in process, over the
+real bridge.
+
+- `daw.health` reported adapter 0.4.0, then 0.4.1 with this fix.
+- `list_tracks` compact output was 3.3 KB against 9.2 KB for `detail="full"`;
+  `name="kick"` and `name="Reverb"` matched case-insensitively.
+- `set_track_properties` renamed return A to "A-Room"; it showed "A-Room".
+- `create_return_track` added "C-Test Return"; every send to it started at
+  -inf dB.
+- `delete_device` refused `"true"` and `1` for `confirm` at the tool layer.
+- Found and fixed: with adapter 0.4.0 every `delete_device`, even the
+  preview, failed with "is no longer there". Live hands out a new Python
+  wrapper for a device on each read, so the `is` check never matched. Live
+  objects are now compared by `_live_ptr`.
+- With the fix: a preview left the Utility in place; confirm deleted it; one
+  Undo restored it with Output -7.00 dB and Stereo Width 50 %. The same held
+  for Redux inside the Audio Effect Rack on Drum Rack return chain "a Mix
+  Bus", reached by path. That Undo also reverted a Reverb Dry/Wet change made
+  in an earlier, separate call (see Undo above).
+- `set_device_parameter` set Reverb Dry/Wet on return chain "b Reverb" by
+  path and by `returns/1`.
+- `apply_batch` deleting index 0 then index 1 on [Utility, Glue Compressor,
+  Utility] left the last Utility. A batch with an unconfirmed delete was
+  refused and changed nothing.
+- Display text on Valhalla Supermassive failed (see Values by display text).
+
 ### 2026-11-01, Live 12.4.16 Suite, macOS
 
 Set: `testing/First Light Project/First Light After Extraction.als` (the
@@ -185,7 +225,7 @@ Live's Python API has no call to create a group from tracks, and none to
 reorder tracks. Creating group buses therefore still needs Live's UI
 (select tracks, Cmd+G). Once the groups exist, these tools can colour and
 name them, route tracks into them, and insert a Glue Compressor on them.
-Creating tracks, deleting devices, and saving the set are also not exposed.
+Creating tracks and saving the set are also not exposed.
 
 ## Prior art
 

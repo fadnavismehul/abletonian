@@ -305,9 +305,11 @@ def insert_device(song, params):
     if len(devices) != count_before + 1:
         raise LiveOpsError(f"Live did not report a new device after inserting '{device_name}'")
     # Live may place the device elsewhere (device order rules on MIDI tracks),
-    # so find it by identity rather than trusting the requested position.
+    # so find it by Live identity rather than trusting the requested position.
     new_positions = [
-        i for i, device in enumerate(devices) if not any(device is old for old in devices_before)
+        i
+        for i, device in enumerate(devices)
+        if not any(_same(device, old) for old in devices_before)
     ]
     if len(new_positions) == 1:
         position = new_positions[0]
@@ -402,7 +404,7 @@ def _resolve_delete_target(song, params):
 
 def _current_index(owner, device, path):
     for position, candidate in enumerate(_tuple(owner.devices)):
-        if candidate is device:
+        if _same(candidate, device):
             return position
     raise LiveOpsError(
         f"device '{path}' is no longer there (was it deleted earlier in this batch?)"
@@ -557,7 +559,7 @@ def resolve_device_path(track, ref):
     whole name matches wins, so names containing "/" still work. ``owner`` is
     the track or chain holding the device; ``index`` is its position there.
     Uses RackDevice.chains, RackDevice.return_chains, and Chain.devices from
-    the Live Object Model (issue #17; return chains not yet confirmed in Live).
+    the Live Object Model (issue #17; return chains confirmed in Live 12.4.16).
     """
 
     if isinstance(ref, int) or "/" not in str(ref) or _has_device_named(track, str(ref)):
@@ -704,10 +706,12 @@ def _display_reader(parameter, low, high):
 
     Native devices format any value with ``str_for_value``. For some plugin
     parameters it appears to return the display of the current value
-    whatever value is passed (issue #16, not yet confirmed in Live), so every
-    probe looks the same. Then the value is set briefly and read back with
-    ``str(parameter)``, which Live's own control surface scripts use to show
-    a parameter's current value; the caller restores the original value.
+    whatever value is passed (issue #16), so every probe looks the same.
+    Then the value is set briefly and read back with ``str(parameter)``,
+    which Live's own control surface scripts use to show a parameter's
+    current value; the caller restores the original value.
+    In Live 12.4.16 this did not help for Valhalla Supermassive: the text
+    read back in the same call was still an earlier value's.
     """
 
     if high <= low or _display(parameter, low) != _display(parameter, high):
@@ -996,7 +1000,7 @@ def _locate_track(song, target):
     if target is None:
         raise LiveOpsError("no track is selected")
     for kind, index, track in _all_tracks(song):
-        if track is target:
+        if _same(track, target):
             return kind, index, track
     raise LiveOpsError(f"selected track '{_str(_get(target, 'name'))}' was not found")
 
@@ -1010,7 +1014,7 @@ def _is_rack(device):
 def _selected_or_first_rack(track, devices):
     selected = _get(_get(track, "view"), "selected_device")
     for device_index, device in enumerate(devices):
-        if device is selected and _is_rack(device):
+        if _same(device, selected) and _is_rack(device):
             return device_index, device, "selected_device"
     for device_index, device in enumerate(devices):
         if _is_rack(device):
@@ -1101,6 +1105,20 @@ def _get(target, name, default=None):
 
 def _str(value):
     return "" if value is None else str(value)
+
+
+def _same(a, b):
+    """Whether two LOM references are the same Live object.
+
+    Live hands out a new Python wrapper each time a property is read, so two
+    reads of one device are not ``is``-identical; ``_live_ptr`` names the
+    object underneath.
+    """
+
+    if a is b:
+        return True
+    pointer = _get(a, "_live_ptr")
+    return pointer is not None and pointer == _get(b, "_live_ptr")
 
 
 def _tuple(value):
