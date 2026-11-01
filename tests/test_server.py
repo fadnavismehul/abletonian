@@ -260,7 +260,7 @@ class UndoToolTests(unittest.TestCase):
         operations = [{"method": "ableton.set_mixer", "params": {"track": 0, "mute": True}}]
 
         self.call(bridge, "apply_batch", {"operations": operations, "atomic": False})
-        self.call(bridge, "undo_last_change", {"count": 3})
+        self.call(bridge, "undo_last_change", {"count": 3, "confirm": True})
         self.call(bridge, "undo_last_change", {})
 
         self.assertEqual(
@@ -286,7 +286,15 @@ class UndoToolTests(unittest.TestCase):
         batch = self.call(
             OldScriptBridge(), "apply_batch", {"operations": operations, "atomic": False}
         )
-        undo = self.call(OldScriptBridge(), "undo_last_change", {"count": 2})
+        undo = self.call(OldScriptBridge(), "undo_last_change", {"count": 2, "confirm": True})
 
         self.assertIn("older", batch)
         self.assertIn("undid only one step", undo)
+
+    def test_undoing_several_steps_needs_confirmation(self) -> None:
+        bridge = PassthroughBridge()
+
+        text = self.call(bridge, "undo_last_change", {"count": 3})
+
+        self.assertIn("confirm=true", text)
+        self.assertEqual(bridge.requests, [])

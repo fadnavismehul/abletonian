@@ -729,6 +729,7 @@ class UndoStepTests(unittest.TestCase):
         )
 
         self.assertEqual(result["undo_steps"], "per_operation")
+        self.assertIn("may still count it", result["note"])
         self.assertEqual(len(result["completed"]), 3)
         self.assertEqual(result["failed"]["index"], 3)
         self.assertEqual(self.song.undo_steps, ["begin", "end"] * 4)
@@ -766,3 +767,65 @@ class UndoStepTests(unittest.TestCase):
         for count in (0, 21, True, "2"):
             with self.subTest(count=count), self.assertRaises(LiveOpsError):
                 self.call("ableton.undo", count=count)
+
+
+class PathCollisionTests(unittest.TestCase):
+    """Review of issue #24: index and nested paths must not be captured by names."""
+
+    def resolves(self, devices, expected_objects):
+        song = Song()
+        track = song.tracks[0]
+        track.devices = list(devices)
+        result = live_ops.handle(
+            song, "ableton.list_devices", {"track": 0, "include_parameters": False}
+        )
+        printed = []
+
+        def walk(payloads):
+            for payload in payloads:
+                printed.append(payload["path"])
+                for chain in payload.get("chains", []) + payload.get("return_chains", []):
+                    walk(chain.get("devices", []))
+
+        walk(result["tracks"][0]["devices"])
+        for path, device in zip(printed, expected_objects, strict=True):
+            with self.subTest(path=path):
+                self.assertIsNotNone(path)
+                _path, _index, found, _owner = live_ops.resolve_device_path(track, path)
+                self.assertIs(found, device)
+        return printed
+
+    def test_index_that_is_also_a_device_name_uses_hash_form(self):
+        first, second, named_zero = plain("EQ Eight"), plain("EQ Eight"), plain("0")
+
+        printed = self.resolves([first, second, named_zero], [first, second, named_zero])
+
+        self.assertEqual(printed, ["#0", "1", "0"])
+
+    def test_nested_path_under_a_duplicate_rack_is_not_captured(self):
+        inner_a, inner_b, inner_c = plain("S"), plain("S"), plain("S")
+        a = rack("Drum Rack", [Chain("K", [inner_a])])
+        b = rack("Drum Rack", [Chain("K", [inner_b])])
+        c = rack("1", [Chain("K", [inner_c])])
+
+        printed = self.resolves([a, b, c], [a, inner_a, b, inner_b, c, inner_c])
+
+        self.assertEqual(printed[:4], ["0", "0/K/S", "#1", "#1/K/S"])
+
+    def test_whole_name_of_a_top_level_device_does_not_capture_a_nested_path(self):
+        inner = plain("Dev")
+        outer = rack("Rack", [Chain("Ch", [inner])])
+        decoy = plain("rack/ch/dev")
+
+        printed = self.resolves([outer, decoy], [outer, inner, decoy])
+
+        self.assertEqual(printed[1], "0/Ch/Dev")
+
+    def test_insert_device_reports_a_resolvable_path(self):
+        song = Song()
+        for _ in range(2):
+            result = live_ops.handle(
+                song, "ableton.insert_device", {"track": 0, "device_name": "Utility"}
+            )
+
+        self.assertEqual(result["device"]["path"], "1")

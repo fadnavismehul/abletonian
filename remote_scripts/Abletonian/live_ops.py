@@ -129,14 +129,9 @@ def list_devices(song, params):
                 "track": _track_ref_payload(kind, index, track),
                 "devices": [
                     _device_payload(
-                        device,
-                        device_index,
-                        include_parameters,
-                        _top_level_path(devices, device_index),
-                        prefix=_path_segment(devices, device_index),
+                        device, device_index, include_parameters, track, device_index
                     )
-                    for devices in (_tuple(track.devices),)
-                    for device_index, device in enumerate(devices)
+                    for device_index, device in enumerate(_tuple(track.devices))
                 ],
             }
             for kind, index, track in targets
@@ -246,9 +241,12 @@ def set_track_output_routing(song, params):
             channel = _match_routing(
                 track.available_output_routing_channels, routing_channel, "output routing channel"
             )
-        except LiveOpsError:
+        except LiveOpsError as exc:
             track.output_routing_type = previous_type
-            raise
+            raise LiveOpsError(
+                f"{exc}. The output type was put back; Live may still list this as an "
+                "undo step that changes nothing."
+            ) from exc
         track.output_routing_channel = channel
     return {
         "track": _track_ref_payload(kind, index, track),
@@ -364,11 +362,14 @@ def insert_device(song, params):
         delete = getattr(track, "delete_device", None)
         if callable(delete):
             delete(position)
-            raise LiveOpsError(f"{exc}. The new '{device_name}' was removed again.") from exc
+            raise LiveOpsError(
+                f"{exc}. The new '{device_name}' was removed again; Live may still list "
+                "this as an undo step that changes nothing."
+            ) from exc
         raise
     return {
         "track": _track_ref_payload(kind, index, track),
-        "device": _device_payload(device, position, include_parameters=False),
+        "device": _device_payload(device, position, False, track, position),
         "parameters_set": changed,
     }
 
@@ -524,11 +525,17 @@ def batch(song, params):
 
 
 def _batch_failure(results, position, operation, exc, summary):
-    return {
+    failure = {
         "completed": results,
         "failed": {"index": position, "operation": operation, "error": str(exc)},
         **summary,
     }
+    if summary["undo_steps"] == "per_operation":
+        failure["note"] = (
+            "Each completed operation is one undo step. If the failed one had started "
+            "changing the Set it was put back, but Live may still count it as a step."
+        )
+    return failure
 
 
 MAX_UNDO_COUNT = 20
@@ -622,11 +629,15 @@ def resolve_device(track, ref):
             )
     if text.strip().isdigit():
         return resolve_device(track, int(text))
+    # "#N" is always an index; list_devices prints it when a device is
+    # literally named "N" (issue #24).
+    if re.fullmatch(r"#\d+", text.strip()):
+        return resolve_device(track, int(text.strip()[1:]))
     names = ", ".join(_str(d.name) for d in devices) or "(none)"
     raise LiveOpsError(f"no device named '{text}' on '{_str(track.name)}'. Devices: {names}")
 
 
-def resolve_device_path(track, ref):
+def resolve_device_path(track, ref, _render=True):
     """Resolve a device anywhere on a track. Returns ``(path, index, device, owner)``.
 
     ``ref`` is an index, a top-level device name, or a path through racks:
@@ -635,18 +646,23 @@ def resolve_device_path(track, ref):
     chain. Names or indexes work for every segment. A top-level device whose
     whole name matches wins, so names containing "/" still work. ``owner`` is
     the track or chain holding the device; ``index`` is its position there.
+    ``path`` is how list_devices would print it, or None if no printable
+    path resolves back to this device (see ``_printable_path``).
     Uses RackDevice.chains, RackDevice.return_chains, and Chain.devices from
     the Live Object Model (issue #17; return chains confirmed in Live 12.4.16).
     """
 
     if isinstance(ref, int) or "/" not in str(ref) or _has_device_named(track, str(ref)):
         index, device = resolve_device(track, ref)
-        return _top_level_path(_tuple(track.devices), index), index, device, track
+        path = _printable_path(track, index, [], device) if _render else None
+        return path, index, device, track
     segments = [part.strip() for part in str(ref).split("/")]
     if any(not part for part in segments):
         raise LiveOpsError(f"device path '{ref}' has an empty part")
     index, device = resolve_device(track, segments[0])
-    path = [_path_segment(_tuple(track.devices), index)]
+    top_index = index
+    path = [_str(device.name)]  # for error messages only
+    tail = []
     owner = track
     rest = segments[1:]
     while rest:
@@ -658,6 +674,7 @@ def resolve_device_path(track, ref):
             chains = _tuple(_get(device, "return_chains", ()))
             label = "return chain"
             path.append("returns")
+            tail.append("returns")
             rest = rest[1:]
             if not rest:
                 raise LiveOpsError(f"device path '{ref}' needs a return chain after 'returns'")
@@ -665,15 +682,18 @@ def resolve_device_path(track, ref):
             chains = _tuple(_get(device, "chains", ()))
             label = "chain"
         chain_index, chain = _pick(chains, rest[0], label, "/".join(path))
-        path.append(_path_segment(chains, chain_index))
+        path.append(_str(chain.name))
+        tail.append(_path_segment(chains, chain_index))
         if len(rest) < 2:
             raise LiveOpsError(f"device path '{ref}' ends at a chain; add a device name")
         chain_devices = _tuple(chain.devices)
         index, device = _pick(chain_devices, rest[1], "device", "/".join(path))
-        path.append(_path_segment(chain_devices, index))
+        path.append(_str(device.name))
+        tail.append(_path_segment(chain_devices, index))
         owner = chain
         rest = rest[2:]
-    return "/".join(path), index, device, owner
+    printed = _printable_path(track, top_index, tail, device) if _render else None
+    return printed, index, device, owner
 
 
 def _path_segment(items, position):
@@ -701,19 +721,33 @@ def _path_segment(items, position):
     return str(position)
 
 
-def _top_level_path(devices, position):
-    """Path for a device directly on a track.
+def _printable_path(track, top_index, tail, device):
+    """A path that resolves back to ``device``, or None if none does.
 
-    A whole-name match is tried first for top-level devices, so a unique
-    name containing "/" still works on its own; inside a longer path it
-    cannot, which ``_path_segment`` handles for the devices below it.
+    ``tail`` holds the segments below the top-level device; ``_path_segment``
+    makes those unambiguous on its own, because chain and chain-device
+    lookups read digits as an index first. Top-level lookups try names first
+    (and a whole-name match before splitting on "/"), so the top segment is
+    picked by trying the device's name, then ``N``, then ``#N``, and keeping
+    the first whose full path resolves to this same device (issue #24).
     """
 
-    name = _str(devices[position].name)
-    exact = sum(1 for device in devices if _str(device.name) == name)
-    if exact == 1 and name and name == name.strip():
-        return name
-    return str(position)
+    devices = _tuple(track.devices)
+    name = _str(devices[top_index].name)
+    unique = sum(1 for d in devices if _str(d.name) == name) == 1
+    candidates = []
+    if unique and name and name == name.strip() and (not tail or "/" not in name):
+        candidates.append(name)
+    candidates += [str(top_index), f"#{top_index}"]
+    for top in candidates:
+        text = "/".join([top, *tail])
+        try:
+            _path, _index, found, _owner = resolve_device_path(track, text, _render=False)
+        except LiveOpsError:
+            continue
+        if _same(found, device):
+            return text
+    return None
 
 
 def _has_device_named(track, name):
@@ -1004,28 +1038,25 @@ def _routing_payload(track):
     return payload
 
 
-def _device_payload(device, index, include_parameters, path=None, depth=0, prefix=None):
-    """``path`` is how tools address this device; ``prefix`` is the same for
-    the devices inside it (they differ only for a top-level name with "/")."""
+def _device_payload(device, index, include_parameters, track, top_index, tail=(), depth=0):
+    """``track``/``top_index``/``tail`` locate the device so its printed
+    ``path`` can be checked to resolve back to it (None if it cannot)."""
 
-    path = path or _str(device.name)
-    prefix = prefix or path
     payload = {
         "index": index,
         "name": _str(device.name),
-        "path": path,
+        "path": _printable_path(track, top_index, list(tail), device),
         "class_name": _str(_get(device, "class_name", "")),
         "class_display_name": _str(_get(device, "class_display_name", "")),
         "is_active": bool(_get(device, "is_active", True)),
     }
     if bool(_get(device, "can_have_chains", False)):
-        payload["chains"] = _chains_payload(
-            _get(device, "chains", ()), prefix, include_parameters, depth
-        )
+        context = (include_parameters, track, top_index, depth)
+        payload["chains"] = _chains_payload(_get(device, "chains", ()), tail, *context)
         return_chains = _tuple(_get(device, "return_chains", ()))
         if return_chains:
             payload["return_chains"] = _chains_payload(
-                return_chains, f"{prefix}/returns", include_parameters, depth
+                return_chains, (*tail, "returns"), *context
             )
     if include_parameters:
         payload["parameters"] = [
@@ -1035,13 +1066,13 @@ def _device_payload(device, index, include_parameters, path=None, depth=0, prefi
     return payload
 
 
-def _chains_payload(chains, prefix, include_parameters, depth):
-    if depth >= MAX_RACK_DEPTH:
-        return [{"name": _str(chain.name), "truncated": True} for chain in _tuple(chains)]
+def _chains_payload(chains, tail, include_parameters, track, top_index, depth):
     chains = _tuple(chains)
+    if depth >= MAX_RACK_DEPTH:
+        return [{"name": _str(chain.name), "truncated": True} for chain in chains]
     result = []
     for chain_index, chain in enumerate(chains):
-        chain_path = f"{prefix}/{_path_segment(chains, chain_index)}"
+        chain_tail = (*tail, _path_segment(chains, chain_index))
         devices = _tuple(chain.devices)
         result.append(
             {
@@ -1051,7 +1082,9 @@ def _chains_payload(chains, prefix, include_parameters, depth):
                         device,
                         i,
                         include_parameters,
-                        f"{chain_path}/{_path_segment(devices, i)}",
+                        track,
+                        top_index,
+                        (*chain_tail, _path_segment(devices, i)),
                         depth + 1,
                     )
                     for i, device in enumerate(devices)

@@ -42,7 +42,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `create_return_track` | `ableton.create_return_track` | Add a return track at the end (`Song.create_return_track`), with an optional name and colour. Additive. |
 | `delete_device` | `ableton.delete_device` | Delete a device (`Track.delete_device`). Destructive: without `confirm=true` it only returns the device and its current settings. The tool accepts only a real boolean, so `"true"` or `1` is refused. In `apply_batch`, every delete needs `"confirm": true` or the whole batch is refused before anything runs, and delete targets refer to the set as it was before the batch, so deleting index 0 does not shift a later index 1. |
 | `apply_batch` | `ableton.batch` | Run many changes as one Live undo step, or one step per operation with `atomic=false`. Stops at the first failure. |
-| `undo_last_change` | `ableton.undo` | Live Undo, `count` times (default 1, at most 20). |
+| `undo_last_change` | `ableton.undo` | Live Undo, `count` times (default 1, at most 20; more than 1 needs `confirm=true`). |
 
 Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`,
 `idempotentHint`) derived from its safety class, so a client can tell reads
@@ -69,14 +69,16 @@ for racks inside racks) or `"Drum Rack/returns/0/Limiter"` for a Drum Rack
 return chain. Each part can be a name or an index. A top-level device whose
 whole name matches is used first, so names that contain `/` still work.
 `list_devices` lists chain devices four racks deep. Drum Rack return chains
-work in Live 12.4.16. Every path `list_devices` prints resolves to that
-device: when two siblings share a name (two Drum Rack chains both called
-"Guiro Short", issue #24), that part of the path is the index instead, as in
-`C78 Core Kit/4/Guiro Short`. Names that would be misread also get the index:
-chain or device names that are only digits, a chain named "returns", names
-with leading or trailing spaces, and, below the top level, names containing
-`/`. A unique top-level name with `/` keeps its name, but the devices inside
-it start with its index. Not yet run in Live.
+work in Live 12.4.16. Every path `list_devices` (and the set and delete
+tools) prints is checked to resolve back to that same device, and is `null`
+in the rare case none does. When two siblings share a name (two Drum Rack
+chains both called "Guiro Short", issue #24), that part of the path is the
+index instead, as in `C78 Core Kit/4/Guiro Short`. Chain and device names
+that would be misread also get the index: names that are only digits, a
+chain named "returns", names with leading or trailing spaces, and names
+containing `/`. For the top-level device, `#N` always means index N; it is
+printed instead of `N` when another device is literally named `N`. Not yet
+run in Live.
 
 ### Values by display text
 
@@ -113,16 +115,25 @@ can undo them one at a time.
 Before adapter 0.5.0, single tool calls were not wrapped, and in Live 12.4.16
 separate calls made in a row (a rename, a new return, a device insert; or a
 parameter change and then a delete) were merged into one undo step, so one
-Undo reverted all of them (issue #3). Since 0.5.0 every call that changes
-the Set runs in its own begin/end pair. Reads and `delete_device` previews
-(no `confirm=true`) are not wrapped. Community reports (for example
+Undo reverted all of them (issue #3). Since 0.5.0 every `ableton.*` call that
+changes the Set runs in its own begin/end pair. Reads and `delete_device`
+previews (no `confirm=true`) are not wrapped, and neither are the Drum Rack
+workflow methods (`workflow.scaffold_*` and `workflow.execute_*`), whose own
+backout text counts Undos. Community reports (for example
 adamjmurray/producer-pal#1209) say begin/end steps do not nest, so a batch
 never wraps its operations twice. Not yet run in Live: whether this keeps
 consecutive calls apart.
 
+Expect the count to be off sometimes. A call that fails after writing and
+puts things back (an `insert_device` whose `parameters` fail, an output type
+restored after a bad channel) may still leave a step that changes nothing.
+An `insert_device` with `parameters` may become two steps, as the batch case
+above did. And the musician's own edits share the same history.
+
 `undo_last_change` takes a `count` (1 to 20) and reports how many steps it
-undid, stopping early when `Song.can_undo` is false. Every step still shows
-as "Custom Action": the Live API gives no way to name it.
+undid, stopping early when `Song.can_undo` is false. A count above 1 needs
+`confirm=true`, because it can reach the musician's own edits. Every step
+still shows as "Custom Action": the Live API gives no way to name it.
 
 If setting `parameters` on a newly inserted device fails, `insert_device`
 deletes that device again, so a failed call leaves the track unchanged.

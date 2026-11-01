@@ -355,17 +355,30 @@ def build_mcp(
         return json.dumps(result, indent=2)
 
     @mcp.tool(annotations=DESTRUCTIVE)
-    def undo_last_change(count: int = 1) -> str:
+    def undo_last_change(count: int = 1, confirm: StrictBool = False) -> str:
         """Run Live's Undo count times (1 to 20, default 1).
 
-        Each tool call that changes the Set is one undo step, and so is a whole
-        apply_batch unless it ran with atomic false. Reports how many steps
-        were undone. Live labels every step "Custom Action", so it cannot say
-        what each one was.
+        With Remote Script 0.5.0 or later, each tool call that changes the Set
+        is meant to be one undo step, and so is a whole apply_batch unless it
+        ran with atomic false. That is not exact: Live may split a call (an
+        insert_device with parameters can become two steps), a failed call
+        that was put back may still leave a step, and the musician's own edits
+        in Live share the same history. Live labels every step "Custom
+        Action", so it cannot say what each one was.
+
+        So prefer count 1 and check the result with list_tracks or
+        list_devices. count above 1 needs confirm=true, after telling the user
+        it may also undo their own recent edits. Reports how many steps were
+        undone.
         """
 
         if count < 1 or count > 20:
             return "count must be from 1 to 20"
+        if count > 1 and confirm is not True:
+            return (
+                f"Undoing {count} steps needs confirm=true. Live's undo history also holds "
+                "the user's own edits, so check with them first. Nothing was changed."
+            )
         try:
             result = bridge_client.request("ableton.undo", {"count": count} if count > 1 else {})
         except BridgeConnectionError as exc:
