@@ -41,8 +41,14 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, and set its parameters right away. |
 | `create_return_track` | `ableton.create_return_track` | Add a return track at the end (`Song.create_return_track`), with an optional name and colour. Additive. |
 | `delete_device` | `ableton.delete_device` | Delete a device (`Track.delete_device`). Destructive: without `confirm=true` it only returns the device and its current settings. The tool accepts only a real boolean, so `"true"` or `1` is refused. In `apply_batch`, every delete needs `"confirm": true` or the whole batch is refused before anything runs, and delete targets refer to the set as it was before the batch, so deleting index 0 does not shift a later index 1. |
-| `apply_batch` | `ableton.batch` | Run many changes as one Live undo step. Stops at the first failure. |
-| `undo_last_change` | `ableton.undo` | Live Undo once. |
+| `apply_batch` | `ableton.batch` | Run many changes as one Live undo step, or one step per operation with `atomic=false`. Stops at the first failure. |
+| `undo_last_change` | `ableton.undo` | Live Undo, `count` times (default 1, at most 20). |
+
+Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`,
+`idempotentHint`) derived from its safety class, so a client can tell reads
+from changes, for example to approve reads without asking. They are hints;
+`confirm=true` and the undo rules are still enforced by the tools. The
+mapping is in `src/abletonian/server.py`.
 
 ### Track references
 
@@ -63,9 +69,14 @@ for racks inside racks) or `"Drum Rack/returns/0/Limiter"` for a Drum Rack
 return chain. Each part can be a name or an index. A top-level device whose
 whole name matches is used first, so names that contain `/` still work.
 `list_devices` lists chain devices four racks deep. Drum Rack return chains
-work in Live 12.4.16. When two chains share a name, `list_devices` shows the
-same path for both and that path is refused as ambiguous; use the chain index
-the error lists instead.
+work in Live 12.4.16. Every path `list_devices` prints resolves to that
+device: when two siblings share a name (two Drum Rack chains both called
+"Guiro Short", issue #24), that part of the path is the index instead, as in
+`C78 Core Kit/4/Guiro Short`. Names that would be misread also get the index:
+chain or device names that are only digits, a chain named "returns", names
+with leading or trailing spaces, and, below the top level, names containing
+`/`. A unique top-level name with `/` keeps its name, but the devices inside
+it start with its index. Not yet run in Live.
 
 ### Values by display text
 
@@ -75,15 +86,16 @@ searches for the raw value whose display text matches, using the parameter's
 own `str_for_value`. That way `"-3 dB"` or `"25L"` lands where Live shows that
 number. Quantized parameters match an option name instead.
 
-Plugin parameters can behave differently. If `str_for_value` gives the
-same text at both ends of the range (issue #16), the script instead sets the
-value briefly, reads `str(parameter)`, and puts the original value back
-before the real change. In Live 12.4.16 this did not work for Valhalla
-Supermassive: `str(parameter)` still showed an earlier value's text when
-read in the same call, so LowCut "400 Hz" and Mix "30 %" were refused with
-"shows ... for every value", and option names such as Mode "Andromeda" are
-not recognised. The parameter is put back, but Live records the probe as a
-"Custom Action" undo step. Use raw values for plugins for now.
+Plugin parameters can behave differently. For Valhalla Supermassive in Live
+12.4.16, `str_for_value` returned the current value's text whatever value it
+was given (issue #16), so display text cannot be matched. The script used to
+work around this by setting the value briefly and reading `str(parameter)`,
+but in Live that read still showed an earlier value, and the probe left a
+"Custom Action" in the undo history. The probe is gone: matching display text
+now only reads `str_for_value` and never writes the parameter. When a
+plugin's display does not change across the range, or the text is an option
+name the parameter does not list (Mode "Andromeda"), the call is refused with
+the display at both ends and the raw range. Use raw values for plugins.
 
 Some API names differ from the device UI. Utility's gain knob is `Output` in
 the API; `Gain` is accepted as an alias. `list_devices` shows the API names.
@@ -94,13 +106,23 @@ the API; `Gain` is accepted as an alias. `list_devices` shows the API names.
 `end_undo_step`. In Live 12.4.16 one Undo reverted a whole batch of mixer
 changes, and a whole batch of device inserts. When the batch ended with a
 parameter change on a newly inserted device, Live recorded that last change
-as its own step, so expect one or two Undos per batch.
+as its own step, so expect one or two Undos per batch. With `atomic=false`,
+each operation in the batch gets its own begin/end pair instead, so the user
+can undo them one at a time.
 
-Single tool calls are not wrapped. In Live 12.4.16, separate calls made in
-a row (a rename, a new return, a device insert; or a parameter change and
-then a delete) were merged into one undo step, so one Undo reverted all of
-them. Every step shows as "Custom Action": the Live API gives no way to
-name it (issue #3).
+Before adapter 0.5.0, single tool calls were not wrapped, and in Live 12.4.16
+separate calls made in a row (a rename, a new return, a device insert; or a
+parameter change and then a delete) were merged into one undo step, so one
+Undo reverted all of them (issue #3). Since 0.5.0 every call that changes
+the Set runs in its own begin/end pair. Reads and `delete_device` previews
+(no `confirm=true`) are not wrapped. Community reports (for example
+adamjmurray/producer-pal#1209) say begin/end steps do not nest, so a batch
+never wraps its operations twice. Not yet run in Live: whether this keeps
+consecutive calls apart.
+
+`undo_last_change` takes a `count` (1 to 20) and reports how many steps it
+undid, stopping early when `Song.can_undo` is false. Every step still shows
+as "Custom Action": the Live API gives no way to name it.
 
 If setting `parameters` on a newly inserted device fails, `insert_device`
 deletes that device again, so a failed call leaves the track unchanged.

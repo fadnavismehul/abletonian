@@ -165,6 +165,7 @@ class DeleteDeviceTests(unittest.TestCase):
             self.song, "ableton.insert_device", {"track": 0, "device_name": "Glue Compressor"}
         )
         self.track = self.song.tracks[0]
+        self.song.undo_steps.clear()
 
     def delete(self, **params):
         return live_ops.handle(self.song, "ableton.delete_device", {"track": 0, **params})
@@ -378,8 +379,9 @@ class DeleteDeviceLiveProxyTests(unittest.TestCase):
 class PluginParam:
     """A plugin parameter whose str_for_value ignores its argument.
 
-    This is the suspected Live behaviour behind issue #16: the display can
-    only be read for the current value, through str(parameter).
+    This is the Live behaviour behind issue #16 (Valhalla Supermassive, Live
+    12.4.16): the display only shows the current value. ``writes`` records
+    every write so tests can check display-text lookups never write.
     """
 
     def __init__(self, name, value, to_display):
@@ -410,52 +412,44 @@ def linear_hz(raw):
     return f"{10 + raw * 1990:.0f}Hz"
 
 
-def log_hz(raw):
-    return f"{20 * (1000**raw):.1f} Hz"
+class LinearPluginParam(PluginParam):
+    """A plugin whose str_for_value does format the value it is given."""
+
+    def str_for_value(self, value):
+        return self._to_display(value)
 
 
 class PluginDisplayTextTests(unittest.TestCase):
-    """Issue #16."""
+    """Issue #16: display text for plugin parameters never writes the parameter."""
 
-    def test_finds_raw_value_for_a_linear_plugin_parameter(self):
-        param = PluginParam("LowCut", 0.0, linear_hz)
-
-        live_ops.set_parameter_value(param, "400 Hz")
-
-        self.assertAlmostEqual(param.value, (400 - 10) / 1990, places=3)
-        self.assertEqual(str(param), "400Hz")
-
-    def test_log_mapping_and_units(self):
-        param = PluginParam("HighCut", 1.0, log_hz)
-
-        live_ops.set_parameter_value(param, "2 kHz")
-
-        self.assertEqual(str(param), "2000.0 Hz")
-
-    def test_probing_restores_the_value_before_the_final_set(self):
+    def test_constant_display_is_refused_without_writing(self):
         param = PluginParam("LowCut", 0.5, linear_hz)
+
+        with self.assertRaisesRegex(
+            LiveOpsError, "shows '1005Hz' for every value.*raw value between 0.0 and 1.0"
+        ):
+            live_ops.set_parameter_value(param, "400 Hz")
+
+        self.assertEqual(param.value, 0.5)
+        self.assertEqual(param.writes, [])
+
+    def test_option_names_without_value_items_point_to_raw_values(self):
+        param = PluginParam("Mode", 0.3, lambda raw: "Gemini")
+
+        with self.assertRaisesRegex(
+            LiveOpsError, "could not read a number from 'Andromeda' for 'Mode'.*raw value"
+        ):
+            live_ops.set_parameter_value(param, "Andromeda")
+
+        self.assertEqual(param.writes, [])
+
+    def test_plugins_whose_str_for_value_works_still_match_display_text(self):
+        param = LinearPluginParam("LowCut", 0.0, linear_hz)
 
         raw = live_ops.value_for_display(param, "400 Hz")
 
-        self.assertEqual(param.value, 0.5)
-        self.assertNotEqual(raw, 0.5)
-        self.assertLess(len(param.writes), 60)  # bounded probing
-
-    def test_unmatched_text_restores_and_shows_the_range(self):
-        param = PluginParam("Mode", 0.3, lambda raw: "Mode 1" if raw < 0.5 else "Mode 2")
-
-        with self.assertRaisesRegex(LiveOpsError, "Use a raw value between 0.0 and 1.0"):
-            live_ops.set_parameter_value(param, "400 Hz")
-
-        self.assertEqual(param.value, 0.3)
-
-    def test_constant_display_is_reported_without_guessing(self):
-        param = PluginParam("Locked", 0.3, lambda raw: "12 Hz")
-
-        with self.assertRaisesRegex(LiveOpsError, "shows '12 Hz' for every value"):
-            live_ops.set_parameter_value(param, "400 Hz")
-
-        self.assertEqual(param.value, 0.3)
+        self.assertAlmostEqual(raw, (400 - 10) / 1990, places=3)
+        self.assertEqual(param.writes, [])
 
     def test_native_parameters_never_probe(self):
         song = Song()
@@ -601,3 +595,174 @@ class NestedDeviceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UniquePathTests(unittest.TestCase):
+    """Issue #24: every path list_devices prints resolves to that device."""
+
+    def setUp(self):
+        self.song = Song()
+        self.track = self.song.tracks[0]
+        self.first = plain("Guiro Short")
+        self.second = plain("Guiro Short")
+        self.kit = rack(
+            "C78 Core Kit",
+            [
+                Chain("Kick", [plain("Saturator")]),
+                Chain("Guiro Short", [self.first]),
+                Chain("Guiro Short", [self.second]),
+                Chain("7", [plain("Odd")]),
+                Chain("returns", [plain("Tricky")]),
+            ],
+            class_name="DrumGroupDevice",
+        )
+        self.track.devices = [self.kit, plain("EQ Eight"), plain("EQ Eight"), rack(
+            "A/B Rack", [Chain("Main", [plain("Echo")])]
+        )]
+
+    def all_paths(self):
+        result = live_ops.handle(
+            self.song, "ableton.list_devices", {"track": 0, "include_parameters": False}
+        )
+        paths = []
+
+        def walk(devices):
+            for device in devices:
+                paths.append(device["path"])
+                for chain in device.get("chains", []) + device.get("return_chains", []):
+                    walk(chain.get("devices", []))
+
+        walk(result["tracks"][0]["devices"])
+        return paths
+
+    def test_duplicate_chain_names_use_the_index(self):
+        paths = self.all_paths()
+
+        self.assertIn("C78 Core Kit/1/Guiro Short", paths)
+        self.assertIn("C78 Core Kit/2/Guiro Short", paths)
+        self.assertIn("C78 Core Kit/Kick/Saturator", paths)
+
+    def test_every_listed_path_resolves_to_that_device(self):
+        paths = self.all_paths()
+        self.assertEqual(len(paths), len(set(paths)))
+        for path in paths:
+            with self.subTest(path=path):
+                resolved, _index, _device, _owner = live_ops.resolve_device_path(
+                    self.track, path
+                )
+                self.assertEqual(resolved, path)
+
+    def test_awkward_names_get_indexes(self):
+        paths = self.all_paths()
+
+        self.assertIn("C78 Core Kit/3/Odd", paths)  # chain named "7" at index 3
+        self.assertIn("C78 Core Kit/4/Tricky", paths)  # chain named "returns"
+        self.assertIn("1", paths)  # duplicate top-level "EQ Eight"
+        self.assertIn("2", paths)
+        self.assertIn("A/B Rack", paths)  # unique top-level name with "/"
+        self.assertIn("3/Main/Echo", paths)  # ...but its children need the index
+
+    def test_set_parameter_reports_the_resolvable_path(self):
+        result = live_ops.handle(
+            self.song,
+            "ableton.set_device_parameter",
+            {"track": 0, "device": "C78 Core Kit/2/0", "parameter": "Device On", "value": 0},
+        )
+
+        self.assertEqual(result["device"]["path"], "C78 Core Kit/2/Guiro Short")
+        self.assertEqual(self.second.parameters[0].value, 0.0)
+        self.assertEqual(self.first.parameters[0].value, 1.0)
+
+
+class UndoStepTests(unittest.TestCase):
+    """Issue #3: each mutating call is its own undo step."""
+
+    def setUp(self):
+        self.song = Song()
+
+    def call(self, method, **params):
+        return live_ops.handle(self.song, method, params)
+
+    def test_each_mutating_call_is_bracketed(self):
+        self.call("ableton.set_track_properties", track=0, name="Kick 2")
+        self.call("ableton.set_mixer", track=1, volume=0.5)
+
+        self.assertEqual(self.song.undo_steps, ["begin", "end", "begin", "end"])
+
+    def test_reads_and_delete_previews_are_not(self):
+        self.call("ableton.insert_device", track=0, device_name="Utility")
+        self.song.undo_steps.clear()
+
+        self.call("ableton.list_tracks")
+        self.call("ableton.list_devices", track=0)
+        self.call("ableton.delete_device", track=0, device=0)
+
+        self.assertEqual(self.song.undo_steps, [])
+
+    def test_failed_call_still_closes_its_step(self):
+        with self.assertRaises(LiveOpsError):
+            self.call("ableton.set_track_properties", track="Missing", name="X")
+
+        self.assertEqual(self.song.undo_steps, ["begin", "end"])
+
+    def test_batch_is_one_step_by_default(self):
+        result = self.call(
+            "ableton.batch",
+            operations=[
+                {"method": "ableton.set_mixer", "params": {"track": i, "volume": 0.5}}
+                for i in range(3)
+            ],
+        )
+
+        self.assertEqual(result["undo_steps"], "one")
+        self.assertEqual(self.song.undo_steps, ["begin", "end"])
+
+    def test_non_atomic_batch_is_one_step_per_operation(self):
+        result = self.call(
+            "ableton.batch",
+            atomic=False,
+            operations=[
+                {"method": "ableton.set_mixer", "params": {"track": i, "volume": 0.5}}
+                for i in range(3)
+            ]
+            + [{"method": "ableton.set_mixer", "params": {"track": "Missing", "volume": 0.5}}],
+        )
+
+        self.assertEqual(result["undo_steps"], "per_operation")
+        self.assertEqual(len(result["completed"]), 3)
+        self.assertEqual(result["failed"]["index"], 3)
+        self.assertEqual(self.song.undo_steps, ["begin", "end"] * 4)
+
+    def test_batch_atomic_must_be_a_bool(self):
+        with self.assertRaisesRegex(LiveOpsError, "atomic"):
+            self.call(
+                "ableton.batch",
+                atomic="no",
+                operations=[{"method": "ableton.set_mixer", "params": {"track": 0, "mute": True}}],
+            )
+
+    def test_undo_count(self):
+        result = self.call("ableton.undo", count=3)
+
+        self.assertEqual(result["steps"], 3)
+        self.assertEqual(self.song.undone, 3)
+
+    def test_undo_stops_when_nothing_is_left(self):
+        song = self.song
+
+        def undo():
+            song.undone += 1
+            song.can_undo = song.undone < 2
+
+        song.undo = undo
+        result = self.call("ableton.undo", count=5)
+
+        self.assertEqual(result["steps"], 2)
+        self.assertIn("only 2", result["note"])
+        with self.assertRaisesRegex(LiveOpsError, "nothing to undo"):
+            self.call("ableton.undo")
+
+    def test_undo_count_is_bounded(self):
+        for count in (0, 21, True, "2"):
+            with self.subTest(count=count), self.assertRaises(LiveOpsError):
+                self.call("ableton.undo", count=count)

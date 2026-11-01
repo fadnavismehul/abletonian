@@ -42,12 +42,44 @@ class LiveOpsError(RuntimeError):
 
 
 def handle(song, method, params):
-    """Dispatch one ``ableton.*`` method. Returns None for unknown methods."""
+    """Dispatch one ``ableton.*`` method. Returns None for unknown methods.
+
+    A mutating call runs as its own Live undo step, so one Undo reverts that
+    call and nothing before it (issue #3). ``batch`` brackets its own steps.
+    """
 
     handler = _HANDLERS.get(method)
     if handler is None:
         return None
+    if method in BATCHABLE_METHODS and not _is_delete_preview(method, params):
+        return _in_undo_step(song, lambda: handler(song, params))
     return handler(song, params)
+
+
+def _is_delete_preview(method, params):
+    return method == "ableton.delete_device" and params.get("confirm") is not True
+
+
+def _in_undo_step(song, action):
+    """Run ``action`` between ``Song.begin_undo_step`` and ``end_undo_step``.
+
+    In Live 12.4.16 separate unbracketed calls in a row merged into one
+    "Custom Action" step (issue #3). Community reports (for example
+    adamjmurray/producer-pal#1209) say a begin/end pair makes its writes one
+    step and that steps do not nest, so this is never called inside
+    ``batch``'s own bracket. Not yet checked in Live: that a bracketed call is
+    kept apart from the call before it.
+    """
+
+    begin = getattr(song, "begin_undo_step", None)
+    end = getattr(song, "end_undo_step", None)
+    if not (callable(begin) and callable(end)):
+        return action()
+    begin()
+    try:
+        return action()
+    finally:
+        end()
 
 
 def list_tracks(song, params):
@@ -96,8 +128,15 @@ def list_devices(song, params):
             {
                 "track": _track_ref_payload(kind, index, track),
                 "devices": [
-                    _device_payload(device, device_index, include_parameters)
-                    for device_index, device in enumerate(_tuple(track.devices))
+                    _device_payload(
+                        device,
+                        device_index,
+                        include_parameters,
+                        _top_level_path(devices, device_index),
+                        prefix=_path_segment(devices, device_index),
+                    )
+                    for devices in (_tuple(track.devices),)
+                    for device_index, device in enumerate(devices)
                 ],
             }
             for kind, index, track in targets
@@ -442,38 +481,76 @@ def batch(song, params):
         except LiveOpsError as exc:
             raise LiveOpsError(f"operation {position}: {exc}; nothing was changed") from exc
 
-    results = []
+    atomic = params.get("atomic", True)
+    if not isinstance(atomic, bool):
+        raise LiveOpsError("batch 'atomic' must be true or false")
     begin = getattr(song, "begin_undo_step", None)
     end = getattr(song, "end_undo_step", None)
     grouped_undo = callable(begin) and callable(end)
-    if grouped_undo:
-        begin()
-    try:
-        for position, operation in enumerate(operations):
-            try:
-                operation_params = operation.get("params", {})
-                if position in delete_targets:
-                    result = delete_device(song, operation_params, delete_targets[position])
-                else:
-                    result = _HANDLERS[operation["method"]](song, operation_params)
-                results.append(result)
-            except Exception as exc:
-                return {
-                    "completed": results,
-                    "failed": {"index": position, "operation": operation, "error": str(exc)},
-                    "grouped_undo": grouped_undo,
-                }
-    finally:
+    summary = {
+        "grouped_undo": grouped_undo,
+        "undo_steps": ("one" if atomic else "per_operation") if grouped_undo else "none",
+    }
+
+    def run(position, operation):
+        operation_params = operation.get("params", {})
+        if position in delete_targets:
+            return delete_device(song, operation_params, delete_targets[position])
+        return _HANDLERS[operation["method"]](song, operation_params)
+
+    results = []
+    if atomic:
         if grouped_undo:
-            end()
-    return {"completed": results, "failed": None, "grouped_undo": grouped_undo}
+            begin()
+        try:
+            for position, operation in enumerate(operations):
+                try:
+                    results.append(run(position, operation))
+                except Exception as exc:
+                    return _batch_failure(results, position, operation, exc, summary)
+        finally:
+            if grouped_undo:
+                end()
+        return {"completed": results, "failed": None, **summary}
+
+    # atomic=false: each operation is its own undo step, so Undo can step
+    # back through the batch one change at a time (issue #3).
+    for position, operation in enumerate(operations):
+        try:
+            results.append(_in_undo_step(song, lambda p=position, o=operation: run(p, o)))
+        except Exception as exc:
+            return _batch_failure(results, position, operation, exc, summary)
+    return {"completed": results, "failed": None, **summary}
+
+
+def _batch_failure(results, position, operation, exc, summary):
+    return {
+        "completed": results,
+        "failed": {"index": position, "operation": operation, "error": str(exc)},
+        **summary,
+    }
+
+
+MAX_UNDO_COUNT = 20
 
 
 def undo(song, params):
-    if not bool(getattr(song, "can_undo", True)):
+    """Run Live's Undo ``count`` times (default 1). Stops early when Live has
+    nothing left to undo, and reports how many steps were undone."""
+
+    count = params.get("count", 1)
+    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_UNDO_COUNT:
+        raise LiveOpsError(f"undo count must be an integer from 1 to {MAX_UNDO_COUNT}")
+    undone = 0
+    while undone < count and bool(getattr(song, "can_undo", True)):
+        song.undo()
+        undone += 1
+    if undone == 0:
         raise LiveOpsError("Live has nothing to undo")
-    song.undo()
-    return {"undone": True}
+    result = {"undone": True, "steps": undone}
+    if undone < count:
+        result["note"] = f"Live had only {undone} step(s) to undo."
+    return result
 
 
 # Lookup -------------------------------------------------------------------
@@ -564,12 +641,12 @@ def resolve_device_path(track, ref):
 
     if isinstance(ref, int) or "/" not in str(ref) or _has_device_named(track, str(ref)):
         index, device = resolve_device(track, ref)
-        return _str(device.name), index, device, track
+        return _top_level_path(_tuple(track.devices), index), index, device, track
     segments = [part.strip() for part in str(ref).split("/")]
     if any(not part for part in segments):
         raise LiveOpsError(f"device path '{ref}' has an empty part")
     index, device = resolve_device(track, segments[0])
-    path = [_str(device.name)]
+    path = [_path_segment(_tuple(track.devices), index)]
     owner = track
     rest = segments[1:]
     while rest:
@@ -587,15 +664,56 @@ def resolve_device_path(track, ref):
         else:
             chains = _tuple(_get(device, "chains", ()))
             label = "chain"
-        _chain_index, chain = _pick(chains, rest[0], label, "/".join(path))
-        path.append(_str(chain.name))
+        chain_index, chain = _pick(chains, rest[0], label, "/".join(path))
+        path.append(_path_segment(chains, chain_index))
         if len(rest) < 2:
             raise LiveOpsError(f"device path '{ref}' ends at a chain; add a device name")
-        index, device = _pick(_tuple(chain.devices), rest[1], "device", "/".join(path))
-        path.append(_str(device.name))
+        chain_devices = _tuple(chain.devices)
+        index, device = _pick(chain_devices, rest[1], "device", "/".join(path))
+        path.append(_path_segment(chain_devices, index))
         owner = chain
         rest = rest[2:]
     return "/".join(path), index, device, owner
+
+
+def _path_segment(items, position):
+    """The text for one part of a device path that resolves back to ``items[position]``.
+
+    The name is used when it picks this item unambiguously; otherwise the
+    index is (issue #24: two Drum Rack chains both named "Guiro Short").
+    Names that would be read as something else also get the index: digits
+    (read as an index), "returns" (the return-chain marker), names with "/"
+    (the separator), and names with surrounding spaces (segments are
+    stripped).
+    """
+
+    name = _str(items[position].name)
+    exact = sum(1 for item in items if _str(item.name) == name)
+    if (
+        exact == 1
+        and name
+        and name == name.strip()
+        and not name.isdigit()
+        and "/" not in name
+        and name.lower() != "returns"
+    ):
+        return name
+    return str(position)
+
+
+def _top_level_path(devices, position):
+    """Path for a device directly on a track.
+
+    A whole-name match is tried first for top-level devices, so a unique
+    name containing "/" still works on its own; inside a longer path it
+    cannot, which ``_path_segment`` handles for the devices below it.
+    """
+
+    name = _str(devices[position].name)
+    exact = sum(1 for device in devices if _str(device.name) == name)
+    if exact == 1 and name and name == name.strip():
+        return name
+    return str(position)
 
 
 def _has_device_named(track, name):
@@ -688,42 +806,16 @@ def value_for_display(parameter, text):
 
     target = parse_display_number(text)
     if target is None:
-        raise LiveOpsError(f"could not read a number from '{text}'")
+        low, high = float(parameter.min), float(parameter.max)
+        raise LiveOpsError(
+            f"could not read a number from '{text}' for '{_str(parameter.name)}' "
+            f"(it shows '{_display(parameter, low)}' to '{_display(parameter, high)}'). "
+            f"Use a raw value between {low} and {high} instead."
+        )
     low, high = float(parameter.min), float(parameter.max)
-    original = float(parameter.value)
-    try:
-        reader = _display_reader(parameter, low, high)
-        return _search_display(parameter, reader, low, high, target, text, quantized)
-    finally:
-        # Probing may have moved the parameter; put it back so a failed match
-        # changes nothing and a found one is set once, by the caller.
-        if float(parameter.value) != original:
-            parameter.value = original
-
-
-def _display_reader(parameter, low, high):
-    """Pick how to read the display text for a raw value.
-
-    Native devices format any value with ``str_for_value``. For some plugin
-    parameters it appears to return the display of the current value
-    whatever value is passed (issue #16), so every probe looks the same.
-    Then the value is set briefly and read back with ``str(parameter)``,
-    which Live's own control surface scripts use to show a parameter's
-    current value; the caller restores the original value.
-    In Live 12.4.16 this did not help for Valhalla Supermassive: the text
-    read back in the same call was still an earlier value's.
-    """
-
-    if high <= low or _display(parameter, low) != _display(parameter, high):
-        return _display
-
-    def probe(param, value):
-        param.value = value
-        return str(param)
-
-    if probe(parameter, low) == probe(parameter, high):
-        return _display  # The display really is constant; report it below.
-    return probe
+    # Only str_for_value is read here; the parameter is never written while
+    # searching, so a failed match changes nothing and leaves no undo step.
+    return _search_display(parameter, _display, low, high, target, text, quantized)
 
 
 def _search_display(parameter, reader, low, high, target, text, quantized):
@@ -750,11 +842,8 @@ def _search_display(parameter, reader, low, high, target, text, quantized):
         return edge
     # Displays are rounded, so many raw values show the same number. Find the
     # span of raw values that display the target and aim for its middle.
-    # Probing writes the parameter on every step, so use fewer steps there:
-    # 24 halvings still resolve a millionth of the range.
-    steps = 60 if reader is _display else 24
-    start = _first_raw_where(number, low, high, rising, lambda n: n >= target, steps)
-    stop = _first_raw_where(number, low, high, rising, lambda n: n > target, steps)
+    start = _first_raw_where(number, low, high, rising, lambda n: n >= target)
+    stop = _first_raw_where(number, low, high, rising, lambda n: n > target)
     if number(start) == target and stop > start:
         result = (start + stop) / 2.0
     else:
@@ -915,8 +1004,12 @@ def _routing_payload(track):
     return payload
 
 
-def _device_payload(device, index, include_parameters, path=None, depth=0):
+def _device_payload(device, index, include_parameters, path=None, depth=0, prefix=None):
+    """``path`` is how tools address this device; ``prefix`` is the same for
+    the devices inside it (they differ only for a top-level name with "/")."""
+
     path = path or _str(device.name)
+    prefix = prefix or path
     payload = {
         "index": index,
         "name": _str(device.name),
@@ -927,12 +1020,12 @@ def _device_payload(device, index, include_parameters, path=None, depth=0):
     }
     if bool(_get(device, "can_have_chains", False)):
         payload["chains"] = _chains_payload(
-            _get(device, "chains", ()), path, include_parameters, depth
+            _get(device, "chains", ()), prefix, include_parameters, depth
         )
         return_chains = _tuple(_get(device, "return_chains", ()))
         if return_chains:
             payload["return_chains"] = _chains_payload(
-                return_chains, f"{path}/returns", include_parameters, depth
+                return_chains, f"{prefix}/returns", include_parameters, depth
             )
     if include_parameters:
         payload["parameters"] = [
@@ -945,9 +1038,11 @@ def _device_payload(device, index, include_parameters, path=None, depth=0):
 def _chains_payload(chains, prefix, include_parameters, depth):
     if depth >= MAX_RACK_DEPTH:
         return [{"name": _str(chain.name), "truncated": True} for chain in _tuple(chains)]
+    chains = _tuple(chains)
     result = []
-    for chain in _tuple(chains):
-        chain_path = f"{prefix}/{_str(chain.name)}"
+    for chain_index, chain in enumerate(chains):
+        chain_path = f"{prefix}/{_path_segment(chains, chain_index)}"
+        devices = _tuple(chain.devices)
         result.append(
             {
                 "name": _str(chain.name),
@@ -956,10 +1051,10 @@ def _chains_payload(chains, prefix, include_parameters, depth):
                         device,
                         i,
                         include_parameters,
-                        f"{chain_path}/{_str(device.name)}",
+                        f"{chain_path}/{_path_segment(devices, i)}",
                         depth + 1,
                     )
-                    for i, device in enumerate(_tuple(chain.devices))
+                    for i, device in enumerate(devices)
                 ],
             }
         )
