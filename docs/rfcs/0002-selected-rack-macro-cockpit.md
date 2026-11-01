@@ -3,7 +3,7 @@
 **Status:** Accepted  
 **Created:** 2026-05-27  
 **Owner:** @fadnavismehul  
-**Tracking issue:** not opened yet  
+**Tracking issue:** [#4](https://github.com/fadnavismehul/abletonian/issues/4)  
 **Related Docs:** [Product Vision](../product/vision.md), [Design Philosophy](../design/philosophy.md), [Strategic Directions](../exploration/strategic-directions.md), [Robustness and Safety](../engineering/robustness-and-safety.md)  
 
 ## Goal
@@ -368,7 +368,7 @@ code lives and decisions made while building it.
   - 2026-11-01: `.venv/bin/python -m unittest discover -s tests` passed
     (101 tests); `.venv/bin/ruff check src tests remote_scripts` passed.
   - Not yet validated in Ableton Live.
-- **Status as of 2026-11-01** (move to the tracking issue once it exists):
+- **Status as of 2026-11-01** (live progress is in #4):
   - Done: spec generation without mutating the Live Set (fake and LOM-shaped
     fakes); spec carries source context, controls, groups, labels,
     descriptions, permissions, and renderer hints; temporary by default; text
