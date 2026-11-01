@@ -8,14 +8,19 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from abletonian.bridge.client import BridgeClient, BridgeConnectionError
-from abletonian.cockpit import CockpitError, render_cockpit_text
+from abletonian.cockpit import CockpitError, MacroCockpitSpec, rack_fingerprint, render_cockpit_text
 from abletonian.cockpit import generate_macro_cockpit as build_macro_cockpit
+from abletonian.cockpit_store import CockpitStore, CockpitStoreError
 from abletonian.config import AbletonianConfig
 from abletonian.daws import get_daw_profile, list_daw_profiles
 from abletonian.manual import list_manual_editions, lookup_manual, search_manual
 
 
-def build_mcp(config: AbletonianConfig, bridge: BridgeClient | None = None) -> FastMCP:
+def build_mcp(
+    config: AbletonianConfig,
+    bridge: BridgeClient | None = None,
+    cockpit_store: CockpitStore | None = None,
+) -> FastMCP:
     """Build an MCP server named after the configured agent."""
 
     mcp = FastMCP(config.agent_name)
@@ -25,6 +30,9 @@ def build_mcp(config: AbletonianConfig, bridge: BridgeClient | None = None) -> F
         timeout=config.bridge_timeout,
     )
     target_profile = get_daw_profile(config.target_daw)
+    store = cockpit_store or CockpitStore(config.resolved_cockpit_dir)
+    # Cockpits generated in this session, so the user can choose to save one.
+    recent_cockpits: dict[str, MacroCockpitSpec] = {}
 
     @mcp.tool()
     def get_agent_profile() -> str:
@@ -289,7 +297,76 @@ def build_mcp(config: AbletonianConfig, bridge: BridgeClient | None = None) -> F
             spec = build_macro_cockpit(rack, health)
         except CockpitError as exc:
             return f"Could not build a cockpit from the rack data: {exc}"
+        recent_cockpits[spec.id] = spec
         return json.dumps({"text": render_cockpit_text(spec), "cockpit": spec.to_wire()}, indent=2)
+
+    @mcp.tool()
+    def save_macro_cockpit(cockpit_id: str) -> str:
+        """Save a Macro Cockpit generated in this session so it can be reopened later.
+
+        Only call this when the user asks to keep the cockpit; cockpits are
+        temporary by default. cockpit_id is the "id" from generate_macro_cockpit.
+        Writes a JSON file in the cockpit folder; does not change the Live Set.
+        """
+
+        spec = recent_cockpits.get(cockpit_id)
+        if spec is None:
+            return (
+                f"No cockpit {cockpit_id!r} was generated in this session. "
+                "Generate it with generate_macro_cockpit, then save it."
+            )
+        try:
+            saved = store.save(spec)
+        except (CockpitStoreError, OSError) as exc:
+            return f"Could not save the cockpit: {exc}"
+        recent_cockpits[cockpit_id] = saved
+        return json.dumps(
+            {"saved": True, "id": saved.id, "saved_at": saved.saved_at, "folder": str(store.root)},
+            indent=2,
+        )
+
+    @mcp.tool()
+    def list_saved_macro_cockpits() -> str:
+        """List saved Macro Cockpits (id, title, track, device, saved time)."""
+
+        return json.dumps({"folder": str(store.root), "cockpits": store.list_saved()}, indent=2)
+
+    @mcp.tool()
+    def open_macro_cockpit(cockpit_id: str, check_rack: bool = True) -> str:
+        """Open a saved Macro Cockpit.
+
+        With check_rack, the selected Rack is read (never changed) and compared
+        with the rack the cockpit was made from. If they differ, the saved
+        cockpit is returned with rack_matches false and a warning: tell the
+        user, and offer to generate a fresh cockpit instead.
+        """
+
+        try:
+            spec = store.load(cockpit_id)
+        except CockpitStoreError as exc:
+            return f"Could not open the cockpit: {exc}"
+        result: dict[str, Any] = {"rack_matches": None, "warnings": []}
+        if check_rack:
+            try:
+                rack = bridge_client.request("ableton.get_selected_rack_macros", {})
+            except BridgeConnectionError as exc:
+                result["warnings"].append(f"Could not read the selected rack to compare: {exc}")
+            else:
+                matches = rack_fingerprint(rack) == spec.source.get("fingerprint")
+                result["rack_matches"] = matches
+                if not matches:
+                    device = (rack.get("device") or {}).get("name")
+                    result["warnings"].append(
+                        f"The selected rack ({device!r}) does not match this cockpit, which was "
+                        f"made from {spec.source.get('device_name')!r} on "
+                        f"{spec.source.get('track_name')!r}, or its macros changed since. "
+                        "Values shown are from when it was saved."
+                    )
+        recent_cockpits[spec.id] = spec
+        text = render_cockpit_text(spec)
+        if result["warnings"]:
+            text += "\n" + "\n".join(f"Warning: {w}" for w in result["warnings"])
+        return json.dumps({"text": text, **result, "cockpit": spec.to_wire()}, indent=2)
 
     @mcp.tool()
     def draft_action_plan(goal: str) -> str:

@@ -361,9 +361,11 @@ code lives and decisions made while building it.
     (read-only, runs on Live's main thread like every bridge call).
   - `remote_scripts/Abletonian/bridge_server.py`: adapter 0.3.0 advertises
     `read_rack_macros` and lists `set_rack_macro_value` as unsupported.
-  - `src/abletonian/server.py`: MCP tool `generate_macro_cockpit`.
-  - `tests/test_cockpit.py`, `tests/test_live_ops.py` (`RackMacroTests`),
-    `tests/test_server.py`.
+  - `src/abletonian/server.py`: MCP tools `generate_macro_cockpit`,
+    `save_macro_cockpit`, `list_saved_macro_cockpits`, `open_macro_cockpit`.
+  - `src/abletonian/cockpit_store.py`: saved cockpits as JSON sidecars (#7).
+  - `tests/test_cockpit.py`, `tests/test_cockpit_store.py`,
+    `tests/test_live_ops.py` (`RackMacroTests`), `tests/test_server.py`.
 - **Verification:**
   - 2026-11-01: `.venv/bin/python -m unittest discover -s tests` passed
     (101 tests); `.venv/bin/ruff check src tests remote_scripts` passed.
@@ -388,6 +390,13 @@ code lives and decisions made while building it.
     early Remote Script adapter) does not have the macro read; the code that
     runs inside Live is `remote_scripts/Abletonian/`.
 - **Deviations from proposal:**
+  - 2026-11-01 (#7): Saved cockpits live in one per-user folder
+    (`ABLETONIAN_COCKPIT_DIR`), not beside the project, because the MCP server
+    cannot reliably learn the open `.als` path. One file per cockpit id; the
+    id contains the rack fingerprint, so different racks never share a file.
+    Opening compares the selected rack's fingerprint and warns on mismatch
+    rather than merging. Saving needs a cockpit generated in the same server
+    session, so the model cannot save a spec it wrote itself.
   - 2026-11-01: V1 labels keep the macro name exactly as Live reports it.
     The RFC example relabels `Macro 1` as `Brightness`; generating new labels
     needs model assistance, which is an open question, so the rule-based V1

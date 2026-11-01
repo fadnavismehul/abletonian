@@ -201,6 +201,7 @@ class MacroCockpitSpec:
     omitted_macros: tuple[dict[str, Any], ...] = ()
     warnings: tuple[str, ...] = ()
     mode: str = "temporary"
+    saved_at: str | None = None
     renderer_hints: dict[str, Any] = field(
         default_factory=lambda: {
             "density": "compact",
@@ -225,6 +226,7 @@ class MacroCockpitSpec:
             "title": self.title,
             "mode": self.mode,
             "created_at": self.created_at,
+            "saved_at": self.saved_at,
             "source": dict(self.source),
             "permissions": dict(self.permissions),
             "connection": self.connection,
@@ -255,6 +257,7 @@ class MacroCockpitSpec:
             title=_require_str(data, "title"),
             mode=_require_str(data, "mode"),
             created_at=_require_str(data, "created_at"),
+            saved_at=_optional_str(data.get("saved_at")),
             source=_require_dict(data.get("source"), "source"),
             permissions={str(k): bool(v) for k, v in permissions.items()},
             connection=_require_str(data, "connection"),
@@ -408,7 +411,8 @@ def render_cockpit_text(spec: MacroCockpitSpec) -> str:
         spec.title,
         f"Track: {source.get('track_name')} | Device: {source.get('device_name')} "
         f"({source.get('device_type')}) | Live {source.get('live_version')}",
-        f"Status: {connection}; {spec.mode}, not saved",
+        f"Status: {connection}; "
+        + (f"saved {spec.saved_at}" if spec.mode == "saved" else "temporary, not saved"),
     ]
     for group in spec.groups:
         lines.append("")

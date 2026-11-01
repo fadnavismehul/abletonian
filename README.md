@@ -93,6 +93,7 @@ to older ones, so answers can be pinned to an edition.
 | Bridge port | `--bridge-port` | `ABLETONIAN_BRIDGE_PORT` | `9877` |
 | Bridge timeout | `--bridge-timeout` | `ABLETONIAN_BRIDGE_TIMEOUT` | `35.0` |
 | Manual folder | | `ABLETONIAN_MANUAL_DIR` | `docs/ableton-manual` |
+| Saved cockpits folder | `--cockpit-dir` | `ABLETONIAN_COCKPIT_DIR` | per-user data folder, `abletonian/cockpits` |
 
 ## Strategic Directions
 
