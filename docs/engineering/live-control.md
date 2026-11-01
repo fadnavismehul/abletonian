@@ -118,7 +118,8 @@ deletes that device again, so a failed call leaves the track unchanged.
 
 ### 2026-11-01, Live 12.4.16 Suite, macOS
 
-Set: `testing/First Light Project/First Light.als`, not saved afterwards.
+Set: `testing/First Light Project/First Light After Extraction.als` (the
+First Light set after a real Drum Rack extraction), not saved afterwards.
 
 - `daw.health` reported adapter 0.2.0 on Live 12.4.16, Python 3.11.6.
 - `list_tracks` returned 7 tracks, 2 returns, and Main with routing, levels,

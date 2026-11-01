@@ -33,6 +33,13 @@ Current fake execution creates a post-state with the six original tracks plus:
 - `1-C78 Core Kit - Tamb`,
 - `1-C78 Core Kit - Kick`.
 
-Future validation can add a copied version of this set once real mutation
-commands exist. Keep this fixture small and read-only so CI-style checks stay
-fast and easy to reason about.
+Keep this fixture small and read-only so CI-style checks stay fast and easy to
+reason about. Do not save over it in Live: the integration tests in
+`tests/test_als_integration.py` expect its original six tracks.
+
+## First Light After Extraction
+
+`First Light Project/First Light After Extraction.als` is the same set saved
+after a real Drum Rack extraction in Live (`Snare`, `Kick` and `Closed Hi Hat`
+tracks were added). The 2026-11-01 Live Set control validation in
+`docs/engineering/live-control.md` ran against it. No automated test reads it.
