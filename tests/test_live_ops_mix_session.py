@@ -104,5 +104,95 @@ class ReturnRenameTests(unittest.TestCase):
         self.assertEqual(song.return_tracks[1].name, "B-")
 
 
+class ReturnSong(Song):
+    def __init__(self):
+        super().__init__()
+        self.created = 0
+
+    def create_return_track(self):
+        self.created += 1
+        letter = chr(ord("A") + len(self.return_tracks))
+        self.return_tracks = (*self.return_tracks, Track(f"{letter}-Return", sends=0))
+
+
+class CreateReturnTrackTests(unittest.TestCase):
+    """Issue #18."""
+
+    def test_adds_a_named_coloured_return(self):
+        song = ReturnSong()
+
+        result = live_ops.handle(
+            song, "ableton.create_return_track", {"name": "C-Room", "color": "#FF0000"}
+        )
+
+        self.assertEqual(song.created, 1)
+        self.assertEqual(result["track"], {"kind": "return", "index": 2, "name": "Room"})
+        self.assertEqual(result["letter"], "C")
+        self.assertEqual(result["color"], "#FF0000")
+
+    def test_without_name_keeps_lives_default(self):
+        song = ReturnSong()
+
+        result = live_ops.handle(song, "ableton.create_return_track", {})
+
+        self.assertEqual(result["track"]["name"], "C-Return")
+
+    def test_runs_inside_a_batch(self):
+        song = ReturnSong()
+
+        result = live_ops.handle(
+            song,
+            "ableton.batch",
+            {"operations": [{"method": "ableton.create_return_track", "params": {"name": "Hall"}}]},
+        )
+
+        self.assertIsNone(result["failed"])
+        self.assertEqual(song.undo_steps, ["begin", "end"])
+
+    def test_live_without_the_call_gets_a_clear_error(self):
+        with self.assertRaisesRegex(LiveOpsError, "cannot create return tracks"):
+            live_ops.handle(Song(), "ableton.create_return_track", {})
+
+
+class DeleteDeviceTests(unittest.TestCase):
+    """Issue #19."""
+
+    def setUp(self):
+        self.song = Song()
+        live_ops.handle(self.song, "ableton.insert_device", {"track": 0, "device_name": "Utility"})
+        live_ops.handle(
+            self.song, "ableton.insert_device", {"track": 0, "device_name": "Glue Compressor"}
+        )
+        self.track = self.song.tracks[0]
+
+    def delete(self, **params):
+        return live_ops.handle(self.song, "ableton.delete_device", {"track": 0, **params})
+
+    def test_without_confirm_only_previews(self):
+        result = self.delete(device="Glue Compressor")
+
+        self.assertFalse(result["deleted"])
+        self.assertEqual(result["would_delete"]["device"]["index"], 1)
+        self.assertIn("Output", result["would_delete"]["device"]["parameters"])
+        self.assertEqual(len(self.track.devices), 2)
+
+    def test_truthy_values_other_than_true_do_not_confirm(self):
+        for confirm in ("true", 1, "yes"):
+            with self.subTest(confirm=confirm):
+                self.assertFalse(self.delete(device=0, confirm=confirm)["deleted"])
+        self.assertEqual(len(self.track.devices), 2)
+
+    def test_deletes_the_named_device_with_confirm(self):
+        result = self.delete(device="Utility", confirm=True)
+
+        self.assertTrue(result["deleted"])
+        self.assertEqual(result["device"]["name"], "Utility")
+        self.assertEqual([d.name for d in self.track.devices], ["Glue Compressor"])
+
+    def test_unknown_device_lists_the_choices(self):
+        with self.assertRaisesRegex(LiveOpsError, "Devices: Utility, Glue Compressor"):
+            self.delete(device="Limiter", confirm=True)
+
+
 if __name__ == "__main__":
     unittest.main()

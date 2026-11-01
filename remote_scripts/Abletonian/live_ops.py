@@ -30,6 +30,8 @@ BATCHABLE_METHODS = (
     "ableton.set_track_properties",
     "ableton.set_mixer",
     "ableton.insert_device",
+    "ableton.create_return_track",
+    "ableton.delete_device",
 )
 
 
@@ -326,6 +328,57 @@ def insert_device(song, params):
         "device": _device_payload(device, position, include_parameters=False),
         "parameters_set": changed,
     }
+
+
+def create_return_track(song, params):
+    """Add a return track at the end (``Song.create_return_track``). Additive."""
+
+    create = getattr(song, "create_return_track", None)
+    if not callable(create):
+        raise LiveOpsError("this version of Live cannot create return tracks from a script")
+    before = len(_tuple(song.return_tracks))
+    create()
+    returns = _tuple(song.return_tracks)
+    if len(returns) != before + 1:
+        raise LiveOpsError("Live did not add a return track")
+    index = len(returns) - 1
+    track = returns[index]
+    if params.get("name") is not None:
+        track.name = _without_return_prefix(str(params["name"]), index)
+    if params.get("color") is not None:
+        track.color = _parse_color(params["color"])
+    return {
+        "track": _track_ref_payload("return", index, track),
+        "letter": chr(ord("A") + index) if index < 26 else None,
+        "color": _hex_color(_get(track, "color")),
+        "note": "Every track now has a send to this return; check send levels before playing.",
+    }
+
+
+def delete_device(song, params):
+    """Delete a device. Destructive: without ``confirm=true`` it only previews."""
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    device_index, device = resolve_device(track, _required(params, "device"))
+    preview = {
+        "track": _track_ref_payload(kind, index, track),
+        "device": {
+            "index": device_index,
+            "name": _str(device.name),
+            "class_name": _str(_get(device, "class_name", "")),
+            "parameters": {
+                _str(p.name): _shown(p) for p in _tuple(_get(device, "parameters", ()))
+            },
+        },
+    }
+    if params.get("confirm") is not True:
+        return {
+            "deleted": False,
+            "would_delete": preview,
+            "hint": "Nothing was changed. Call again with confirm=true to delete this device.",
+        }
+    track.delete_device(device_index)
+    return {"deleted": True, **preview, "undo": "Live's Undo restores the device and settings."}
 
 
 def batch(song, params):
@@ -868,6 +921,8 @@ _HANDLERS = {
     "ableton.set_track_properties": set_track_properties,
     "ableton.set_mixer": set_mixer,
     "ableton.insert_device": insert_device,
+    "ableton.create_return_track": create_return_track,
+    "ableton.delete_device": delete_device,
     "ableton.batch": batch,
     "ableton.undo": undo,
 }

@@ -269,12 +269,34 @@ def build_mcp(
         )
 
     @mcp.tool()
+    def create_return_track(name: str | None = None, color: str | None = None) -> str:
+        """Add a return track after the existing ones, optionally named and
+        coloured ("#RRGGBB"). Additive. Every track gets a send to the new
+        return; tell the user to check send levels. Live adds the letter
+        itself, so pass "Room" (or "E-Room") for "E-Room"."""
+
+        return live_request("ableton.create_return_track", without_none(name=name, color=color))
+
+    @mcp.tool()
+    def delete_device(track: int | str, device: int | str, confirm: bool = False) -> str:
+        """Delete a device from a track. Destructive.
+
+        Without confirm=true nothing changes: it returns the device and its
+        current settings so you can show the user what would be removed. Only
+        pass confirm=true after the user agrees. Live's Undo brings it back."""
+
+        return live_request(
+            "ableton.delete_device", {"track": track, "device": device, "confirm": confirm}
+        )
+
+    @mcp.tool()
     def apply_batch(operations: list[dict[str, Any]]) -> str:
         """Run several changes in one go, as a single Live undo step.
 
         Each operation is {"method": ..., "params": {...}}. Methods:
         ableton.set_device_parameter, ableton.set_track_output_routing,
-        ableton.set_track_properties, ableton.set_mixer, ableton.insert_device.
+        ableton.set_track_properties, ableton.set_mixer, ableton.insert_device,
+        ableton.create_return_track, ableton.delete_device (needs "confirm": true).
         params use the same names as the matching tools. The batch stops at the
         first failure and reports what completed.
         """
