@@ -56,6 +56,20 @@ searches for the raw value whose display text matches, using the parameter's
 own `str_for_value`. That way `"-3 dB"` or `"25L"` lands where Live shows that
 number. Quantized parameters match an option name instead.
 
+Some API names differ from the device UI. Utility's gain knob is `Output` in
+the API; `Gain` is accepted as an alias. `list_devices` shows the API names.
+
+### Undo
+
+`apply_batch` wraps its operations in `Song.begin_undo_step` /
+`end_undo_step`. In Live 12.4.16 one Undo reverted a whole batch of mixer
+changes, and a whole batch of device inserts. When the batch ended with a
+parameter change on a newly inserted device, Live recorded that last change
+as its own step, so expect one or two Undos per batch.
+
+If setting `parameters` on a newly inserted device fails, `insert_device`
+deletes that device again, so a failed call leaves the track unchanged.
+
 ## Setup
 
 1. Install the package and the Remote Script:
@@ -94,11 +108,39 @@ number. Quantized parameters match an option name instead.
 - "List the tracks and where each one is routed."
 - "Add a Utility at the end of every track and set its gain to -3 dB."
   Claude calls `apply_batch` with one `ableton.insert_device` per track and
-  `parameters: {"Gain": "-3 dB"}`, which is one undo step.
+  `parameters: {"Gain": "-3 dB"}`.
 - "Route Kick, Snare, Bass and Vox to Main."
 - "Colour the drum tracks red and rename track 4 to Lead Vox."
 - "Set the Vox send to Reverb at -12 dB."
 - "Put a Glue Compressor first on the Drums group."
+
+## Validation log
+
+### 2026-11-01, Live 12.4.16 Suite, macOS
+
+Set: `testing/First Light Project/First Light.als`, not saved afterwards.
+
+- `daw.health` reported adapter 0.2.0 on Live 12.4.16, Python 3.11.6.
+- `list_tracks` returned 7 tracks, 2 returns, and Main with routing, levels,
+  sends, and devices. `available_output_routing_types` listed `Ext. Out`,
+  `Main`, the audio tracks, and `Sends Only`.
+- `insert_device` put Utility at the end of `6-Audio`, then EQ Eight at
+  index 0 ahead of it. An unknown name returned Live's
+  "Device ... not found" error.
+- `list_devices` returned all 12 Utility parameters with options.
+- `set_device_parameter` set Utility Output to -6, -3, +2.5, -inf, and
+  12 dB by display text, and Mono to On by option name.
+- `set_track_output_routing` routed `7-Audio` to `6-Audio` and back to
+  `Main`. An unknown target listed the available names.
+- `set_track_properties` renamed `7-Audio` and set its colour by hex and by
+  palette index.
+- `set_mixer` set volume -6 dB, pan 25L, send A -12 dB, send B raw 0.2,
+  and mute. Main volume -1 dB.
+- `apply_batch` inserted a Utility with Output -3 dB on all 7 tracks,
+  including a MIDI track without an instrument.
+- `undo` stepped the set back to its starting state.
+- Found and fixed: Utility gain is `Output` in the API, and a failed
+  parameter step used to leave the inserted device behind.
 
 ## Not supported yet
 

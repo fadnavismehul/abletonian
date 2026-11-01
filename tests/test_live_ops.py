@@ -75,10 +75,13 @@ class Track:
             can_have_chains=False,
             parameters=(
                 Param("Device On", 1.0, items=("Off", "On")),
-                Param("Gain", 0.0, -1.0, 1.0, display=gain_display),
+                Param("Output", 0.0, -1.0, 1.0, display=gain_display),
             ),
         )
         self.devices.insert(index, device)
+
+    def delete_device(self, index):
+        del self.devices[index]
 
 
 class Song:
@@ -140,6 +143,18 @@ class LiveOpsTests(unittest.TestCase):
         self.assertEqual(result["device"]["index"], 0)
         self.assertEqual(result["parameters_set"][0]["display"], "-3.0 dB")
         self.assertAlmostEqual(self.song.tracks[0].devices[0].parameters[1].value, -3 / 35, 4)
+
+    def test_insert_device_removes_device_when_a_parameter_fails(self):
+        with self.assertRaises(LiveOpsError) as raised:
+            self.call(
+                "ableton.insert_device",
+                track=0,
+                device_name="Utility",
+                parameters={"Width": "50 %"},
+            )
+
+        self.assertIn("removed again", str(raised.exception))
+        self.assertEqual(self.song.tracks[0].devices, [])
 
     def test_insert_device_rejects_out_of_range_index(self):
         with self.assertRaises(LiveOpsError):
@@ -220,7 +235,7 @@ class LiveOpsTests(unittest.TestCase):
 
         device = result["tracks"][0]["devices"][0]
         self.assertEqual(device["name"], "Utility")
-        self.assertEqual(device["parameters"][1]["name"], "Gain")
+        self.assertEqual(device["parameters"][1]["name"], "Output")
         self.assertEqual(device["parameters"][0]["options"], ["Off", "On"])
 
     def test_parse_display_number(self):

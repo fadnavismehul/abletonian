@@ -16,6 +16,11 @@ from __future__ import annotations
 import math
 import re
 
+# Live's API names some parameters differently from the device UI.
+PARAMETER_ALIASES = {
+    "StereoGain": {"gain": "Output"},  # Utility shows "Gain"; the API calls it "Output".
+}
+
 BATCHABLE_METHODS = (
     "ableton.set_device_parameter",
     "ableton.set_track_output_routing",
@@ -184,10 +189,18 @@ def insert_device(song, params):
         raise LiveOpsError(f"Live did not report a new device after inserting '{device_name}'")
     device = devices[position]
     changed = []
-    for parameter_ref, value in (params.get("parameters") or {}).items():
-        parameter = resolve_parameter(device, parameter_ref)
-        set_parameter_value(parameter, value)
-        changed.append(_param_payload(parameter))
+    try:
+        for parameter_ref, value in (params.get("parameters") or {}).items():
+            parameter = resolve_parameter(device, parameter_ref)
+            set_parameter_value(parameter, value)
+            changed.append(_param_payload(parameter))
+    except Exception as exc:
+        # Leave the track as it was rather than with a half-configured device.
+        delete = getattr(track, "delete_device", None)
+        if callable(delete):
+            delete(position)
+            raise LiveOpsError(f"{exc}. The new '{device_name}' was removed again.") from exc
+        raise
     return {
         "track": _track_ref_payload(kind, index, track),
         "device": _device_payload(device, position, include_parameters=False),
@@ -308,6 +321,8 @@ def resolve_parameter(device, ref):
             return parameters[ref]
         raise LiveOpsError(f"parameter index {ref} is out of range on '{_str(device.name)}'")
     lowered = str(ref).lower()
+    aliases = PARAMETER_ALIASES.get(_str(_get(device, "class_name", "")), {})
+    lowered = aliases.get(lowered, lowered).lower()
     for attribute in ("name", "original_name"):
         for parameter in parameters:
             if _str(_get(parameter, attribute, "")).lower() == lowered:
