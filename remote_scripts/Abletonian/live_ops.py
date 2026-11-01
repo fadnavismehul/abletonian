@@ -47,21 +47,34 @@ def handle(song, method, params):
 
 
 def list_tracks(song, params):
+    """List tracks. ``detail`` is "full" (default) or "compact".
+
+    Compact leaves out the available routing options and gives volume, pan,
+    and sends as display text only, so large sets fit in one tool result.
+    ``name`` keeps tracks whose name contains it (case-insensitive).
+    """
+
     include_returns = params.get("include_returns", True)
     include_master = params.get("include_master", True)
+    detail = params.get("detail", "full")
+    if detail not in ("full", "compact"):
+        raise LiveOpsError(f"detail must be 'full' or 'compact', got '{detail}'")
+    name_filter = params.get("name")
+    name_filter = str(name_filter).lower() if name_filter else None
     return_names = [_str(track.name) for track in _tuple(song.return_tracks)]
-    tracks = [
-        _track_payload(track, "track", index, return_names)
-        for index, track in enumerate(_tuple(song.tracks))
-    ]
+    items = [("track", i, t) for i, t in enumerate(_tuple(song.tracks))]
     if include_returns:
-        tracks.extend(
-            _track_payload(track, "return", index, return_names)
-            for index, track in enumerate(_tuple(song.return_tracks))
-        )
+        items.extend(("return", i, t) for i, t in enumerate(_tuple(song.return_tracks)))
     if include_master:
-        tracks.append(_track_payload(song.master_track, "master", 0, return_names))
-    return {"tracks": tracks, "return_track_names": return_names}
+        items.append(("master", 0, song.master_track))
+    if name_filter is not None:
+        items = [item for item in items if name_filter in _str(item[2].name).lower()]
+    payload = _compact_track_payload if detail == "compact" else _track_payload
+    return {
+        "tracks": [payload(track, kind, index, return_names) for kind, index, track in items],
+        "return_track_names": return_names,
+        "detail": detail,
+    }
 
 
 def list_devices(song, params):
@@ -205,7 +218,10 @@ def set_track_properties(song, params):
     kind, index, track = resolve_track(song, _required(params, "track"))
     before = {"name": _str(track.name), "color_index": _get(track, "color_index")}
     if params.get("name") is not None:
-        track.name = str(params["name"])
+        name = str(params["name"])
+        if kind == "return":
+            name = _without_return_prefix(name, index)
+        track.name = name
     if params.get("color_index") is not None:
         track.color_index = int(params["color_index"])
     if params.get("color") is not None:
@@ -585,6 +601,10 @@ def _display_number(parameter, value):
     return parse_display_number(_display(parameter, value))
 
 
+def _shown(parameter):
+    return _display(parameter, float(parameter.value))
+
+
 def _display(parameter, value):
     str_for_value = getattr(parameter, "str_for_value", None)
     if callable(str_for_value):
@@ -620,6 +640,33 @@ def _track_payload(track, kind, index, return_names):
     if kind != "master":
         payload["mute"] = bool(_get(track, "mute", False))
         payload["solo"] = bool(_get(track, "solo", False))
+    return payload
+
+
+def _compact_track_payload(track, kind, index, return_names):
+    mixer = track.mixer_device
+    group = _get(track, "group_track")
+    routing = _get(track, "output_routing_type")
+    payload = {
+        **_track_ref_payload(kind, index, track),
+        "color": _hex_color(_get(track, "color")),
+        "group": _str(group.name) if group is not None else None,
+        "output": _str(_get(routing, "display_name", "")) if routing is not None else None,
+        "volume": _shown(mixer.volume),
+        "pan": _shown(mixer.panning),
+        "sends": {
+            (return_names[i] if i < len(return_names) else str(i)): _shown(send)
+            for i, send in enumerate(_tuple(_get(mixer, "sends", ())))
+        },
+        "devices": [_str(device.name) for device in _tuple(track.devices)],
+    }
+    if bool(_get(track, "is_foldable", False)):
+        payload["is_group"] = True
+    if kind != "master":
+        if bool(_get(track, "mute", False)):
+            payload["mute"] = True
+        if bool(_get(track, "solo", False)):
+            payload["solo"] = True
     return payload
 
 
@@ -674,6 +721,20 @@ def _param_payload(parameter, compact=False):
 
 
 # Helpers ------------------------------------------------------------------
+
+
+def _without_return_prefix(name, return_index):
+    """Drop a leading "A-" from a name for return A.
+
+    Live shows a return's letter in front of its name, so storing "A-Room" on
+    return A shows "A-A-Room" (seen in Live 12.4.16, issue #15). A different
+    letter ("B-Room" on return A) is kept as the user typed it.
+    """
+
+    letter = chr(ord("A") + return_index) if return_index < 26 else None
+    if letter and len(name) > 2 and name[:2].upper() == f"{letter}-":
+        return name[2:].lstrip() or name
+    return name
 
 
 def _locate_track(song, target):

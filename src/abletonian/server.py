@@ -143,9 +143,19 @@ def build_mcp(
         return {key: value for key, value in params.items() if value is not None}
 
     @mcp.tool()
-    def list_tracks(include_returns: bool = True, include_master: bool = True) -> str:
+    def list_tracks(
+        include_returns: bool = True,
+        include_master: bool = True,
+        detail: str = "compact",
+        name: str | None = None,
+    ) -> str:
         """List tracks in the open Live Set: names, groups, colours, output routing,
-        volume, pan, sends, mute/solo, and device names.
+        volume, pan, sends, mute/solo, and device names. Read-only.
+
+        detail "compact" (default) gives levels as display text and leaves out
+        routing options, so large sets fit; use "full" (ideally with name) for
+        raw values and the available output routing choices. name keeps tracks
+        whose name contains it.
 
         Track references used by other tools accept an index into this list's
         regular tracks, a track name, "A"/"B"/... or "return:N" for returns, and
@@ -154,7 +164,12 @@ def build_mcp(
 
         return live_request(
             "ableton.list_tracks",
-            {"include_returns": include_returns, "include_master": include_master},
+            without_none(
+                include_returns=include_returns,
+                include_master=include_master,
+                detail=detail,
+                name=name,
+            ),
         )
 
     @mcp.tool()
