@@ -10,7 +10,25 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import StrictBool
 
-from abletonian.bridge.client import BridgeClient, BridgeConnectionError
+from abletonian.adapters.base import (
+    AdapterError,
+    AdapterResponseError,
+    Batch,
+    DawAdapter,
+    DeviceDelete,
+    DeviceInsert,
+    DeviceQuery,
+    MixerChange,
+    ParameterChange,
+    RackRef,
+    ReturnTrackCreate,
+    RoutingChange,
+    TrackPropertiesChange,
+    TrackQuery,
+    UndoRequest,
+)
+from abletonian.adapters.remote_script import RemoteScriptAdapter
+from abletonian.bridge.client import BridgeClient
 from abletonian.cockpit import CockpitError, MacroCockpitSpec, rack_fingerprint, render_cockpit_text
 from abletonian.cockpit import generate_macro_cockpit as build_macro_cockpit
 from abletonian.cockpit_html import render_cockpit_html
@@ -18,6 +36,7 @@ from abletonian.cockpit_store import CockpitStore, CockpitStoreError, write_text
 from abletonian.config import AbletonianConfig
 from abletonian.daws import get_daw_profile, list_daw_profiles
 from abletonian.manual import list_manual_editions, lookup_manual, search_manual
+from abletonian.policy import OPERATIONS, PolicyRefused, SafetyPolicy
 
 
 def _annotations(read_only: bool, destructive: bool, idempotent: bool) -> ToolAnnotations:
@@ -29,36 +48,84 @@ def _annotations(read_only: bool, destructive: bool, idempotent: bool) -> ToolAn
     )
 
 
-# MCP tool annotations derived from the safety classes in
-# docs/engineering/robustness-and-safety.md, so clients can tell reads from
-# changes (for example to auto-approve reads). They are hints for the client;
-# the confirm and undo rules are still enforced by the tools themselves.
+# MCP tool annotations, so clients can tell reads from changes (for example
+# to auto-approve reads). They are hints for the client; the confirm and undo
+# rules are enforced by SafetyPolicy. Tools that reach the DAW take theirs
+# from the operation table in policy.py; these two cover the rest.
 # Read-only: never changes the Live Set or any file.
 READ_ONLY = _annotations(read_only=True, destructive=False, idempotent=True)
 # Writes a file outside the Live Set (cockpit JSON or HTML); the Set is untouched.
 LOCAL_FILE = _annotations(read_only=False, destructive=False, idempotent=True)
-# Additive: creates new material in the Set; calling twice creates it twice.
-ADDITIVE = _annotations(read_only=False, destructive=False, idempotent=False)
-# Transformative: overwrites a value in the Set; repeating the call changes nothing more.
-SETS_VALUES = _annotations(read_only=False, destructive=True, idempotent=True)
-# Destructive or not repeatable: deletes material, or undoes Live history.
-DESTRUCTIVE = _annotations(read_only=False, destructive=True, idempotent=False)
+
+
+def _op(name: str) -> ToolAnnotations:
+    return OPERATIONS[name].annotations()
+
+
+_BATCH_TYPES = {
+    f"ableton.{kind.OPERATION}": kind
+    for kind in (
+        ParameterChange,
+        RoutingChange,
+        TrackPropertiesChange,
+        MixerChange,
+        DeviceInsert,
+        ReturnTrackCreate,
+        DeviceDelete,
+    )
+}
+
+
+def parse_batch(operations: list[dict[str, Any]]) -> tuple[Any, ...]:
+    """Turn apply_batch's {"method", "params"} dicts into typed changes.
+
+    Raises ValueError or TypeError with the position of the bad operation.
+    """
+
+    if not operations:
+        raise ValueError("batch operations must be a non-empty list")
+    parsed = []
+    for position, operation in enumerate(operations):
+        method = operation.get("method") if isinstance(operation, dict) else None
+        kind = _BATCH_TYPES.get(method) if isinstance(method, str) else None
+        if kind is None:
+            raise ValueError(
+                f"operation {position} has unsupported method {method!r}; "
+                f"allowed: {', '.join(_BATCH_TYPES)}"
+            )
+        params = operation.get("params") or {}
+        if not isinstance(params, dict):
+            raise ValueError(f"operation {position}: params must be an object")
+        try:
+            parsed.append(kind(**{k: v for k, v in params.items() if v is not None}))
+        except TypeError as exc:
+            raise ValueError(f"operation {position} ({method}): {exc}") from exc
+    return tuple(parsed)
 
 
 def build_mcp(
     config: AbletonianConfig,
-    bridge: BridgeClient | None = None,
+    bridge: Any | None = None,
     cockpit_store: CockpitStore | None = None,
     open_url: Any = webbrowser.open,
+    adapter: DawAdapter | None = None,
 ) -> MCPServer:
-    """Build an MCP server named after the configured agent."""
+    """Build an MCP server named after the configured agent.
+
+    adapter is the DAW connection. bridge is kept for one release: when given
+    (and adapter is not), it is wrapped in a RemoteScriptAdapter.
+    """
 
     mcp = MCPServer(config.agent_name)
-    bridge_client = bridge or BridgeClient(
-        host=config.bridge_host,
-        port=config.bridge_port,
-        timeout=config.bridge_timeout,
-    )
+    if adapter is None:
+        bridge_client = bridge or BridgeClient(
+            host=config.bridge_host,
+            port=config.bridge_port,
+            timeout=config.bridge_timeout,
+        )
+        adapter = RemoteScriptAdapter(bridge_client, target_daw=config.target_daw)
+    daw: DawAdapter = adapter
+    policy = SafetyPolicy(daw)
     target_profile = get_daw_profile(config.target_daw)
     store = cockpit_store or CockpitStore(config.resolved_cockpit_dir)
     # Cockpits generated in this session, so the user can choose to save one.
@@ -98,10 +165,12 @@ def build_mcp(
         """Check whether the configured DAW bridge responds."""
 
         try:
-            result = bridge_client.request("daw.health", {"target_daw": config.target_daw})
-        except BridgeConnectionError as exc:
+            health = daw.health()
+        except AdapterResponseError as exc:
+            return f"Bridge answered, but its health report is not usable: {exc}"
+        except AdapterError as exc:
             return f"Bridge unavailable: {exc}"
-        return json.dumps(result, indent=2)
+        return json.dumps(dict(health.raw), indent=2)
 
     @mcp.tool(annotations=READ_ONLY)
     def lookup_ableton_manual(query: str, live_version: str = "12") -> str:
@@ -131,45 +200,45 @@ def build_mcp(
 
         return json.dumps(list_manual_editions(), indent=2)
 
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(annotations=_op("plan_drum_rack_extraction"))
     def plan_drum_rack_extraction() -> str:
         """Return a dry-run Drum Rack extraction plan from the configured bridge."""
 
-        try:
-            result = bridge_client.request(
-                "workflow.plan_drum_rack_extraction",
-                {"target_daw": config.target_daw},
-            )
-        except BridgeConnectionError as exc:
-            return f"Bridge unavailable: {exc}"
-        return json.dumps(result, indent=2)
+        return run(
+            "plan_drum_rack_extraction",
+            None,
+            daw.plan_drum_rack_extraction,
+            prefix="Bridge unavailable",
+        )
 
-    @mcp.tool(annotations=ADDITIVE)
+    @mcp.tool(annotations=_op("execute_drum_rack_extraction"))
     def execute_drum_rack_extraction(confirm: bool = False) -> str:
         """Execute Drum Rack extraction after explicit confirmation."""
 
-        if confirm is not True:
-            return "workflow.execute_drum_rack_extraction requires confirm=true"
+        return run(
+            "execute_drum_rack_extraction",
+            confirm,
+            daw.execute_drum_rack_extraction,
+            prefix="Bridge unavailable",
+        )
+
+    def run(
+        name: str, request: Any, call: Any, prefix: str = "Bridge error"
+    ) -> str:
+        """Run one DAW operation through the policy and format the result."""
+
         try:
-            result = bridge_client.request(
-                "workflow.execute_drum_rack_extraction",
-                {"target_daw": config.target_daw, "confirm": True},
-            )
-        except BridgeConnectionError as exc:
-            return f"Bridge unavailable: {exc}"
+            result = policy.run(name, request, call)
+        except PolicyRefused as exc:
+            return str(exc)
+        except AdapterError as exc:
+            return f"{prefix}: {exc}"
         return json.dumps(result, indent=2)
 
-    def live_request(method: str, params: dict[str, Any]) -> str:
-        try:
-            result = bridge_client.request(method, params)
-        except BridgeConnectionError as exc:
-            return f"Bridge error: {exc}"
-        return json.dumps(result, indent=2)
+    def send(name: str, request: Any) -> str:
+        return run(name, request, lambda: getattr(daw, name)(request))
 
-    def without_none(**params: Any) -> dict[str, Any]:
-        return {key: value for key, value in params.items() if value is not None}
-
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(annotations=_op("list_tracks"))
     def list_tracks(
         include_returns: bool = True,
         include_master: bool = True,
@@ -189,9 +258,9 @@ def build_mcp(
         "main" for the main track.
         """
 
-        return live_request(
-            "ableton.list_tracks",
-            without_none(
+        return send(
+            "list_tracks",
+            TrackQuery(
                 include_returns=include_returns,
                 include_master=include_master,
                 detail=detail,
@@ -199,7 +268,7 @@ def build_mcp(
             ),
         )
 
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(annotations=_op("list_devices"))
     def list_devices(track: int | str | None = None, include_parameters: bool = True) -> str:
         """List devices on one track (or every track when track is omitted), with
         each parameter's raw value, range, display text, and options. Devices
@@ -207,12 +276,11 @@ def build_mcp(
         chains) with a "path" that set_device_parameter and delete_device
         accept. Read-only."""
 
-        return live_request(
-            "ableton.list_devices",
-            without_none(track=track, include_parameters=include_parameters),
+        return send(
+            "list_devices", DeviceQuery(track=track, include_parameters=include_parameters)
         )
 
-    @mcp.tool(annotations=SETS_VALUES)
+    @mcp.tool(annotations=_op("set_device_parameter"))
     def set_device_parameter(
         track: int | str,
         device: int | str,
@@ -228,12 +296,12 @@ def build_mcp(
         "25L", or an option name like "Off".
         """
 
-        return live_request(
-            "ableton.set_device_parameter",
-            {"track": track, "device": device, "parameter": parameter, "value": value},
+        return send(
+            "set_device_parameter",
+            ParameterChange(track=track, device=device, parameter=parameter, value=value),
         )
 
-    @mcp.tool(annotations=SETS_VALUES)
+    @mcp.tool(annotations=_op("set_track_output_routing"))
     def set_track_output_routing(
         track: int | str,
         routing_type: str,
@@ -242,12 +310,12 @@ def build_mcp(
         """Set a track's Audio To / MIDI To output by its display name, such as
         "Main" or a group track name. list_tracks shows the available names."""
 
-        return live_request(
-            "ableton.set_track_output_routing",
-            without_none(track=track, routing_type=routing_type, routing_channel=routing_channel),
+        return send(
+            "set_track_output_routing",
+            RoutingChange(track=track, routing_type=routing_type, routing_channel=routing_channel),
         )
 
-    @mcp.tool(annotations=SETS_VALUES)
+    @mcp.tool(annotations=_op("set_track_properties"))
     def set_track_properties(
         track: int | str,
         name: str | None = None,
@@ -257,12 +325,12 @@ def build_mcp(
         """Rename and/or recolour a track. color is "#RRGGBB" (Live snaps it to
         the nearest palette colour); color_index picks a palette slot directly."""
 
-        return live_request(
-            "ableton.set_track_properties",
-            without_none(track=track, name=name, color=color, color_index=color_index),
+        return send(
+            "set_track_properties",
+            TrackPropertiesChange(track=track, name=name, color=color, color_index=color_index),
         )
 
-    @mcp.tool(annotations=SETS_VALUES)
+    @mcp.tool(annotations=_op("set_mixer"))
     def set_mixer(
         track: int | str,
         volume: float | str | None = None,
@@ -275,14 +343,14 @@ def build_mcp(
         "C", or raw -1..1), sends keyed by return name, letter, or index
         ({"A": "-12 dB"}), mute, and solo."""
 
-        return live_request(
-            "ableton.set_mixer",
-            without_none(
+        return send(
+            "set_mixer",
+            MixerChange(
                 track=track, volume=volume, panning=panning, sends=sends, mute=mute, solo=solo
             ),
         )
 
-    @mcp.tool(annotations=ADDITIVE)
+    @mcp.tool(annotations=_op("insert_device"))
     def insert_device(
         track: int | str,
         device_name: str,
@@ -294,23 +362,23 @@ def build_mcp(
         (Live 12.3+). index is the chain position; omit it to append at the end.
         parameters are set on the new device right away, e.g. {"Gain": "-3 dB"}."""
 
-        return live_request(
-            "ableton.insert_device",
-            without_none(
+        return send(
+            "insert_device",
+            DeviceInsert(
                 track=track, device_name=device_name, index=index, parameters=parameters
             ),
         )
 
-    @mcp.tool(annotations=ADDITIVE)
+    @mcp.tool(annotations=_op("create_return_track"))
     def create_return_track(name: str | None = None, color: str | None = None) -> str:
         """Add a return track after the existing ones, optionally named and
         coloured ("#RRGGBB"). Additive. Every track gets a send to the new
         return; tell the user to check send levels. Live adds the letter
         itself, so pass "Room" (or "E-Room") for "E-Room"."""
 
-        return live_request("ableton.create_return_track", without_none(name=name, color=color))
+        return send("create_return_track", ReturnTrackCreate(name=name, color=color))
 
-    @mcp.tool(annotations=DESTRUCTIVE)
+    @mcp.tool(annotations=_op("delete_device"))
     def delete_device(track: int | str, device: int | str, confirm: StrictBool = False) -> str:
         """Delete a device from a track, or from inside a rack by its path
         (see list_devices). Destructive.
@@ -319,11 +387,9 @@ def build_mcp(
         current settings so you can show the user what would be removed. Only
         pass confirm=true after the user agrees. Live's Undo brings it back."""
 
-        return live_request(
-            "ableton.delete_device", {"track": track, "device": device, "confirm": confirm}
-        )
+        return send("delete_device", DeviceDelete(track=track, device=device, confirm=confirm))
 
-    @mcp.tool(annotations=DESTRUCTIVE)
+    @mcp.tool(annotations=_op("batch"))
     def apply_batch(operations: list[dict[str, Any]], atomic: StrictBool = True) -> str:
         """Run several changes in one go.
 
@@ -339,22 +405,13 @@ def build_mcp(
         them one at a time (undo_last_change with a count).
         """
 
-        params: dict[str, Any] = {"operations": operations}
-        if not atomic:
-            params["atomic"] = False
         try:
-            result = bridge_client.request("ableton.batch", params)
-        except BridgeConnectionError as exc:
-            return f"Bridge error: {exc}"
-        if not atomic and isinstance(result, dict) and "undo_steps" not in result:
-            result = {
-                **result,
-                "warning": "The Remote Script in Live is older and ran this batch as one undo "
-                "step. Reinstall it to get one step per operation.",
-            }
-        return json.dumps(result, indent=2)
+            batch = Batch(operations=parse_batch(operations), atomic=atomic)
+        except (TypeError, ValueError) as exc:
+            return f"{exc}. Nothing was changed."
+        return run("batch", batch, lambda: daw.apply_batch(batch))
 
-    @mcp.tool(annotations=DESTRUCTIVE)
+    @mcp.tool(annotations=_op("undo"))
     def undo_last_change(count: int = 1, confirm: StrictBool = False) -> str:
         """Run Live's Undo count times (1 to 20, default 1).
 
@@ -372,28 +429,12 @@ def build_mcp(
         undone.
         """
 
-        if count < 1 or count > 20:
-            return "count must be from 1 to 20"
-        if count > 1 and confirm is not True:
-            return (
-                f"Undoing {count} steps needs confirm=true. Live's undo history also holds "
-                "the user's own edits, so check with them first. Nothing was changed."
-            )
-        try:
-            params = {"count": count, "confirm": True} if count > 1 else {}
-            result = bridge_client.request("ableton.undo", params)
-        except BridgeConnectionError as exc:
-            return f"Bridge error: {exc}"
-        if count > 1 and isinstance(result, dict) and "steps" not in result:
-            result = {
-                **result,
-                "steps": 1,
-                "warning": "The Remote Script in Live is older and undid only one step. "
-                "Reinstall it to undo several at once.",
-            }
-        return json.dumps(result, indent=2)
+        if count < 1 or count > UndoRequest.MAX_COUNT:
+            return f"count must be from 1 to {UndoRequest.MAX_COUNT}"
+        request = UndoRequest(count=count, confirm=confirm)
+        return send("undo", request)
 
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(annotations=_op("get_selected_rack_macros"))
     def generate_macro_cockpit(
         track: int | str | None = None,
         device: int | str | None = None,
@@ -407,15 +448,16 @@ def build_mcp(
         selected track's selected Rack (or its first Rack) is used.
         """
 
+        ref = RackRef(track=track, device=device)
         try:
-            rack = bridge_client.request(
-                "ableton.get_selected_rack_macros", without_none(track=track, device=device)
+            rack = policy.run(
+                "get_selected_rack_macros", ref, lambda: daw.get_selected_rack_macros(ref)
             )
-        except BridgeConnectionError as exc:
+        except AdapterError as exc:
             return f"Bridge error: {exc}"
         try:
-            health = bridge_client.request("daw.health", {"target_daw": config.target_daw})
-        except BridgeConnectionError:
+            health: dict[str, Any] | None = dict(daw.health().raw)
+        except AdapterError:
             health = None
         try:
             spec = build_macro_cockpit(rack, health)
@@ -455,7 +497,7 @@ def build_mcp(
 
         return json.dumps({"folder": str(store.root), "cockpits": store.list_saved()}, indent=2)
 
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(annotations=_op("get_selected_rack_macros"))
     def open_macro_cockpit(cockpit_id: str, check_rack: bool = True) -> str:
         """Open a saved Macro Cockpit.
 
@@ -472,8 +514,12 @@ def build_mcp(
         result: dict[str, Any] = {"rack_matches": None, "warnings": []}
         if check_rack:
             try:
-                rack = bridge_client.request("ableton.get_selected_rack_macros", {})
-            except BridgeConnectionError as exc:
+                rack = policy.run(
+                    "get_selected_rack_macros",
+                    RackRef(),
+                    lambda: daw.get_selected_rack_macros(RackRef()),
+                )
+            except AdapterError as exc:
                 result["warnings"].append(f"Could not read the selected rack to compare: {exc}")
             else:
                 matches = rack_fingerprint(rack) == spec.source.get("fingerprint")

@@ -252,3 +252,14 @@ Code: `src/abletonian/adapters/base.py` (step 1), `adapters/remote_script.py`
   `BridgeConnectionError` carrying the bridge's code, message and hint, so
   the adapter can tell a refusal from an unreachable Live. Existing callers
   are unaffected.
+- 2026-11-03 (step 3): The policy checks a capability only when the adapter
+  already knows its capabilities (`known_capabilities()`, filled by any
+  health read such as `check_bridge_health`). Reading health before every
+  first call would add a bridge round trip and change the wire traffic the
+  tests pin. Until health is read, Live's own refusal still applies.
+- 2026-11-03 (step 3): `apply_batch` parses its `{"method", "params"}` dicts
+  into typed changes. An unknown method or parameter is now refused locally
+  with the operation's position and "Nothing was changed", and an
+  unconfirmed delete in a batch is refused before anything is sent.
+- 2026-11-03 (step 3): `check_bridge_health` validates the health answer and
+  says so when it is unusable, instead of printing whatever came back.
