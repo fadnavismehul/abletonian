@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
+import secrets
 import socket
 import struct
 import sys
@@ -36,9 +39,19 @@ except Exception:
 
 
 HOST = "127.0.0.1"
-PORT = 9877
-PROTOCOL_VERSION = "abletonian.bridge.v1"
-ADAPTER_VERSION = "0.5.1"
+# 39877, not 9877: several other Ableton MCP Remote Scripts listen on 9877
+# (RFC 0004). Must match DEFAULT_BRIDGE_PORT in src/abletonian/config.py.
+PORT = 39877
+PROTOCOL_VERSION = "abletonian.bridge.v2"
+ADAPTER_VERSION = "0.6.0"
+# The per-install key every request must carry (RFC 0004). Same path as
+# DEFAULT_BRIDGE_KEY_PATH in src/abletonian/bridge/client.py.
+KEY_PATH = os.path.join(os.path.expanduser("~"), ".abletonian", "bridge_key")
+KEY_HINT = (
+    "abletonian and Live must run as the same user, so both read the same key file. "
+    "If the key file was replaced or deleted, switch the Abletonian Control Surface "
+    "slot in Live to None and back to load or create it, then try again."
+)
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 # Live must start a request within this time or it is cancelled unrun, so a
 # client that gives up never sees its change applied later.
@@ -60,9 +73,15 @@ class AbletonianBridgeControlSurface(ControlSurface):
 
     def __init__(self, c_instance):
         super().__init__(c_instance)
+        self._bridge_key = BridgeKey(KEY_PATH)
+        try:
+            self._bridge_key.load_or_create()
+        except OSError as exc:
+            # Fail closed: without a key every request is refused.
+            self._log(f"could not create the bridge key at {KEY_PATH}: {exc}")
         self._server = _BridgeServer(self)
         self._server.start()
-        self._log("Abletonian bridge started on 127.0.0.1:9877")
+        self._log(f"Abletonian bridge started on {HOST}:{PORT}")
 
     def disconnect(self):
         self._server.stop()
@@ -374,15 +393,138 @@ def _listen_socket():
     return server
 
 
+class BridgeKey:
+    """The per-install key in ``~/.abletonian/bridge_key`` (RFC 0004).
+
+    The Remote Script creates it; the MCP server only reads it. The file holds
+    64 hex characters. Checks use ``hmac.compare_digest``.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self._value = None
+
+    def load_or_create(self):
+        value = self._read()
+        if value is None:
+            value = self._create()
+        self._value = value
+        return value
+
+    def matches(self, presented):
+        # compare_digest raises on non-ASCII str, so refuse those first.
+        if not isinstance(presented, str) or not presented or not presented.isascii():
+            return False
+        if self._value is not None and hmac.compare_digest(presented, self._value):
+            return True
+        # The file may have been replaced since Live started: read it once more.
+        self._value = self._read()
+        return self._value is not None and hmac.compare_digest(presented, self._value)
+
+    def _read(self):
+        # A key in a folder or file other users can write could have been
+        # planted, so it is not trusted.
+        if not _private(os.path.dirname(self.path), 0o022) or not _private(self.path, 0o077):
+            return None
+        try:
+            with open(self.path, encoding="ascii") as handle:
+                value = handle.read().strip()
+        except (OSError, UnicodeDecodeError):
+            return None
+        if len(value) < 32 or any(c not in "0123456789abcdef" for c in value):
+            return None
+        return value
+
+    def _create(self):
+        folder = os.path.dirname(self.path)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        _make_private(folder, 0o700)
+        value = secrets.token_hex(32)
+        temp = f"{self.path}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temp, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+                handle.write(value + "\n")
+            os.replace(temp, self.path)
+        except BaseException:
+            # Never leave a working key behind in a stray file.
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+            raise
+        return value
+
+
+def _private(path, forbidden_bits):
+    """True if ``path`` is owned by this user and has none of ``forbidden_bits``.
+
+    Always true where POSIX ownership does not apply (Windows), where the
+    home folder's own permissions protect the file.
+    """
+
+    if os.name != "posix":
+        return True
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return info.st_uid == os.getuid() and not info.st_mode & forbidden_bits
+
+
+def _make_private(path, mode):
+    """Tighten a folder this user owns; refuse one owned by someone else."""
+
+    if os.name != "posix":
+        return
+    info = os.lstat(path)
+    if info.st_uid != os.getuid():
+        raise PermissionError(f"{path} is owned by another user")
+    if info.st_mode & 0o077:
+        os.chmod(path, mode)
+
+
+class _Unauthorized(Exception):
+    pass
+
+
+def _check_key(surface, request):
+    """Refuse unless the request carries this install's key. Runs on the
+    socket thread, before anything is scheduled on Live's main thread."""
+
+    key = getattr(surface, "_bridge_key", None)
+    if key is None or not key.matches(request.get("key")):
+        raise _Unauthorized(
+            f"Live's Abletonian Remote Script did not accept this request's key "
+            f"({KEY_PATH}); nothing was changed."
+        )
+
+
 def _dispatch_frame(surface, frame):
     request_id = ""
     try:
         request = _decode_frame(frame)
         request_id = _request_id(request)
+        _check_key(surface, request)
         method = _method(request)
         params = _params(request)
         result = _call_surface(surface, method, params)
         return _encode_frame({"id": request_id, "ok": True, "result": result})
+    except _Unauthorized as exc:
+        return _encode_frame(
+            {
+                "id": request_id,
+                "ok": False,
+                "result": {},
+                "error": {
+                    "code": "unauthorized",
+                    "message": str(exc),
+                    "recoverable": False,
+                    "hint": KEY_HINT,
+                },
+            }
+        )
     except Exception as exc:
         return _encode_frame(
             {

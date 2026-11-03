@@ -101,7 +101,7 @@ to older ones, so answers can be pinned to an edition.
 | Agent/server name | `--agent-name` | `ABLETONIAN_AGENT_NAME` | `abletonian` |
 | Target DAW | `--target-daw` | `ABLETONIAN_TARGET_DAW` | `ableton` |
 | Bridge host | `--bridge-host` | `ABLETONIAN_BRIDGE_HOST` | `127.0.0.1` |
-| Bridge port | `--bridge-port` | `ABLETONIAN_BRIDGE_PORT` | `9877` |
+| Bridge port | `--bridge-port` | `ABLETONIAN_BRIDGE_PORT` | `39877` |
 | Bridge timeout | `--bridge-timeout` | `ABLETONIAN_BRIDGE_TIMEOUT` | `35.0` |
 | Manual folder | | `ABLETONIAN_MANUAL_DIR` | `docs/ableton-manual` |
 | Saved cockpits folder | `--cockpit-dir` | `ABLETONIAN_COCKPIT_DIR` | per-user data folder, `abletonian/cockpits` |
@@ -129,8 +129,8 @@ not try to cover the most of Live's API:
 - Remote Script servers with broad coverage, such as
   [`ahujasid/ableton-mcp`](https://github.com/ahujasid/ableton-mcp) and
   [`wstierhout/ableton-live-mcp`](https://github.com/wstierhout/ableton-live-mcp).
-  Both also use port 9877, so only one of them or `abletonian` can be enabled
-  in Live at a time.
+  Both listen on port 9877. abletonian moved to 39877 (RFC 0004), so they no
+  longer clash.
 - Servers built on the Ableton Extensions SDK (Live 12 Suite beta), such as
   [`ulm0/ableton-live-mcp`](https://github.com/ulm0/ableton-live-mcp) and
   [`t1merickson/next-live-mcp`](https://github.com/t1merickson/next-live-mcp).

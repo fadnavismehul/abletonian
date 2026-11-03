@@ -15,7 +15,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.agent_name, "abletonian")
         self.assertEqual(config.target_daw, "ableton")
         self.assertEqual(config.bridge_host, "127.0.0.1")
-        self.assertEqual(config.bridge_port, 9877)
+        self.assertEqual(config.bridge_port, 39877)
 
     def test_env_agent_name_can_override_default(self) -> None:
         with patch.dict(os.environ, {"ABLETONIAN_AGENT_NAME": "live-room"}, clear=True):

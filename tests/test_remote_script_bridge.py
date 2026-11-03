@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 import _bootstrap  # noqa: F401
+from _bridge_key import TEST_KEY, StaticKey
 
 from abletonian.bridge.protocol import PROTOCOL_VERSION
 from remote_scripts.Abletonian.bridge_server import (
@@ -62,8 +63,9 @@ class RemoteScriptBridgeTests(unittest.TestCase):
                 return {"method": method, "params": params}
 
         surface = Surface()
+        surface._bridge_key = StaticKey()
         frame = _encode_frame(
-            {"id": "request-1", "method": "example.method", "params": {"x": 1}}
+            {"id": "request-1", "method": "example.method", "params": {"x": 1}, "key": TEST_KEY}
         )
 
         response = _decode_frame(_dispatch_frame(surface, frame))
@@ -88,7 +90,10 @@ class RemoteScriptBridgeTests(unittest.TestCase):
                 return {}
 
         surface = Surface()
-        frame = _encode_frame({"id": "r1", "method": "ableton.set_mixer", "params": {}})
+        surface._bridge_key = StaticKey()
+        frame = _encode_frame(
+            {"id": "r1", "method": "ableton.set_mixer", "params": {}, "key": TEST_KEY}
+        )
         original = bridge_server.REQUEST_START_TIMEOUT_SECONDS
         bridge_server.REQUEST_START_TIMEOUT_SECONDS = 0.05
         try:

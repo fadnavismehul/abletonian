@@ -244,7 +244,7 @@ class HealthTests(unittest.TestCase):
         bridge = RecordingBridge({"daw.health": HEALTH})
         adapter = RemoteScriptAdapter(bridge)
         adapter.capabilities()
-        bridge.error = BridgeConnectionError("could not connect to 127.0.0.1:9877")
+        bridge.error = BridgeConnectionError("could not connect to 127.0.0.1:39877")
         with self.assertRaises(AdapterUnavailable):
             adapter.list_tracks(TrackQuery())
         bridge.error = None
@@ -295,10 +295,10 @@ class ErrorTests(unittest.TestCase):
 
     def test_unavailable_keeps_the_message(self) -> None:
         bridge = RecordingBridge()
-        bridge.error = BridgeConnectionError("could not connect to 127.0.0.1:9877")
+        bridge.error = BridgeConnectionError("could not connect to 127.0.0.1:39877")
         with self.assertRaises(AdapterUnavailable) as caught:
             RemoteScriptAdapter(bridge).list_tracks(TrackQuery())
-        self.assertEqual(str(caught.exception), "could not connect to 127.0.0.1:9877")
+        self.assertEqual(str(caught.exception), "could not connect to 127.0.0.1:39877")
 
 
 if __name__ == "__main__":

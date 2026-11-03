@@ -8,7 +8,7 @@ need to close and reopen the set. Save in Live when you like the result.
 
 ```text
 Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
-                              │  length-prefixed JSON over TCP 127.0.0.1:9877
+                              │  length-prefixed JSON over TCP 127.0.0.1:39877
                               ▼
                    Abletonian Remote Script (inside Live, Python 3.11)
                               │  ControlSurface.schedule_message
@@ -17,6 +17,10 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 ```
 
 - A socket thread inside Live accepts one request at a time.
+- Each request carries the per-install key from `~/.abletonian/bridge_key`,
+  which the Remote Script creates the first time it starts. A request with a
+  wrong or missing key is refused on the socket thread, before anything
+  reaches Live (RFC 0004).
 - Every request, reads included, runs on Live's main thread through
   `schedule_message`. The socket thread never touches the Live API.
 - Live-side operations live in `remote_scripts/Abletonian/live_ops.py`. They
@@ -212,6 +216,48 @@ deletes that device again, so a failed call leaves the track unchanged.
 
 ## Validation log
 
+### 2026-11-03 (RFC 0004, PR #38), Live 12.4.16 Suite, macOS 27.2
+
+Checklist for the bridge port and per-install key (Remote Script 0.6.0,
+issue #37). Live was not running at the start, so it was opened after the
+Remote Script was installed and loaded the new script at startup. Set: a new
+Untitled Live Set (not First Light); the one change was undone. Calls went
+through `BridgeClient` from this branch, plus raw frames for the refusals.
+Each answer comes from bridge results, `lsof -nP -iTCP -sTCP:LISTEN`, `stat`,
+and screenshots of Undo History. The key was never printed.
+
+1. Before install, `~/.abletonian` did not exist. After Live started with the
+   new script, it held `bridge_key`.
+2. Live (the `Live` process) listens on `127.0.0.1:39877`; nothing listens on
+   9877. Pass.
+3. `~/.abletonian` is mode 700 and `bridge_key` is mode 600, both owned by
+   mehul. Pass.
+4. `daw.health`: adapter_version 0.6.0, protocol_version
+   `abletonian.bridge.v2`, Live 12.4.16, Python 3.11.6. Pass.
+5. A raw frame with no `key`, and a `set_mixer` frame (volume 0.3, mute on
+   `1-MIDI`) with a wrong key, both returned error code `unauthorized`. Undo
+   History showed only "New Live Set" before and after; `1-MIDI` stayed at
+   0.0 dB and unmuted. Pass.
+6. `set_track_properties` rename of `1-MIDI` to "Key Check": one "Custom
+   Action" entry. One Cmd+Z restored "1-MIDI". Pass.
+7. With `bridge_key` moved to `bridge_key.bak`, `daw.health` failed in the
+   client with "no bridge key found at ...". After the slot was switched to
+   None and back (done through Settings by the agent), a new `bridge_key`
+   existed, mode 600, different from the old one; `daw.health` worked, and
+   the old key got `unauthorized`. A second run with one long-running
+   `BridgeClient` process polling `daw.health` once a second went ok, then
+   "no bridge key found", then ok again after the slot switch, with no
+   restart. Pass.
+8. `build_mcp(AbletonianConfig()).call_tool("check_bridge_health")` returned
+   the 0.6.0 health result. Pass.
+9. Other projects' Remote Scripts on 9877: not checked, because no other
+   script is installed in the User Library.
+
+- Found, not changed: an MCP server process started before the upgrade keeps
+  the old port (9877) until it is restarted. The `check_bridge_health` tool
+  in such a process said "could not connect to 127.0.0.1:9877". Restarting
+  the MCP client after upgrading is enough.
+
 ### 2026-11-03, Live 12.4.16 Suite, macOS 27.2
 
 Checklist from issue #26 (Remote Script 0.5.0: undo steps, device paths,
@@ -352,8 +398,9 @@ Creating tracks and saving the set are also not exposed.
 
 All three are MIT licensed. None of them used `Track.insert_device` at the
 time of writing; they load devices through the browser. LiveMCP and
-ableton-mcp also listen on port 9877, and the Abletonian Remote Script has
-that port fixed, so do not enable them in Live at the same time.
+ableton-mcp listen on port 9877. Since adapter 0.6.0 Abletonian listens on
+39877 and checks a per-install key on every request (RFC 0004), so they can
+be enabled in Live at the same time.
 
 ## Known follow-ups
 
