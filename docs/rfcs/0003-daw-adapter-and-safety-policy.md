@@ -1,9 +1,9 @@
 # RFC 0003: DawAdapter interface and SafetyPolicy in the Python core
 
-**Status:** Draft  
+**Status:** Accepted  
 **Created:** 2026-11-03  
 **Owner:** @fadnavismehul  
-**Tracking issue:** <link once accepted>
+**Tracking issue:** [#28](https://github.com/fadnavismehul/abletonian/issues/28)
 
 ## Summary
 
