@@ -7,6 +7,23 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+from abletonian.adapters.base import (
+    AdapterHealth,
+    AdapterRefused,
+    Batch,
+    DeviceDelete,
+    DeviceInsert,
+    DeviceQuery,
+    MixerChange,
+    ParameterChange,
+    RackRef,
+    ReturnTrackCreate,
+    RoutingChange,
+    TrackPropertiesChange,
+    TrackQuery,
+    UndoRequest,
+    UnsupportedOperation,
+)
 from abletonian.bridge.protocol import PROTOCOL_VERSION
 
 FAKE_ADAPTER_VERSION = "0.1.0"
@@ -205,6 +222,73 @@ class FakeAbletonAdapter:
         if method == "workflow.execute_drum_rack_extraction":
             return self._execute_drum_rack_extraction(request_params)
         raise FakeAdapterError(f"unsupported fake adapter method '{method}'")
+
+    # DawAdapter (RFC 0003). Operations the fake does not model yet raise
+    # UnsupportedOperation and are absent from its capabilities; parity with
+    # the Remote Script is tracked in Linear MEH-21.
+
+    def health(self) -> AdapterHealth:
+        return AdapterHealth.from_wire(self._health({"target_daw": "ableton"}))
+
+    def capabilities(self) -> frozenset[str]:
+        return frozenset(FAKE_ADAPTER_CAPABILITIES)
+
+    def known_capabilities(self) -> frozenset[str]:
+        return self.capabilities()
+
+    def get_selected_rack_macros(self, ref: RackRef) -> dict[str, Any]:
+        if ref.track is not None or ref.device is not None:
+            raise AdapterRefused(
+                "the fake adapter reads only the selected rack", code="unsupported_request"
+            )
+        return self._refusing(self._selected_rack_macros)
+
+    def plan_drum_rack_extraction(self) -> dict[str, Any]:
+        return self._refusing(self._plan_drum_rack_extraction)
+
+    def execute_drum_rack_extraction(self) -> dict[str, Any]:
+        return self._refusing(lambda: self._execute_drum_rack_extraction({"confirm": True}))
+
+    def list_tracks(self, query: TrackQuery) -> dict[str, Any]:
+        raise UnsupportedOperation(TrackQuery.OPERATION)
+
+    def list_devices(self, query: DeviceQuery) -> dict[str, Any]:
+        raise UnsupportedOperation(DeviceQuery.OPERATION)
+
+    def set_device_parameter(self, change: ParameterChange) -> dict[str, Any]:
+        raise UnsupportedOperation(ParameterChange.OPERATION)
+
+    def set_track_output_routing(self, change: RoutingChange) -> dict[str, Any]:
+        raise UnsupportedOperation(RoutingChange.OPERATION)
+
+    def set_track_properties(self, change: TrackPropertiesChange) -> dict[str, Any]:
+        raise UnsupportedOperation(TrackPropertiesChange.OPERATION)
+
+    def set_mixer(self, change: MixerChange) -> dict[str, Any]:
+        raise UnsupportedOperation(MixerChange.OPERATION)
+
+    def insert_device(self, change: DeviceInsert) -> dict[str, Any]:
+        raise UnsupportedOperation(DeviceInsert.OPERATION)
+
+    def create_return_track(self, change: ReturnTrackCreate) -> dict[str, Any]:
+        raise UnsupportedOperation(ReturnTrackCreate.OPERATION)
+
+    def delete_device(self, change: DeviceDelete) -> dict[str, Any]:
+        raise UnsupportedOperation(DeviceDelete.OPERATION)
+
+    def apply_batch(self, batch: Batch) -> dict[str, Any]:
+        raise UnsupportedOperation(Batch.OPERATION)
+
+    def undo(self, request: UndoRequest) -> dict[str, Any]:
+        raise UnsupportedOperation(UndoRequest.OPERATION)
+
+    @staticmethod
+    def _refusing(call: Any) -> dict[str, Any]:
+        try:
+            result: dict[str, Any] = call()
+        except FakeAdapterError as exc:
+            raise AdapterRefused(str(exc), code="adapter_error") from exc
+        return result
 
     def _health(self, params: dict[str, Any]) -> dict[str, Any]:
         target_daw = params.get("target_daw", "ableton")
