@@ -1,6 +1,8 @@
 """Call one abletonian bridge method and print the JSON result.
 
-Usage: .venv/bin/python .claude/skills/drive-live-on-mac/scripts/bridge.py METHOD ['{"json":"params"}']
+Usage, from the repo root:
+    .venv/bin/python .claude/skills/drive-live-on-mac/scripts/bridge.py \
+        METHOD ['{"json":"params"}']
 Prints "ERROR: <type> <message>" and exits 1 when Live refuses or is unreachable.
 It reads the bridge key from ~/.abletonian/bridge_key itself; never print that file.
 """
