@@ -71,6 +71,11 @@ class RemoteScriptAdapter:
         assert self._health is not None
         return self._health.capabilities
 
+    def known_capabilities(self) -> frozenset[str] | None:
+        """Capabilities if health was already read, else None. Never calls Live."""
+
+        return self._health.capabilities if self._health is not None else None
+
     def forget_health(self) -> None:
         """Drop the remembered health, for example after Live restarted."""
 
