@@ -12,7 +12,8 @@ from abletonian.daws import DEFAULT_TARGET_DAW, SUPPORTED_DAW_SLUGS, normalize_d
 
 DEFAULT_AGENT_NAME = "abletonian"
 DEFAULT_BRIDGE_HOST = "127.0.0.1"
-DEFAULT_BRIDGE_PORT = 9877
+# Must match PORT in remote_scripts/Abletonian/bridge_server.py (RFC 0004).
+DEFAULT_BRIDGE_PORT = 39877
 # Longer than the Remote Script start + run limits (5 s + 25 s).
 DEFAULT_BRIDGE_TIMEOUT = 35.0
 

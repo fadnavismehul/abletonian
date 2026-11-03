@@ -8,7 +8,7 @@ need to close and reopen the set. Save in Live when you like the result.
 
 ```text
 Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
-                              │  length-prefixed JSON over TCP 127.0.0.1:9877
+                              │  length-prefixed JSON over TCP 127.0.0.1:39877
                               ▼
                    Abletonian Remote Script (inside Live, Python 3.11)
                               │  ControlSurface.schedule_message
@@ -17,6 +17,10 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 ```
 
 - A socket thread inside Live accepts one request at a time.
+- Each request carries the per-install key from `~/.abletonian/bridge_key`,
+  which the Remote Script creates the first time it starts. A request with a
+  wrong or missing key is refused on the socket thread, before anything
+  reaches Live (RFC 0004).
 - Every request, reads included, runs on Live's main thread through
   `schedule_message`. The socket thread never touches the Live API.
 - Live-side operations live in `remote_scripts/Abletonian/live_ops.py`. They
@@ -352,8 +356,9 @@ Creating tracks and saving the set are also not exposed.
 
 All three are MIT licensed. None of them used `Track.insert_device` at the
 time of writing; they load devices through the browser. LiveMCP and
-ableton-mcp also listen on port 9877, and the Abletonian Remote Script has
-that port fixed, so do not enable them in Live at the same time.
+ableton-mcp listen on port 9877. Since adapter 0.6.0 Abletonian listens on
+39877 and checks a per-install key on every request (RFC 0004), so they can
+be enabled in Live at the same time.
 
 ## Known follow-ups
 

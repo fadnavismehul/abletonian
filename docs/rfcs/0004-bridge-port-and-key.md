@@ -142,4 +142,13 @@ the bridge do less.
 
 ## Implementation notes
 
-None yet.
+Code: `BridgeKey`, `_check_key` and `PORT` in
+`remote_scripts/Abletonian/bridge_server.py` (adapter 0.6.0);
+`DEFAULT_BRIDGE_KEY_PATH` and `BridgeClient._read_key` in
+`src/abletonian/bridge/client.py`; `DEFAULT_BRIDGE_PORT` in
+`src/abletonian/config.py`. Tests: `tests/test_remote_script_key.py`, which
+also checks that both sides share the port, key path and protocol version.
+
+- 2026-11-03: If the key file is invalid (fewer than 32 lowercase hex
+  characters), the Remote Script replaces it with a new key. It writes a
+  temporary file first and then moves it into place.

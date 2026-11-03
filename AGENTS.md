@@ -25,7 +25,8 @@ say a change is done.
 
 The Remote Script cannot import `abletonian`, and the package must not import
 the Remote Script (tests may). They share only the bridge protocol: 4-byte
-length-prefixed JSON frames with request IDs on `127.0.0.1:9877`. Read
+length-prefixed JSON frames with request IDs on `127.0.0.1:39877`, each
+carrying the per-install key from `~/.abletonian/bridge_key` (RFC 0004). Read
 `remote_scripts/AGENTS.md` before editing anything under `remote_scripts/`.
 
 All Live-side code, including the Drum Rack workflow, lives in
@@ -80,8 +81,12 @@ Abletonian edits people's music. These are not style preferences:
   name.
 - **The Ableton manual is copyrighted.** `docs/ableton-manual/<major>/` is
   fetched locally by `scripts/fetch_manual.py` and must never be committed.
-- **Port 9877** is also used by other Ableton MCP projects; only one can be
-  enabled in Live at a time.
+- **Port and key.** The bridge listens on 39877, not 9877, which other
+  Ableton MCP projects use (RFC 0004). The port is a constant on both sides:
+  `PORT` in `bridge_server.py` and `DEFAULT_BRIDGE_PORT` in `config.py`; a
+  test checks they match. Every frame needs the key in
+  `~/.abletonian/bridge_key`; tests that send frames use
+  `tests/_bridge_key.py`. Never log or print the key.
 
 ## Where decisions live
 

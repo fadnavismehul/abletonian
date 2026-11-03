@@ -10,6 +10,7 @@ a tick after the previous one.
 import unittest
 
 import _bootstrap  # noqa: F401
+from _bridge_key import TEST_KEY, StaticKey
 from test_live_ops import Song
 
 from remote_scripts.Abletonian import bridge_server
@@ -27,6 +28,7 @@ class SchedulingSurface(AbletonianBridgeControlSurface):
     def __init__(self, song):  # no socket server
         self.song = song
         self.callbacks = []
+        self._bridge_key = StaticKey()
 
     def schedule_message(self, delay, callback):
         callback()
@@ -41,7 +43,9 @@ def volumes(*values):
 
 
 def dispatch(surface, params):
-    frame = _encode_frame({"id": "r1", "method": "ableton.batch", "params": params})
+    frame = _encode_frame(
+        {"id": "r1", "method": "ableton.batch", "params": params, "key": TEST_KEY}
+    )
     return _decode_frame(_dispatch_frame(surface, frame))
 
 

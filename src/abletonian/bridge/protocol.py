@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 MAX_FRAME_BYTES = 4 * 1024 * 1024
-PROTOCOL_VERSION = "abletonian.bridge.v1"
+PROTOCOL_VERSION = "abletonian.bridge.v2"
 
 
 @dataclass(frozen=True)
@@ -19,13 +19,18 @@ class BridgeRequest:
     method: str
     params: dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: uuid4().hex)
+    # The per-install key (RFC 0004). Never logged or echoed back.
+    key: str | None = field(default=None, repr=False)
 
     def to_wire(self) -> dict[str, Any]:
-        return {
+        wire: dict[str, Any] = {
             "id": self.id,
             "method": self.method,
             "params": self.params,
         }
+        if self.key is not None:
+            wire["key"] = self.key
+        return wire
 
 
 @dataclass(frozen=True)

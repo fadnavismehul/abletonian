@@ -10,10 +10,14 @@ not in public issues or PRs. We aim to acknowledge reports within a week.
 
 abletonian runs on your machine with access to your open Live Set:
 
-- The Remote Script listens on `127.0.0.1:9877` with no authentication. Any
-  local process can send it commands. Issues that let a non-local client
-  reach it, or that let it read or write files outside the Live Set, are in
-  scope.
+- The Remote Script listens on `127.0.0.1:39877`. It accepts a request only
+  if it carries the per-install key in `~/.abletonian/bridge_key`, which the
+  Remote Script creates with owner-only permissions (RFC 0004). This stops
+  other local programs that do not have the key. It does not stop a program
+  running as the same user, which can read the file. Issues that let a
+  client without the key, or a non-local client, reach Live, or that let the
+  Remote Script read or write files outside the Live Set and that key file,
+  are in scope.
 - The MCP server passes model-generated arguments to the bridge. Ways to
   make it perform destructive Live operations without the documented
   confirmation are in scope.

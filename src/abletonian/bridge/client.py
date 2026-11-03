@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import socket
 from typing import Any
 
 from abletonian.bridge.protocol import BridgeRequest, decode_frame, encode_frame
+
+# Written by the Remote Script in Live; read here on every request (RFC 0004).
+DEFAULT_BRIDGE_KEY_PATH = os.path.join(os.path.expanduser("~"), ".abletonian", "bridge_key")
 
 
 class BridgeConnectionError(RuntimeError):
@@ -35,15 +39,22 @@ class BridgeRefusedError(BridgeConnectionError):
 class BridgeClient:
     """Small synchronous client for the Ableton bridge."""
 
-    def __init__(self, host: str, port: int, timeout: float) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        timeout: float,
+        key_path: str = DEFAULT_BRIDGE_KEY_PATH,
+    ) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
+        self.key_path = key_path
 
     def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """Send one bridge request and return the decoded response result."""
 
-        request = BridgeRequest(method=method, params=params or {})
+        request = BridgeRequest(method=method, params=params or {}, key=self._read_key())
         payload = encode_frame(request.to_wire())
 
         try:
@@ -58,7 +69,9 @@ class BridgeClient:
             ) from exc
         except OSError as exc:
             raise BridgeConnectionError(
-                f"could not connect to {self.host}:{self.port}"
+                f"could not connect to {self.host}:{self.port}. Check that Live is open with "
+                "the Abletonian Control Surface enabled. If you upgraded abletonian, "
+                "reinstall the Remote Script: it now listens on port 39877"
             ) from exc
         except ValueError as exc:
             raise BridgeConnectionError("bridge returned an invalid response") from exc
@@ -79,6 +92,23 @@ class BridgeClient:
         if not isinstance(result, dict):
             raise BridgeConnectionError("bridge result must be a JSON object")
         return result
+
+
+    def _read_key(self) -> str:
+        try:
+            with open(self.key_path, encoding="ascii") as handle:
+                key = handle.read().strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise BridgeConnectionError(
+                f"no bridge key found at {self.key_path}. Open Live with the Abletonian "
+                "Remote Script enabled once; it creates the key"
+            ) from exc
+        if not key:
+            raise BridgeConnectionError(
+                f"the bridge key at {self.key_path} is empty. Delete it, then switch the "
+                "Abletonian Control Surface slot in Live to None and back to make a new one"
+            )
+        return key
 
 
 def _recv_exact(sock: socket.socket) -> bytes:

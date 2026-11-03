@@ -10,7 +10,8 @@ Drum Rack extraction execution:
 
 - install the Abletonian Remote Script into the User Library,
 - enable it as a Control Surface in Ableton Live,
-- connect to `127.0.0.1:9877`,
+- connect to `127.0.0.1:39877` (the client sends the key from
+  `~/.abletonian/bridge_key`, which the Remote Script creates),
 - call `daw.health`,
 - call `ableton.get_selected_context`,
 - call `workflow.plan_drum_rack_extraction`,
@@ -60,7 +61,7 @@ Run:
 .venv/bin/python - <<'PY'
 from abletonian.bridge.client import BridgeClient
 
-bridge = BridgeClient("127.0.0.1", 9877, 2.0)
+bridge = BridgeClient("127.0.0.1", 39877, 2.0)
 print(bridge.request("daw.health", {"target_daw": "ableton"}))
 print(bridge.request("ableton.get_selected_context", {}))
 print(bridge.request("workflow.plan_drum_rack_extraction", {"target_daw": "ableton"}))
@@ -82,7 +83,7 @@ To validate the additive scaffold mutation, run:
 .venv/bin/python - <<'PY'
 from abletonian.bridge.client import BridgeClient
 
-bridge = BridgeClient("127.0.0.1", 9877, 30.0)
+bridge = BridgeClient("127.0.0.1", 39877, 30.0)
 print(bridge.request("workflow.scaffold_drum_rack_extraction", {"confirm": True}))
 PY
 ```
@@ -102,7 +103,7 @@ To validate confirmed execution with MIDI filtering, run:
 from pprint import pprint
 from abletonian.bridge.client import BridgeClient
 
-bridge = BridgeClient("127.0.0.1", 9877, 30.0)
+bridge = BridgeClient("127.0.0.1", 39877, 30.0)
 pprint(bridge.request("workflow.execute_drum_rack_extraction", {"confirm": True}))
 PY
 ```
