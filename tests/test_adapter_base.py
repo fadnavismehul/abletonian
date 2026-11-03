@@ -61,6 +61,10 @@ class BatchTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             Batch(operations=(TrackQuery(),))  # type: ignore[arg-type]
 
+    def test_batch_stores_a_tuple(self) -> None:
+        batch = Batch(operations=[MixerChange(track=0, mute=True)])  # type: ignore[arg-type]
+        self.assertIsInstance(batch.operations, tuple)
+
     def test_batch_keeps_order(self) -> None:
         first = MixerChange(track=0, mute=True)
         second = DeviceDelete(track=1, device=0, confirm=True)

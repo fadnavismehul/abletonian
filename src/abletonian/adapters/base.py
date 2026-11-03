@@ -212,6 +212,8 @@ class Batch:
     atomic: bool = True
 
     def __post_init__(self) -> None:
+        # Store a tuple even when given a list, so the batch cannot change later.
+        object.__setattr__(self, "operations", tuple(self.operations))
         if not self.operations:
             raise ValueError("a batch needs at least one operation")
         for operation in self.operations:

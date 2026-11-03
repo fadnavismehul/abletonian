@@ -12,6 +12,26 @@ class BridgeConnectionError(RuntimeError):
     """Raised when the local Ableton bridge cannot be reached or understood."""
 
 
+class BridgeRefusedError(BridgeConnectionError):
+    """Raised when the bridge answered with ok=false.
+
+    Subclasses BridgeConnectionError so existing callers keep working; the
+    message is the same text they show today.
+    """
+
+    def __init__(
+        self,
+        text: str,
+        code: str | None = None,
+        message: str | None = None,
+        hint: str | None = None,
+    ):
+        super().__init__(text)
+        self.code = code
+        self.message = message
+        self.hint = hint
+
+
 class BridgeClient:
     """Small synchronous client for the Ableton bridge."""
 
@@ -46,7 +66,14 @@ class BridgeClient:
         if response.get("id") != request.id:
             raise BridgeConnectionError("bridge response ID did not match request ID")
         if not response.get("ok", False):
-            raise BridgeConnectionError(_format_bridge_error(response.get("error")))
+            error = response.get("error")
+            fields = error if isinstance(error, dict) else {}
+            raise BridgeRefusedError(
+                _format_bridge_error(error),
+                code=_text_or_none(fields.get("code")),
+                message=_text_or_none(fields.get("message")),
+                hint=_text_or_none(fields.get("hint")),
+            )
 
         result = response.get("result", {})
         if not isinstance(result, dict):
@@ -87,3 +114,7 @@ def _format_bridge_error(error: Any) -> str:
     if error is None:
         return "unknown bridge error"
     return str(error)
+
+
+def _text_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
