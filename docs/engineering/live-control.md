@@ -178,6 +178,8 @@ names the object and lists the choices; the hint says what to do.
 A failed operation in `apply_batch` reports its `code` and `hint` under
 `failed`.
 
+Checked in Live 12.4.16 on 2026-11-03 (PR #40, validation log below).
+
 ## Setup
 
 1. Install the package and the Remote Script:
@@ -234,6 +236,49 @@ A failed operation in `apply_batch` reports its `code` and `hint` under
   macros. The page has no running scripts and loads nothing from the network.
 
 ## Validation log
+
+### 2026-11-03 (MEH-25, PR #40), Live 12.4.16 Suite, macOS 27.2
+
+Checklist for clearer bridge errors (Remote Script 0.6.1). Run by an agent
+on the Mac with the `drive-live-on-mac` skill; nobody was at Live. The
+Remote Script was installed from this branch and reloaded by switching the
+Control Surface slot to None and back in Settings. Set: a new Untitled Live
+Set (not First Light). Calls went through the skill's `bridge.py`. Each
+answer comes from the bridge result or a screenshot of Undo History. Before
+the run, Undo History showed "New Live Set" with one greyed redo row
+("Custom Action"); a new undo step would have removed that row. No error
+carried the old hint "Check daw.health capabilities before retrying."
+
+1. `daw.health`: adapter_version 0.6.1, Live 12.4.16, Python 3.11.6,
+   protocol `abletonian.bridge.v2`. Before the reload it said 0.6.0. Pass.
+2. a. `set_mixer` on "No Such Track": `not_found`, message lists the
+   tracks, hint "Use list_tracks to see track names and indexes." Pass.
+3. b. `set_device_parameter` on `A-Reverb`, device "No Such Device":
+   `not_found`, message lists "Reverb", hint "Use list_devices on that
+   track to see its devices, paths and parameters." Pass.
+4. c. `set_device_parameter` Reverb "Decay Time" value 5: `invalid_value`,
+   "value 5.0 is outside 'Decay Time' range 0.0..1.0", hint points to
+   `list_devices` for the range and display text. Pass.
+5. d. `set_device_parameter` Reverb "Density" (quantized) value "Ultra":
+   `invalid_value`, "Options: Sparse, Low, Mid, High", hint "Use one of the
+   options listed, spelled as shown." Pass.
+6. e. `ableton.make_coffee`: `not_supported`, hint says to reinstall the
+   Remote Script and switch the slot to None and back. Pass.
+7. f. `ableton.undo` count 2 without confirm: `confirmation_required`,
+   "Nothing was changed", hint "Show the user what would change and ask
+   them." Pass.
+8. h. `insert_device` "Flux Capacitor 9000" on `3-Audio`: `not_found`,
+   "Live could not insert 'Flux Capacitor 9000': Device Flux Capacitor 9000
+   not found", hint names Live's own devices ('EQ Eight', 'Utility') and
+   says third-party plugins cannot be inserted yet. The device list on
+   `3-Audio` was empty before and after. Pass.
+9. After a to f and h, Undo History was unchanged: "New Live Set" current
+   and the greyed redo row still there, so no step was added. Pass.
+10. g. `ableton.batch` (atomic) with `set_mixer` `3-Audio` volume "-6 dB"
+    and `set_mixer` "No Such Track": the first completed (-6.0 dB), and
+    `failed` held index 1, code `not_found` and the `list_tracks` hint. Undo
+    History gained one row, `Change "Track Volume"`. One Cmd+Z set
+    `3-Audio` back to 0.0 dB and left "New Live Set" current. Pass.
 
 ### 2026-11-03 (RFC 0004, PR #38), Live 12.4.16 Suite, macOS 27.2
 
