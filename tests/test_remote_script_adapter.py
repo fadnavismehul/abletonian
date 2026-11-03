@@ -212,6 +212,13 @@ class UndoTests(unittest.TestCase):
         self.assertEqual(bridge.calls[-1], ("ableton.undo", {"count": 3, "confirm": True}))
         self.assertEqual(result, {"steps": 3})
 
+    def test_several_steps_without_confirm_send_nothing(self) -> None:
+        bridge = RecordingBridge()
+        with self.assertRaises(AdapterRefused) as caught:
+            RemoteScriptAdapter(bridge).undo(UndoRequest(count=2))
+        self.assertEqual(caught.exception.code, "confirmation_required")
+        self.assertEqual(bridge.calls, [])
+
     def test_old_script_undo_warns(self) -> None:
         bridge = RecordingBridge({"ableton.undo": {"undone": True}})
         result = RemoteScriptAdapter(bridge).undo(UndoRequest(count=2, confirm=True))
@@ -258,6 +265,33 @@ class ErrorTests(unittest.TestCase):
             RemoteScriptAdapter(bridge).set_mixer(MixerChange(track="X", mute=True))
         self.assertEqual(str(caught.exception), "not_found: no track 'X' Hint: Use list_tracks.")
         self.assertEqual(caught.exception.code, "not_found")
+
+    def test_refusal_text_matches_the_client_for_odd_payloads(self) -> None:
+        from abletonian.bridge.client import _format_bridge_error, _text_or_none
+
+        payloads = [
+            {"code": "adapter_error", "message": "", "hint": "Check daw.health."},
+            {"code": "", "message": "m"},
+            {"code": "x", "message": None},
+            {"code": 7, "message": "m"},
+            {"code": "x", "message": "m", "hint": ["a"]},
+            {},
+            "boom",
+            None,
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                fields = payload if isinstance(payload, dict) else {}
+                bridge = RecordingBridge()
+                bridge.error = BridgeRefusedError(
+                    _format_bridge_error(payload),
+                    code=_text_or_none(fields.get("code")),
+                    message=_text_or_none(fields.get("message")),
+                    hint=_text_or_none(fields.get("hint")),
+                )
+                with self.assertRaises(AdapterRefused) as caught:
+                    RemoteScriptAdapter(bridge).list_tracks(TrackQuery())
+                self.assertEqual(str(caught.exception), _format_bridge_error(payload))
 
     def test_unavailable_keeps_the_message(self) -> None:
         bridge = RecordingBridge()

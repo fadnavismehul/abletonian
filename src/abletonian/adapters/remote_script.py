@@ -131,7 +131,14 @@ class RemoteScriptAdapter:
     def undo(self, request: UndoRequest) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if request.count > 1:
-            params = {"count": request.count, "confirm": request.confirm is True}
+            # Live's history also holds the musician's own edits. Refuse here
+            # rather than rely on the Remote Script to refuse.
+            if request.confirm is not True:
+                raise AdapterRefused(
+                    f"undoing {request.count} steps needs confirm=true",
+                    code="confirmation_required",
+                )
+            params = {"count": request.count, "confirm": True}
         result = self._call("ableton.undo", params)
         # An older script ignores count and reports no steps.
         if request.count > 1 and "steps" not in result:
@@ -153,10 +160,12 @@ class RemoteScriptAdapter:
         try:
             return self.bridge.request(method, params)
         except BridgeRefusedError as exc:
+            # Keep the client's text exactly: it is what tools show today.
             raise AdapterRefused(
                 exc.message or "unknown bridge error",
                 code=exc.code or "bridge_error",
                 hint=exc.hint,
+                text=str(exc),
             ) from exc
         except BridgeConnectionError as exc:
             self._health = None

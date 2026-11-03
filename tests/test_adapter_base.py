@@ -71,6 +71,16 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(Batch(operations=(first, second)).operations, (first, second))
 
 
+class UndoRequestTests(unittest.TestCase):
+    def test_count_must_be_in_range(self) -> None:
+        for bad in (0, -3, 21, True, 1.5, "2"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                UndoRequest(count=bad)  # type: ignore[arg-type]
+
+    def test_valid_counts(self) -> None:
+        self.assertEqual(UndoRequest(count=20, confirm=True).count, 20)
+
+
 class HealthTests(unittest.TestCase):
     def test_valid_health(self) -> None:
         health = AdapterHealth.from_wire(HEALTH)
