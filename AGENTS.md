@@ -39,13 +39,17 @@ A new Live capability touches, in order:
    and returning plain JSON, registered in `_HANDLERS`.
 2. `remote_scripts/Abletonian/bridge_server.py`: add the capability name to
    `daw.health` and bump `ADAPTER_VERSION`.
-3. `src/abletonian/adapters/fake.py`: the same method, if workflows or MCP
-   tools need to run without Live.
-4. `src/abletonian/server.py`: an MCP tool, only if a musician-facing task
-   needs it. Do not add tools that pass raw bridge calls through.
-5. Tests: `tests/test_live_ops.py` (LOM-shaped fakes), plus fake-adapter and
-   server tests.
-6. `docs/engineering/live-control.md`: the tool table.
+3. `src/abletonian/adapters/`: a request type and `DawAdapter` method in
+   `base.py`, the wire call in `remote_script.py`, and the fake in `fake.py`
+   (or `UnsupportedOperation` there if nothing needs it without Live).
+4. `src/abletonian/policy.py`: an `Operation` with its safety class,
+   capability and confirm rule. Every DAW call goes through `SafetyPolicy`.
+5. `src/abletonian/server.py`: an MCP tool, only if a musician-facing task
+   needs it, annotated with `_op(...)`. Do not add tools that pass raw bridge
+   calls through.
+6. Tests: `tests/test_live_ops.py` (LOM-shaped fakes), the adapter, contract
+   and policy tests, and server tests.
+7. `docs/engineering/live-control.md`: the tool table.
 
 The `add-bridge-method` skill in `.claude/skills/` walks through this.
 

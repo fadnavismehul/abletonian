@@ -77,8 +77,10 @@ This layer can be implemented in more than one way:
 The MCP and intent layers should not care which adapter is active, except for
 capability discovery.
 
-Today this is not yet true: the MCP tools in `src/abletonian/server.py` call
-`ableton.*` bridge methods by name, so the boundary is the wire rather than an
-interface in the Python process.
-[RFC 0003](../rfcs/0003-daw-adapter-and-safety-policy.md) proposes the
-in-process `DawAdapter` interface that fixes this.
+Since RFC 0003 this holds in the Python process: the MCP tools in
+`src/abletonian/server.py` call a `DawAdapter`
+(`src/abletonian/adapters/base.py`) through one `SafetyPolicy`
+(`src/abletonian/policy.py`), which applies each operation's safety class,
+confirm rule and capability check. `RemoteScriptAdapter` and
+`FakeAbletonAdapter` are the two implementations; contract tests check they
+agree. See [RFC 0003](../rfcs/0003-daw-adapter-and-safety-policy.md).
