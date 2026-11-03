@@ -159,6 +159,25 @@ Action" or `Change "<parameter>"`; the Live API gives no way to name it.
 If setting `parameters` on a newly inserted device fails, `insert_device`
 deletes that device again, so a failed call leaves the track unchanged.
 
+### Errors
+
+Every error from the Remote Script has a `code` and, where one fits, a
+`hint` with the next step (adapter 0.6.1, Linear MEH-25). The message
+names the object and lists the choices; the hint says what to do.
+
+| Code | When | Hint, in short |
+| --- | --- | --- |
+| `not_found` | No such track, device, chain, parameter, return, routing or selection | Which list to check: `list_tracks`, or `list_devices` on that track |
+| `invalid_value` | A value is out of range, not an option, or badly formed | See the parameter's range and display text, or send a raw number |
+| `not_supported` | Live or this Remote Script cannot do it | What to do instead, such as reinstalling an older Remote Script |
+| `confirmation_required` | A delete or multi-step undo without `confirm=true` | Ask the user first |
+| `timeout` | Live did not start, or did not finish, in time | Whether the change may still happen, and to check before retrying |
+| `unauthorized` | Wrong or missing bridge key (RFC 0004) | Same user for Live and abletonian; switch the slot |
+| `adapter_error` | Anything else | None, rather than a wrong one |
+
+A failed operation in `apply_batch` reports its `code` and `hint` under
+`failed`.
+
 ## Setup
 
 1. Install the package and the Remote Script:

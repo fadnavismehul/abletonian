@@ -38,7 +38,50 @@ BATCHABLE_METHODS = (
 
 
 class LiveOpsError(RuntimeError):
-    """Raised when a request cannot be applied to the open Live Set."""
+    """Raised when a request cannot be applied to the open Live Set.
+
+    ``code`` and ``hint`` reach the caller in the bridge error payload. The
+    message says what is wrong; the hint says what to do next. Subclasses
+    set both for a kind of error, and a raise can pass a more exact hint.
+    """
+
+    code = "live_error"
+    hint = None
+
+    def __init__(self, message, hint=None):
+        super().__init__(message)
+        if hint is not None:
+            self.hint = hint
+
+
+class NotFound(LiveOpsError):
+    code = "not_found"
+    hint = (
+        "Use list_tracks or list_devices to see what is there, then use a name, "
+        "index or path from that list."
+    )
+
+
+class InvalidValue(LiveOpsError):
+    code = "invalid_value"
+
+
+class NotSupported(LiveOpsError):
+    code = "not_supported"
+
+
+class NeedsConfirmation(LiveOpsError):
+    code = "confirmation_required"
+    hint = "Show the user what would change and ask them. Send confirm=true only if they agree."
+
+
+TRACK_HINT = "Use list_tracks to see track names and indexes."
+DEVICE_HINT = "Use list_devices on that track to see its devices, paths and parameters."
+VALUE_HINT = (
+    "Use list_devices on that track to see this parameter's range, display text "
+    "and options, or send a raw number in its range."
+)
+SELECTION_HINT = "Select the track (and Rack) in Live, or name the track and device in the call."
 
 
 def handle(song, method, params):
@@ -99,7 +142,7 @@ def list_tracks(song, params):
     include_master = params.get("include_master", True)
     detail = params.get("detail", "full")
     if detail not in ("full", "compact"):
-        raise LiveOpsError(f"detail must be 'full' or 'compact', got '{detail}'")
+        raise InvalidValue(f"detail must be 'full' or 'compact', got '{detail}'")
     name_filter = params.get("name")
     name_filter = str(name_filter).lower() if name_filter else None
     return_names = [_str(track.name) for track in _tuple(song.return_tracks)]
@@ -328,21 +371,29 @@ def insert_device(song, params):
     position = params.get("index")
     insert = getattr(track, "insert_device", None)
     if not callable(insert):
-        raise LiveOpsError("Track.insert_device is unavailable; it needs Live 12.3 or later")
+        raise NotSupported(
+            "Track.insert_device is unavailable; it needs Live 12.3 or later",
+            "Update Live to 12.3 or later, or add the device in Live yourself.",
+        )
     devices_before = _tuple(track.devices)
     count_before = len(devices_before)
     if position is None:
         position = count_before
     position = int(position)
     if position < 0 or position > count_before:
-        raise LiveOpsError(
+        raise InvalidValue(
             f"device index {position} is out of range for '{_str(track.name)}' "
-            f"(0..{count_before})"
+            f"(0..{count_before})",
+            "Leave index out to add the device at the end of the chain.",
         )
     try:
         insert(device_name, position)
     except Exception as exc:
-        raise LiveOpsError(f"Live could not insert '{device_name}': {exc}") from exc
+        raise NotFound(
+            f"Live could not insert '{device_name}': {exc}",
+            "Use the name of one of Live's own devices as its browser shows it, for example "
+            "'EQ Eight' or 'Utility'. Third-party plugins cannot be inserted yet.",
+        ) from exc
     devices = _tuple(track.devices)
     if len(devices) != count_before + 1:
         raise LiveOpsError(f"Live did not report a new device after inserting '{device_name}'")
@@ -384,7 +435,10 @@ def create_return_track(song, params):
 
     create = getattr(song, "create_return_track", None)
     if not callable(create):
-        raise LiveOpsError("this version of Live cannot create return tracks from a script")
+        raise NotSupported(
+            "this version of Live cannot create return tracks from a script",
+            "Add the return track in Live yourself (Create > Insert Return Track).",
+        )
     before = len(_tuple(song.return_tracks))
     create()
     returns = _tuple(song.return_tracks)
@@ -436,7 +490,10 @@ def delete_device(song, params, target=None):
         }
     remove = getattr(owner, "delete_device", None)
     if not callable(remove):
-        raise LiveOpsError(f"Live cannot delete devices inside '{_str(owner.name)}' from a script")
+        raise NotSupported(
+            f"Live cannot delete devices inside '{_str(owner.name)}' from a script",
+            "Delete it in Live yourself, or turn it off with its Device On parameter.",
+        )
     remove(device_index)
     return {"deleted": True, **preview, "undo": "Live's Undo restores the device and settings."}
 
@@ -451,8 +508,9 @@ def _current_index(owner, device, path):
     for position, candidate in enumerate(_tuple(owner.devices)):
         if _same(candidate, device):
             return position
-    raise LiveOpsError(
-        f"device '{path}' is no longer there (was it deleted earlier in this batch?)"
+    raise NotFound(
+        f"device '{path}' is no longer there (was it deleted earlier in this batch?)",
+        DEVICE_HINT,
     )
 
 
@@ -501,7 +559,7 @@ def prepare_batch(song, params):
 
     operations = _required(params, "operations")
     if not isinstance(operations, list) or not operations:
-        raise LiveOpsError("batch operations must be a non-empty list")
+        raise InvalidValue("batch operations must be a non-empty list")
     for position, operation in enumerate(operations):
         method = operation.get("method") if isinstance(operation, dict) else None
         if method not in BATCHABLE_METHODS:
@@ -520,18 +578,20 @@ def prepare_batch(song, params):
             continue
         operation_params = operation.get("params", {})
         if operation_params.get("confirm") is not True:
-            raise LiveOpsError(
+            raise NeedsConfirmation(
                 f"operation {position} (ableton.delete_device) needs \"confirm\": true "
                 "inside a batch; nothing was changed"
             )
         try:
             delete_targets[position] = _resolve_delete_target(song, operation_params)
         except LiveOpsError as exc:
-            raise LiveOpsError(f"operation {position}: {exc}; nothing was changed") from exc
+            # Keep the kind and hint of the underlying error.
+            wrapped = type(exc)(f"operation {position}: {exc}; nothing was changed", exc.hint)
+            raise wrapped from exc
 
     atomic = params.get("atomic", True)
     if not isinstance(atomic, bool):
-        raise LiveOpsError("batch 'atomic' must be true or false")
+        raise InvalidValue("batch 'atomic' must be true or false")
     grouped_undo = callable(getattr(song, "begin_undo_step", None)) and callable(
         getattr(song, "end_undo_step", None)
     )
@@ -572,6 +632,7 @@ def batch_failure(plan, results, position, exc):
             "index": position,
             "operation": plan["operations"][position],
             "error": str(exc),
+            **_error_fields(exc),
         },
         **summary,
     }
@@ -581,6 +642,14 @@ def batch_failure(plan, results, position, exc):
             "changing the Set it was put back, but Live may still count it as a step."
         )
     return failure
+
+
+def _error_fields(exc):
+    fields = {"code": getattr(exc, "code", "live_error")}
+    hint = getattr(exc, "hint", None)
+    if hint:
+        fields["hint"] = hint
+    return fields
 
 
 MAX_UNDO_COUNT = 20
@@ -593,9 +662,9 @@ def undo(song, params):
 
     count = params.get("count", 1)
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_UNDO_COUNT:
-        raise LiveOpsError(f"undo count must be an integer from 1 to {MAX_UNDO_COUNT}")
+        raise InvalidValue(f"undo count must be an integer from 1 to {MAX_UNDO_COUNT}")
     if count > 1 and params.get("confirm") is not True:
-        raise LiveOpsError(
+        raise NeedsConfirmation(
             f"undoing {count} steps needs \"confirm\": true; Live's undo history also holds "
             "the user's own edits. Nothing was changed."
         )
@@ -624,7 +693,7 @@ def resolve_track(song, ref):
     if isinstance(ref, int):
         if 0 <= ref < len(tracks):
             return ("track", ref, tracks[ref])
-        raise LiveOpsError(f"track index {ref} is out of range (0..{len(tracks) - 1})")
+        raise NotFound(f"track index {ref} is out of range (0..{len(tracks) - 1})", TRACK_HINT)
     text = str(ref).strip()
     lowered = text.lower()
     candidates = _all_tracks(song)
@@ -640,7 +709,7 @@ def resolve_track(song, ref):
         return_index = _int_or_error(text.split(":", 1)[1], "return index")
         if 0 <= return_index < len(returns):
             return ("return", return_index, returns[return_index])
-        raise LiveOpsError(f"return index {return_index} is out of range")
+        raise NotFound(f"return index {return_index} is out of range", TRACK_HINT)
     if len(text) == 1 and text.isalpha() and text.upper() < chr(ord("A") + len(returns)):
         return_index = ord(text.upper()) - ord("A")
         return ("return", return_index, returns[return_index])
@@ -657,7 +726,7 @@ def resolve_track(song, ref):
                 + ", ".join(f"{kind}:{index}" for kind, index, _ in matches)
             )
     names = ", ".join(_str(item[2].name) for item in candidates)
-    raise LiveOpsError(f"no track named '{text}'. Tracks: {names}")
+    raise NotFound(f"no track named '{text}'. Tracks: {names}", TRACK_HINT)
 
 
 def resolve_device(track, ref):
@@ -665,8 +734,9 @@ def resolve_device(track, ref):
     if isinstance(ref, int) and not isinstance(ref, bool):
         if 0 <= ref < len(devices):
             return ref, devices[ref]
-        raise LiveOpsError(
-            f"device index {ref} is out of range on '{_str(track.name)}' ({len(devices)} devices)"
+        raise NotFound(
+            f"device index {ref} is out of range on '{_str(track.name)}' ({len(devices)} devices)",
+            DEVICE_HINT,
         )
     text = str(ref)
     # "#N" always means index N, even if a device is named "#N" (issue #24).
@@ -684,7 +754,9 @@ def resolve_device(track, ref):
     if text.strip().isdigit():
         return resolve_device(track, int(text))
     names = ", ".join(_str(d.name) for d in devices) or "(none)"
-    raise LiveOpsError(f"no device named '{text}' on '{_str(track.name)}'. Devices: {names}")
+    raise NotFound(
+        f"no device named '{text}' on '{_str(track.name)}'. Devices: {names}", DEVICE_HINT
+    )
 
 
 def resolve_device_path(track, ref, _render=True):
@@ -708,7 +780,7 @@ def resolve_device_path(track, ref, _render=True):
         return path, index, device, track
     segments = [part.strip() for part in str(ref).split("/")]
     if any(not part for part in segments):
-        raise LiveOpsError(f"device path '{ref}' has an empty part")
+        raise InvalidValue(f"device path '{ref}' has an empty part", DEVICE_HINT)
     index, device = resolve_device(track, segments[0])
     top_index = index
     path = [_str(device.name)]  # for error messages only
@@ -717,8 +789,8 @@ def resolve_device_path(track, ref, _render=True):
     rest = segments[1:]
     while rest:
         if not bool(_get(device, "can_have_chains", False)):
-            raise LiveOpsError(
-                f"'{'/'.join(path)}' is not a Rack, so it has no chain '{rest[0]}'"
+            raise NotFound(
+                f"'{'/'.join(path)}' is not a Rack, so it has no chain '{rest[0]}'", DEVICE_HINT
             )
         if rest[0].lower() == "returns":
             chains = _tuple(_get(device, "return_chains", ()))
@@ -727,7 +799,9 @@ def resolve_device_path(track, ref, _render=True):
             tail.append("returns")
             rest = rest[1:]
             if not rest:
-                raise LiveOpsError(f"device path '{ref}' needs a return chain after 'returns'")
+                raise InvalidValue(
+                    f"device path '{ref}' needs a return chain after 'returns'", DEVICE_HINT
+                )
         else:
             chains = _tuple(_get(device, "chains", ()))
             label = "chain"
@@ -735,7 +809,9 @@ def resolve_device_path(track, ref, _render=True):
         path.append(_str(chain.name))
         tail.append(_path_segment(chains, chain_index))
         if len(rest) < 2:
-            raise LiveOpsError(f"device path '{ref}' ends at a chain; add a device name")
+            raise InvalidValue(
+                f"device path '{ref}' ends at a chain; add a device name", DEVICE_HINT
+            )
         chain_devices = _tuple(chain.devices)
         index, device = _pick(chain_devices, rest[1], "device", "/".join(path))
         path.append(_str(device.name))
@@ -832,7 +908,7 @@ def _pick(items, ref, label, where):
                 + ", ".join(str(i) for i, _ in matches)
             )
     names = ", ".join(f"{i}:{_str(item.name)}" for i, item in enumerate(items)) or "(none)"
-    raise LiveOpsError(f"no {label} '{text}' in '{where}'. Choices: {names}")
+    raise NotFound(f"no {label} '{text}' in '{where}'. Choices: {names}", DEVICE_HINT)
 
 
 def resolve_parameter(device, ref):
@@ -840,7 +916,9 @@ def resolve_parameter(device, ref):
     if isinstance(ref, int) and not isinstance(ref, bool):
         if 0 <= ref < len(parameters):
             return parameters[ref]
-        raise LiveOpsError(f"parameter index {ref} is out of range on '{_str(device.name)}'")
+        raise NotFound(
+            f"parameter index {ref} is out of range on '{_str(device.name)}'", DEVICE_HINT
+        )
     lowered = str(ref).lower()
     aliases = PARAMETER_ALIASES.get(_str(_get(device, "class_name", "")), {})
     lowered = aliases.get(lowered, lowered).lower()
@@ -851,7 +929,9 @@ def resolve_parameter(device, ref):
     if str(ref).strip().isdigit():
         return resolve_parameter(device, int(str(ref)))
     names = ", ".join(_str(p.name) for p in parameters)
-    raise LiveOpsError(f"no parameter '{ref}' on '{_str(device.name)}'. Parameters: {names}")
+    raise NotFound(
+        f"no parameter '{ref}' on '{_str(device.name)}'. Parameters: {names}", DEVICE_HINT
+    )
 
 
 # Parameter values ---------------------------------------------------------
@@ -879,8 +959,8 @@ def _raw_value(parameter, value):
         raw = value_for_display(parameter, str(value))
     low, high = float(parameter.min), float(parameter.max)
     if raw < low or raw > high:
-        raise LiveOpsError(
-            f"value {raw} is outside '{_str(parameter.name)}' range {low}..{high}"
+        raise InvalidValue(
+            f"value {raw} is outside '{_str(parameter.name)}' range {low}..{high}", VALUE_HINT
         )
     return raw
 
@@ -894,14 +974,15 @@ def value_for_display(parameter, text):
         for item_index, item in enumerate(items):
             if item.lower() == text.strip().lower():
                 return float(parameter.min) + item_index
-        raise LiveOpsError(
-            f"'{text}' is not an option for '{_str(parameter.name)}'. Options: {', '.join(items)}"
+        raise InvalidValue(
+            f"'{text}' is not an option for '{_str(parameter.name)}'. Options: {', '.join(items)}",
+            "Use one of the options listed, spelled as shown.",
         )
 
     target = parse_display_number(text)
     if target is None:
         low, high = float(parameter.min), float(parameter.max)
-        raise LiveOpsError(
+        raise InvalidValue(
             f"could not read a number from '{text}' for '{_str(parameter.name)}' "
             f"(it shows '{_display(parameter, low)}' to '{_display(parameter, high)}'). "
             f"Use a raw value between {low} and {high} instead."
@@ -918,12 +999,12 @@ def _search_display(parameter, reader, low, high, target, text, quantized):
 
     low_number, high_number = number(low), number(high)
     if low_number is None or high_number is None:
-        raise LiveOpsError(
+        raise InvalidValue(
             f"'{_str(parameter.name)}' does not show numeric values "
             f"(it shows '{reader(parameter, low)}' to '{reader(parameter, high)}')"
         )
     if low_number == high_number:
-        raise LiveOpsError(
+        raise InvalidValue(
             f"'{_str(parameter.name)}' shows '{reader(parameter, low)}' for every value, so "
             "display text cannot be matched. Use a raw value between "
             f"{low} and {high} instead."
@@ -956,7 +1037,7 @@ def _check_display_match(parameter, reader, raw, target, text, low, high):
         return
     tolerance = max(abs(target) * 0.05, 0.051)
     if abs(shown - target) > tolerance:
-        raise LiveOpsError(
+        raise InvalidValue(
             f"could not find a value of '{_str(parameter.name)}' that shows '{text}'; "
             f"closest was '{reader(parameter, raw)}' (range '{reader(parameter, low)}' to "
             f"'{reader(parameter, high)}'). Use a raw value between {low} and {high} instead."
@@ -1186,11 +1267,11 @@ def _without_return_prefix(name, return_index):
 
 def _locate_track(song, target):
     if target is None:
-        raise LiveOpsError("no track is selected")
+        raise NotFound("no track is selected", SELECTION_HINT)
     for kind, index, track in _all_tracks(song):
         if _same(track, target):
             return kind, index, track
-    raise LiveOpsError(f"selected track '{_str(_get(target, 'name'))}' was not found")
+    raise NotFound(f"selected track '{_str(_get(target, 'name'))}' was not found", SELECTION_HINT)
 
 
 def _is_rack(device):
@@ -1207,7 +1288,7 @@ def _selected_or_first_rack(track, devices):
     for device_index, device in enumerate(devices):
         if _is_rack(device):
             return device_index, device, "first_rack_on_track"
-    raise LiveOpsError(f"track '{_str(track.name)}' has no Rack")
+    raise NotFound(f"track '{_str(track.name)}' has no Rack", SELECTION_HINT)
 
 
 def _macro_parameters(device):
@@ -1234,7 +1315,10 @@ def _match_routing(available, wanted, label):
         if _str(_get(option, "display_name", "")).lower() == wanted_text:
             return option
     names = ", ".join(_str(_get(option, "display_name", "")) for option in options)
-    raise LiveOpsError(f"no {label} '{wanted}'. Available: {names}")
+    raise NotFound(
+        f"no {label} '{wanted}'. Available: {names}",
+        "Use one of the names listed, or list_tracks with detail 'full' for every choice.",
+    )
 
 
 def _resolve_send(ref, return_names, send_count):
@@ -1246,10 +1330,12 @@ def _resolve_send(ref, return_names, send_count):
         lowered = str(ref).lower()
         matches = [i for i, name in enumerate(return_names) if name.lower() == lowered]
         if not matches:
-            raise LiveOpsError(f"no return track '{ref}'. Returns: {', '.join(return_names)}")
+            raise NotFound(
+                f"no return track '{ref}'. Returns: {', '.join(return_names)}", TRACK_HINT
+            )
         send_index = matches[0]
     if not 0 <= send_index < send_count:
-        raise LiveOpsError(f"send {ref} is out of range ({send_count} sends)")
+        raise NotFound(f"send {ref} is out of range ({send_count} sends)", TRACK_HINT)
     return send_index
 
 
@@ -1258,7 +1344,7 @@ def _parse_color(value):
         return value
     text = str(value).strip().lstrip("#")
     if not re.fullmatch(r"[0-9a-fA-F]{6}", text):
-        raise LiveOpsError(f"color must be an RGB integer or '#RRGGBB', got '{value}'")
+        raise InvalidValue(f"color must be an RGB integer or '#RRGGBB', got '{value}'")
     return int(text, 16)
 
 
@@ -1273,7 +1359,7 @@ def _hex_color(value):
 
 def _required(params, key):
     if params.get(key) is None:
-        raise LiveOpsError(f"missing required parameter '{key}'")
+        raise InvalidValue(f"missing required parameter '{key}'")
     return params[key]
 
 
@@ -1281,7 +1367,7 @@ def _int_or_error(text, label):
     try:
         return int(text)
     except (TypeError, ValueError) as exc:
-        raise LiveOpsError(f"{label} must be an integer, got '{text}'") from exc
+        raise InvalidValue(f"{label} must be an integer, got '{text}'") from exc
 
 
 def _get(target, name, default=None):
