@@ -41,7 +41,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, and set its parameters right away. |
 | `create_return_track` | `ableton.create_return_track` | Add a return track at the end (`Song.create_return_track`), with an optional name and colour. Additive. |
 | `delete_device` | `ableton.delete_device` | Delete a device (`Track.delete_device`). Destructive: without `confirm=true` it only returns the device and its current settings. The tool accepts only a real boolean, so `"true"` or `1` is refused. In `apply_batch`, every delete needs `"confirm": true` or the whole batch is refused before anything runs, and delete targets refer to the set as it was before the batch, so deleting index 0 does not shift a later index 1. |
-| `apply_batch` | `ableton.batch` | Run many changes as one Live undo step, or one step per operation with `atomic=false`. Stops at the first failure. |
+| `apply_batch` | `ableton.batch` | Run many changes as one Live undo step (two when it mixes parameter changes with other changes), or one step per operation with `atomic=false`. Stops at the first failure. |
 | `undo_last_change` | `ableton.undo` | Live Undo, `count` times (default 1, at most 20; more than 1 needs `confirm=true`). |
 
 Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`,
@@ -105,37 +105,52 @@ the API; `Gain` is accepted as an alias. `list_devices` shows the API names.
 
 ### Undo
 
-`apply_batch` wraps its operations in `Song.begin_undo_step` /
-`end_undo_step`. In Live 12.4.16 one Undo reverted a whole batch of mixer
-changes, and a whole batch of device inserts. When the batch ended with a
-parameter change on a newly inserted device, Live recorded that last change
-as its own step, so expect one or two Undos per batch. With `atomic=false`,
-each operation in the batch gets its own begin/end pair instead, so the user
-can undo them one at a time.
+Checked in Live 12.4.16 on 2026-11-03 (issue #26, validation log below):
+
+- Every `ableton.*` call that changes the Set runs in its own
+  `Song.begin_undo_step` / `end_undo_step` pair (since adapter 0.5.0), and
+  separate calls stay separate steps: a rename followed by a volume change,
+  or a new return followed by a parameter change, each took one Undo.
+- Live keeps parameter value changes apart from other changes even inside one
+  begin/end pair. Undo History names them `Change "<parameter>"` (for example
+  `Change "Track Volume"`), and everything else "Custom Action" (or
+  "Insert Device", "Duplicate Track(s)" when Live does it itself). So an
+  `insert_device` with `parameters` is two steps, and so is an `apply_batch`
+  that mixes parameter changes (volume, pan, sends, device parameters) with
+  other changes (renames, inserts, deletes, new returns). A batch of only one
+  kind is one step.
+- Live merges parameter changes made in the same main-thread callback into
+  one step, even across separate begin/end pairs. With adapter 0.5.0 an
+  `apply_batch` with `atomic=false` of three volume changes was one step.
+  Since adapter 0.5.1 the bridge runs each operation of such a batch in its
+  own callback, one Live tick after the previous one finished, so Undo steps
+  back through it one change at a time. The batch is still checked in full
+  before anything runs, and operations not started within 25 seconds are not
+  run and are reported as failed.
+- Reads and `delete_device` previews (no `confirm=true`) add nothing to
+  Undo History.
+- The Drum Rack workflow methods (`workflow.scaffold_*` and
+  `workflow.execute_*`) are not wrapped. Each created track takes two steps:
+  "Duplicate Track(s)", then one for its name and colour. Execute's clip
+  filtering joins the last of those. Their backout text says so (since
+  0.5.1; before, it said one Undo per track).
 
 Before adapter 0.5.0, single tool calls were not wrapped, and in Live 12.4.16
-separate calls made in a row (a rename, a new return, a device insert; or a
-parameter change and then a delete) were merged into one undo step, so one
-Undo reverted all of them (issue #3). Since 0.5.0 every `ableton.*` call that
-changes the Set runs in its own begin/end pair. Reads and `delete_device`
-previews (no `confirm=true`) are not wrapped, and neither are the Drum Rack
-workflow methods (`workflow.scaffold_*` and `workflow.execute_*`), whose own
-backout text counts Undos. Community reports (for example
-adamjmurray/producer-pal#1209) say begin/end steps do not nest, so a batch
-never wraps its operations twice. Not yet run in Live: whether this keeps
-consecutive calls apart.
+separate calls made in a row were merged into one undo step (issue #3).
+Community reports (for example adamjmurray/producer-pal#1209) say begin/end
+steps do not nest, so a batch never wraps its operations twice.
 
 Expect the count to be off sometimes. A call that fails after writing and
 puts things back (an `insert_device` whose `parameters` fail, an output type
-restored after a bad channel) may still leave a step that changes nothing.
-An `insert_device` with `parameters` may become two steps, as the batch case
-above did. And the musician's own edits share the same history.
+restored after a bad channel) leaves a step that changes nothing: Undo
+History showed one "Custom Action", and pressing Undo on it left the track as
+it was. And the musician's own edits share the same history.
 
 `undo_last_change` takes a `count` (1 to 20) and reports how many steps it
 undid, stopping early when `Song.can_undo` is false. A count above 1 needs
 `confirm=true` (checked by both the MCP tool and the Remote Script), because
-it can reach the musician's own edits. Every step
-still shows as "Custom Action": the Live API gives no way to name it.
+it can reach the musician's own edits. Undo History names a step "Custom
+Action" or `Change "<parameter>"`; the Live API gives no way to name it.
 
 If setting `parameters` on a newly inserted device fails, `insert_device`
 deletes that device again, so a failed call leaves the track unchanged.
@@ -196,6 +211,71 @@ deletes that device again, so a failed call leaves the track unchanged.
   macros. The page has no running scripts and loads nothing from the network.
 
 ## Validation log
+
+### 2026-11-03, Live 12.4.16 Suite, macOS 27.2
+
+Checklist from issue #26 (Remote Script 0.5.0: undo steps, device paths,
+plugin display text). Set: a copy of `First Light.als` saved as
+`First Light 050 check.als` in the same folder, not committed; every change
+was undone. Calls went straight to the bridge (`BridgeClient`), and each
+yes/no answer comes from bridge results plus screenshots of Live's Undo
+History. Undo was pressed with Cmd+Z in Live.
+
+1. Installed the Remote Script and switched the slot to None and back.
+2. `daw.health`: adapter 0.5.0 with `undo_count`,
+   `batch_per_operation_undo` and `single_call_undo_steps`. Pass.
+3. Rename then volume on another track: two entries ("Custom Action",
+   `Change "Track Volume"`). One Undo reverted only the volume. Pass.
+4. `create_return_track("Check")` then Reverb Predelay: two entries. One
+   Undo reverted only Predelay; "C-Check" stayed. Pass.
+5. `insert_device` Utility with Gain "-3 dB": two entries ("Custom Action",
+   `Change "Output Gain"`). It took **2** Undo presses to remove it.
+6. `insert_device` with "No Such Param": error says the Utility was removed
+   again; one new "Custom Action"; Undo on it left the track empty. Pass.
+7. `delete_device` preview: no new entry (the redo list was kept). Pass.
+8. Atomic batch of three volume changes: `undo_steps: "one"`, one entry, one
+   Undo reverted all three. Pass.
+9. Same batch with `atomic=false`: `undo_steps: "per_operation"`, but **one**
+   entry, and one Undo reverted all three. **Fail** with 0.5.0. Experiments:
+   two separate volume calls made two entries; a mixed batch (rename, volume,
+   Predelay) made two entries, the volume and Predelay changes sharing one.
+   Cause: Live merges parameter changes made in one main-thread callback,
+   even across begin/end pairs. Fixed in 0.5.1 (each operation runs in its
+   own callback). Rerun on 0.5.1: three entries; each Undo reverted one
+   volume, in reverse order. Pass. Step 8 rerun on 0.5.1 also passed.
+10. `undo` with `count=2` and no `confirm`: refused, nothing changed. With
+    `confirm=true` after a rename and a volume change: `steps: 2`, both
+    reverted. Pass.
+11. Drum Rack scaffold and execute on `1-C78 Core Kit`: each made **6**
+    entries ("Duplicate Track(s)" plus one more per track), but the backout
+    text said "Use Live Undo 3 times". Three presses left one and a half
+    extra tracks. **Fail** with 0.5.0. Fixed in 0.5.1: the backout text says
+    6 times (two per track). Rerun on 0.5.1: execute said 6; six presses
+    restored the set, and a new plan showed the source clip unchanged (5, 8
+    and 16 notes). Pass.
+12. `list_devices` on `1-C78 Core Kit` (the original track, which has the
+    same Drum Rack as the "- Snare" copy the checklist names): the Guiro
+    Short chains show as `C78 Core Kit/4/Guiro Short` and
+    `C78 Core Kit/6/Guiro Short`. Setting "Device On" Off by each path
+    turned off only that device (checked across all 41 devices in the rack);
+    two Undos restored both. Pass.
+13. Two EQ Eights on `3-Audio` listed as paths `"0"` and `"1"`. Device On
+    Off on `"1"` changed only index 1; `delete_device` previews of `"0"`
+    and `"1"` reached index 0 and 1 and added no entry. Pass.
+14. Valhalla Supermassive (VST3 4.0.0), loaded from Live's browser because
+    `insert_device` only finds Live's own devices. LowCut `"400 Hz"`:
+    refused, naming "10 Hz" and the raw range 0.0 to 1.0; value unchanged;
+    no new entry. Mode `"Andromeda"`: refused, naming the raw range. Raw
+    `0.2`: LowCut showed 410 Hz, one `Change "LowCut"` entry. Pass.
+15. `device="C78 Core Kit/Nope/X"`: "no chain 'Nope' in 'C78 Core Kit'"
+    with all 16 chains listed. Pass.
+
+- Found and fixed (0.5.1): steps 9 and 11, above.
+- Found, not changed: an atomic batch that mixes parameter changes with
+  other changes is two undo steps (see Undo above); this is how Live
+  records them. Every bridge error ends with the hint "Check daw.health
+  capabilities before retrying.", which does not fit errors such as a
+  missing parameter.
 
 ### 2026-11-01 (after PR #21), Live 12.4.16 Suite, macOS
 

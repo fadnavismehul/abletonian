@@ -38,13 +38,18 @@ except Exception:
 HOST = "127.0.0.1"
 PORT = 9877
 PROTOCOL_VERSION = "abletonian.bridge.v1"
-ADAPTER_VERSION = "0.5.0"
+ADAPTER_VERSION = "0.5.1"
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 # Live must start a request within this time or it is cancelled unrun, so a
 # client that gives up never sees its change applied later.
 REQUEST_START_TIMEOUT_SECONDS = 5.0
 # Once started, a request (such as a long batch) may run this long.
 REQUEST_RUN_TIMEOUT_SECONDS = 25.0
+# A per-operation batch runs each operation this many Live ticks after the
+# previous one, so Live does not merge their undo steps.
+BATCH_OPERATION_TICK_DELAY = 1
+# Live Undo presses per track the Drum Rack workflow creates (Live 12.4.16).
+UNDO_STEPS_PER_CREATED_TRACK = 2
 UNFILTERED_SCAFFOLD_WARNING = (
     "Scaffold tracks are full duplicates; MIDI clips have not been filtered yet."
 )
@@ -244,9 +249,7 @@ class AbletonianBridgeControlSurface(ControlSurface):
             "created_tracks": created_tracks,
             "warnings": warnings,
             "backout": {
-                "primary": (
-                    f"Use Live Undo {len(created_tracks)} times to remove the scaffold tracks."
-                ),
+                "primary": _undo_backout_text(len(created_tracks)),
                 "fallback": "Close the Live Set without saving to discard scaffold tracks.",
             },
             "verification": {
@@ -397,9 +400,58 @@ def _dispatch_frame(surface, frame):
 
 
 def _call_surface(surface, method, params):
+    if _is_per_operation_batch(method, params) and callable(
+        getattr(surface, "schedule_message", None)
+    ):
+        return _run_batch_per_operation(surface, params)
+    return _call_on_main_thread(surface, lambda: surface.handle_request(method, params))
+
+
+def _is_per_operation_batch(method, params):
+    return method == "ableton.batch" and params.get("atomic") is False
+
+
+def _run_batch_per_operation(surface, params):
+    """Run each operation of an ``atomic=false`` batch in its own callback.
+
+    Live 12.4.16 merged parameter changes made in one main-thread callback
+    into one undo step, even with a separate begin/end_undo_step pair around
+    each (2026-11-03 run, issue #26). Separate requests stayed separate. So
+    each operation runs a tick after the previous one finished. The batch is
+    checked first and changes nothing if it is malformed. Operations not
+    started before the deadline are not run, so a client that gave up does
+    not see later changes.
+    """
+
+    deadline = time.monotonic() + REQUEST_RUN_TIMEOUT_SECONDS
+
+    def song():
+        return _live_object(surface, "song")
+
+    plan = _call_on_main_thread(surface, lambda: live_ops.prepare_batch(song(), params))
+    results = []
+    for position in range(len(plan["operations"])):
+        try:
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    "the batch ran out of time; this and later operations were not run"
+                )
+            results.append(
+                _call_on_main_thread(
+                    surface,
+                    lambda p=position: live_ops.run_batch_operation(song(), plan, p),
+                    delay=BATCH_OPERATION_TICK_DELAY,
+                )
+            )
+        except Exception as exc:
+            return live_ops.batch_failure(plan, results, position, exc)
+    return live_ops.batch_success(plan, results)
+
+
+def _call_on_main_thread(surface, action, delay=0):
     schedule_message = getattr(surface, "schedule_message", None)
     if not callable(schedule_message):
-        return surface.handle_request(method, params)
+        return action()
 
     started = threading.Event()
     completed = threading.Event()
@@ -412,13 +464,13 @@ def _call_surface(surface, method, params):
                 return
             started.set()
         try:
-            state["result"] = surface.handle_request(method, params)
+            state["result"] = action()
         except Exception as exc:
             state["error"] = exc
         finally:
             completed.set()
 
-    schedule_message(0, run_request)
+    schedule_message(delay, run_request)
     if not started.wait(REQUEST_START_TIMEOUT_SECONDS):
         with lock:
             if not started.is_set():
@@ -755,6 +807,23 @@ def _chain_device_names(chains):
             if name:
                 names.append(name)
     return names
+
+
+def _undo_backout_text(created_count):
+    """How many Live Undo presses remove the workflow's tracks.
+
+    In Live 12.4.16 each created track took two undo steps: "Duplicate
+    Track(s)", then one step for its name and colour. Execute's clip
+    filtering joined the last of those steps, so scaffold and execute both
+    took two presses per track (2026-11-03 run, issue #26).
+    """
+
+    presses = created_count * UNDO_STEPS_PER_CREATED_TRACK
+    return (
+        f"Use Live Undo {presses} times to remove the {created_count} new tracks "
+        f"({UNDO_STEPS_PER_CREATED_TRACK} steps per track: the duplicate, then its "
+        "name and colour)."
+    )
 
 
 def _skipped_pad_warning(pad_names):
