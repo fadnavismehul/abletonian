@@ -29,6 +29,12 @@ turns their results into a durable record.
 4. Ask the person to report back with the "Live validation report" issue form,
    or in the PR.
 
+## Run it yourself
+
+When you are on the Mac with Live open and no person at Live, run the
+checklist yourself with the `drive-live-on-mac` skill. It covers
+screenshots, Undo, Save As and reloading the script.
+
 ## Record results
 
 Add a dated entry to the validation log in
