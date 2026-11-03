@@ -37,3 +37,4 @@ whatever their status, so links never break.
 | --- | --- | --- |
 | [0001](0001-ableton-deep-integration-foundation.md) | Ableton deep integration foundation and Drum Rack extraction | Implemented |
 | [0002](0002-selected-rack-macro-cockpit.md) | Selected Rack Macro Cockpit | Accepted (read-only slice built) |
+| [0003](0003-daw-adapter-and-safety-policy.md) | DawAdapter interface and SafetyPolicy in the Python core | Accepted |

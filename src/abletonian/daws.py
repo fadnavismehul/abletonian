@@ -39,7 +39,7 @@ SUPPORTED_DAWS: dict[str, DawProfile] = {
     "ableton": DawProfile(
         slug="ableton",
         name="Ableton Live",
-        adapter_strategy="Native Remote Script or AbletonOSC",
+        adapter_strategy="Native Remote Script; Extensions SDK adapter planned",
         maturity="first_target",
         expected_depth="deep session, clip, device, and browser control",
         capabilities=(

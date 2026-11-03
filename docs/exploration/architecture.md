@@ -66,6 +66,7 @@ tractable later.
 This layer can be implemented in more than one way:
 
 - Native Ableton Remote Script adapter.
+- Ableton Extensions SDK adapter (planned second Ableton adapter).
 - AbletonOSC adapter.
 - FL Studio MIDI scripting adapter.
 - REAPER ReaScript or OSC adapter.
@@ -75,3 +76,9 @@ This layer can be implemented in more than one way:
 
 The MCP and intent layers should not care which adapter is active, except for
 capability discovery.
+
+Today this is not yet true: the MCP tools in `src/abletonian/server.py` call
+`ableton.*` bridge methods by name, so the boundary is the wire rather than an
+interface in the Python process.
+[RFC 0003](../rfcs/0003-daw-adapter-and-safety-policy.md) proposes the
+in-process `DawAdapter` interface that fixes this.

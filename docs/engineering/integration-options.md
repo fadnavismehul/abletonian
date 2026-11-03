@@ -9,7 +9,8 @@ several useful surfaces, each with different tradeoffs.
 | Surface | Depth | Best Use | Main Risk |
 | --- | --- | --- | --- |
 | Python Remote Script / Control Surface | Very deep | Structural automation, project state, tracks, clips, devices, transport, browser loading | Custom Python API is powerful but not documented as a stable public API |
-| Max for Live + Live API / LOM | Deep and official | In-Live UI, selected-object context, observing Live state, device-like workflows | Requires Max for Live access and is limited to the Live Object Model |
+| Ableton Extensions SDK | Deep, official, versioned | Second Ableton adapter; in-Live UI through dialogs and context menus; one undo step per transaction | Live 12 Suite beta only; runs on a user gesture; no routing, transport, automation, or plug-in loading (as of 2026-11) |
+| Max for Live + Live API / LOM | Deep and official | Audio observation (meters, analysis), selected-object context, device-like workflows | Requires Max for Live access and is limited to the Live Object Model |
 | AbletonOSC | Medium to deep | Fast bridge baseline, OSC clients, broad existing command surface | Generic OSC surface rather than Abletonian-specific intent/safety model |
 | Live 12 Max MIDI Tools | Narrow and native | MIDI generation and transformation inside Clip View | MIDI-note scope only; not suitable for project-wide automation |
 | MIDI Mapping / User Remote Scripts | Medium | Hardware control, transport, mixer, performance mappings | Poor fit for structural automation |
@@ -55,6 +56,44 @@ renaming, recoloring, and undo-aware mutations.
 - Use a framed bridge protocol with request IDs, timeouts, and typed errors.
 - Build a fake adapter with the same protocol for CI and workflow tests.
 
+## Ableton Extensions SDK
+
+Ableton announced the Extensions SDK on 2026-06-02 as an experimental public
+beta for Live 12 Suite (12.4.5 beta or later). Extensions are TypeScript or
+JavaScript packages that run in an Extension Host process Live owns, are
+installed as `.ablx` archives, and register commands and context-menu actions
+that the user invokes. Everything in this section comes from the
+[landscape review](../research/2026-11-landscape-and-direction-review.md),
+section 2, which could reach Ableton's own pages only through search snippets
+and relied on a community mirror of the SDK reference. Treat it as
+**unverified** until someone reads the official docs or runs an extension.
+
+### What It Can Do Well
+
+- Officially sanctioned and versioned (API 1.0.0 in the community mirror).
+- `context.withinTransaction(fn)` makes a set of edits one undo step, which is
+  abletonian's "one undo step, fail closed" rule as a primitive.
+- Tracks, scenes, clips and MIDI notes, devices with parameters, racks and
+  chains, Drum Racks, native device insertion by name, track duplication.
+- Webview dialogs (`showModalDialog`) and context-menu actions scoped to the
+  current selection: a natural home for plan review and the Macro Cockpit.
+
+### What It Cannot Do (as reported)
+
+- Input and output routing, transport and clip launching, automation
+  envelopes, loading third-party plug-ins or presets, Live's browser, undo,
+  and anything that runs without a user gesture.
+- Run on Live Standard, Intro, or Lite.
+
+### How Abletonian Should Use It
+
+As a second Ableton adapter that answers the same bridge protocol and reports
+its own capability list, not as a replacement for the Remote Script. The
+Remote Script keeps routing, undo, return tracks, selection polling, and
+non-Suite users. The adapter interface that makes two Ableton adapters
+possible is [RFC 0003](../rfcs/0003-daw-adapter-and-safety-policy.md); the
+Extension adapter itself needs its own RFC after a read-only spike.
+
 ## Max for Live and the Live Object Model
 
 Ableton documents Max for Live as a way to access and use Live's API, including
@@ -98,10 +137,15 @@ See [LOM - The Live Object Model](https://docs.cycling74.com/legacy/max8/vignett
 
 ### Why Abletonian Should Use It
 
-Max for Live is the best candidate for the "inside Ableton" user experience:
-context strip, status, quick actions, dry-run review, and RTFM surface. It is
-also a good official API reference for what object classes and operations are
-reasonable to support.
+Max for Live is the one surface that can observe live audio (through
+`live.remote~` and analysis devices), which neither Remote Scripts nor the
+Extensions SDK can do. That makes it a candidate optional sensor for a future
+"did that change make it louder?" check. It is also a good official API
+reference for which object classes and operations are reasonable to support.
+
+The in-Live user experience (context strip, quick actions, dry-run review) is
+better served by an Extension dialog, which needs no device on a track; see
+the Extensions SDK section above.
 
 ### Engineering Constraints
 
@@ -238,12 +282,13 @@ version-aware behavior.
 graph TD
     User[Musician]
     Agent[AI Agent / MCP Client]
-    UI[Max for Live Companion or Local Panel]
+    UI[Extension Dialog or Local Panel]
     Core[Abletonian MCP + Intent Core]
     RTFM[Manual / RTFM Index]
     Bridge[Framed Bridge Protocol]
     Remote[Remote Script Adapter]
-    M4L[Max for Live Companion]
+    Ext[Extensions SDK Adapter]
+    M4L[Max for Live Audio Sensor]
     OSC[AbletonOSC Adapter]
     Fake[Fake Adapter for Tests]
     Live[Ableton Live Set]
@@ -255,14 +300,17 @@ graph TD
     Core --> RTFM
     Core --> Bridge
     Bridge --> Remote
+    Bridge --> Ext
     Bridge --> OSC
     Bridge --> Fake
-    UI --> M4L
+    Bridge -.-> M4L
+    UI --> Ext
     Remote --> Live
+    Ext --> Live
     M4L --> Live
     OSC --> Live
 ```
 
 The core should not care whether a capability is implemented by a Remote Script,
-AbletonOSC, Max for Live, or a fake adapter. It should care about typed
+an Extension, AbletonOSC, Max for Live, or a fake adapter. It should care about typed
 capabilities, safety policy, and verified results.
