@@ -5,6 +5,11 @@ Live-shaped objects driven through the real Remote Script code
 (remote_scripts/Abletonian) via RemoteScriptAdapter. Where both adapters
 implement an operation, they must give the same answer. Where the fake does
 not model an operation yet, it must say so instead of pretending.
+
+Not covered yet (Linear MEH-21): the Drum Rack execute result, whose shape
+differs between the two adapters (mode, touched_tracks, backout, clip
+fields), and refusals, which this direct harness does not map the way the
+real bridge does.
 """
 
 import asyncio
@@ -16,8 +21,10 @@ import _bootstrap  # noqa: F401
 
 from abletonian.adapters.base import (
     AdapterHealth,
+    AdapterRefused,
     DawAdapter,
     MixerChange,
+    RackRef,
     TrackQuery,
     UnsupportedOperation,
 )
@@ -151,18 +158,24 @@ class ProtocolContractTests(unittest.TestCase):
 
 
 def _implemented(adapter: FakeAbletonAdapter, operation: str) -> bool:
-    """True unless the fake raises UnsupportedOperation for this operation."""
+    """True unless the fake raises UnsupportedOperation for this operation.
+
+    A refusal for this fixture (for example no rack selected) still counts as
+    implemented; only UnsupportedOperation means "not modelled".
+    """
 
     method = getattr(adapter, "apply_batch" if operation == "batch" else operation)
     try:
         if operation in ("plan_drum_rack_extraction", "execute_drum_rack_extraction"):
             method()
         elif operation == "get_selected_rack_macros":
-            return True  # modelled; needs a rack fixture, covered in test_cockpit
+            method(RackRef())
         else:
             method(None)  # unmodelled methods refuse before reading the request
     except UnsupportedOperation:
         return False
+    except AdapterRefused:
+        return True
     return True
 
 
@@ -182,30 +195,38 @@ class DrumRackPlanContractTests(unittest.TestCase):
         self.assertEqual(plans["fake"]["target"], plans["remote_script"]["target"])
 
     def test_same_output_tracks(self) -> None:
-        def summary(plan: dict[str, Any]) -> list[tuple[Any, ...]]:
+        # Known difference, excluded on purpose: "color". The fake takes the
+        # pad's (or track's) hex colour; the Remote Script takes the chain's
+        # Live palette index first. Nothing in the server reads it yet;
+        # reconciling it is part of Linear MEH-21.
+        def summary(plan: dict[str, Any]) -> list[dict[str, Any]]:
             return [
-                (
-                    output["name"],
-                    output["source_pad"]["note"],
-                    output["source_pad"]["name"],
-                    output["midi_filter"],
-                    output["clip_note_count"],
-                )
+                {key: value for key, value in output.items() if key != "color"}
                 for output in plan["output_tracks"]
             ]
 
         plans = self.plans()
         self.assertEqual(summary(plans["fake"]), summary(plans["remote_script"]))
         self.assertEqual(
-            summary(plans["fake"]), [("Drums - Kick", 36, "Kick", {"keep_pitch": 36}, 2)]
+            summary(plans["fake"]),
+            [
+                {
+                    "source_pad": {"note": 36, "name": "Kick", "chain_name": "Kick Chain"},
+                    "name": "Drums - Kick",
+                    "devices": ["Kick Sampler"],
+                    "midi_filter": {"keep_pitch": 36},
+                    "clip_note_count": 2,
+                }
+            ],
         )
 
-    def test_same_preserves_and_skip_warning(self) -> None:
+    def test_same_steps_preserves_and_warnings(self) -> None:
         plans = self.plans()
-        self.assertEqual(plans["fake"]["preserves"], plans["remote_script"]["preserves"])
-        for name, plan in plans.items():
-            with self.subTest(adapter=name):
-                self.assertTrue(any("Snare" in warning for warning in plan["warnings"]))
+        for key in ("steps", "preserves", "warnings"):
+            with self.subTest(key=key):
+                self.assertEqual(plans["fake"][key], plans["remote_script"][key])
+        self.assertEqual(len(plans["fake"]["warnings"]), 1)
+        self.assertIn("Snare", plans["fake"]["warnings"][0])
 
 
 class ServerWithFakeTests(unittest.TestCase):
