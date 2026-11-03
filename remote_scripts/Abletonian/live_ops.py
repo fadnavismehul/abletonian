@@ -67,8 +67,13 @@ def _in_undo_step(song, action):
     "Custom Action" step (issue #3). Community reports (for example
     adamjmurray/producer-pal#1209) say a begin/end pair makes its writes one
     step and that steps do not nest, so this is never called inside
-    ``batch``'s own bracket. Not yet checked in Live: that a bracketed call is
-    kept apart from the call before it.
+    ``batch``'s own bracket.
+
+    Checked in Live 12.4.16 on 2026-11-03 (issue #26): a bracketed call is
+    kept apart from the call before it. Within one call Live still keeps
+    parameter value changes ("Change ...") in a separate step from other
+    changes ("Custom Action"), and it merges parameter changes made in the
+    same main-thread callback even across separate brackets.
     """
 
     begin = getattr(song, "begin_undo_step", None)
@@ -452,6 +457,48 @@ def _current_index(owner, device, path):
 
 
 def batch(song, params):
+    """Run several operations. With ``atomic`` (default) they share one undo
+    step. With ``atomic=false`` each gets its own step, but only when each
+    runs in its own main-thread callback: in Live 12.4.16, parameter changes
+    made in one callback merged into one undo step even across separate
+    ``begin_undo_step``/``end_undo_step`` pairs (2026-11-03 run, issue #26).
+    The bridge therefore runs a per-operation batch through ``prepare_batch``
+    and ``run_batch_operation``, one callback each; this single-callback
+    path is the fallback when no scheduler is available.
+    """
+
+    plan = prepare_batch(song, params)
+    results = []
+    if plan["atomic"]:
+        grouped = plan["summary"]["grouped_undo"]
+        if grouped:
+            song.begin_undo_step()
+        try:
+            for position in range(len(plan["operations"])):
+                try:
+                    results.append(_run_planned(song, plan, position))
+                except Exception as exc:
+                    return batch_failure(plan, results, position, exc)
+        finally:
+            if grouped:
+                song.end_undo_step()
+        return batch_success(plan, results)
+
+    for position in range(len(plan["operations"])):
+        try:
+            results.append(run_batch_operation(song, plan, position))
+        except Exception as exc:
+            return batch_failure(plan, results, position, exc)
+    return batch_success(plan, results)
+
+
+def prepare_batch(song, params):
+    """Check a batch and pin its delete targets before anything changes.
+
+    Returns a plan for ``run_batch_operation``. Raises ``LiveOpsError`` and
+    changes nothing when the batch is malformed.
+    """
+
     operations = _required(params, "operations")
     if not isinstance(operations, list) or not operations:
         raise LiveOpsError("batch operations must be a non-empty list")
@@ -485,49 +532,47 @@ def batch(song, params):
     atomic = params.get("atomic", True)
     if not isinstance(atomic, bool):
         raise LiveOpsError("batch 'atomic' must be true or false")
-    begin = getattr(song, "begin_undo_step", None)
-    end = getattr(song, "end_undo_step", None)
-    grouped_undo = callable(begin) and callable(end)
-    summary = {
-        "grouped_undo": grouped_undo,
-        "undo_steps": ("one" if atomic else "per_operation") if grouped_undo else "none",
+    grouped_undo = callable(getattr(song, "begin_undo_step", None)) and callable(
+        getattr(song, "end_undo_step", None)
+    )
+    return {
+        "operations": operations,
+        "delete_targets": delete_targets,
+        "atomic": atomic,
+        "summary": {
+            "grouped_undo": grouped_undo,
+            "undo_steps": ("one" if atomic else "per_operation") if grouped_undo else "none",
+        },
     }
 
-    def run(position, operation):
-        operation_params = operation.get("params", {})
-        if position in delete_targets:
-            return delete_device(song, operation_params, delete_targets[position])
-        return _HANDLERS[operation["method"]](song, operation_params)
 
-    results = []
-    if atomic:
-        if grouped_undo:
-            begin()
-        try:
-            for position, operation in enumerate(operations):
-                try:
-                    results.append(run(position, operation))
-                except Exception as exc:
-                    return _batch_failure(results, position, operation, exc, summary)
-        finally:
-            if grouped_undo:
-                end()
-        return {"completed": results, "failed": None, **summary}
+def run_batch_operation(song, plan, position):
+    """Run one operation of a per-operation plan as its own undo step."""
 
-    # atomic=false: each operation is its own undo step, so Undo can step
-    # back through the batch one change at a time (issue #3).
-    for position, operation in enumerate(operations):
-        try:
-            results.append(_in_undo_step(song, lambda p=position, o=operation: run(p, o)))
-        except Exception as exc:
-            return _batch_failure(results, position, operation, exc, summary)
-    return {"completed": results, "failed": None, **summary}
+    return _in_undo_step(song, lambda: _run_planned(song, plan, position))
 
 
-def _batch_failure(results, position, operation, exc, summary):
+def _run_planned(song, plan, position):
+    operation = plan["operations"][position]
+    operation_params = operation.get("params", {})
+    if position in plan["delete_targets"]:
+        return delete_device(song, operation_params, plan["delete_targets"][position])
+    return _HANDLERS[operation["method"]](song, operation_params)
+
+
+def batch_success(plan, results):
+    return {"completed": results, "failed": None, **plan["summary"]}
+
+
+def batch_failure(plan, results, position, exc):
+    summary = plan["summary"]
     failure = {
         "completed": results,
-        "failed": {"index": position, "operation": operation, "error": str(exc)},
+        "failed": {
+            "index": position,
+            "operation": plan["operations"][position],
+            "error": str(exc),
+        },
         **summary,
     }
     if summary["undo_steps"] == "per_operation":

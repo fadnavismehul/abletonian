@@ -29,7 +29,9 @@ ABLETONIAN_AGENT_NAME=live-room abletonian
    extraction, it shows a plan first: what will change, and anything risky.
 3. You approve. Deletes always show what would go and ask first.
 4. The change lands as one Live undo step, so one Undo takes it back (Remote
-   Script 0.5.0, not yet validated in Live).
+   Script 0.5.0 and later, checked in Live 12.4.16). Live keeps parameter
+   changes in their own step, so a change that also inserts or renames
+   something can take two.
 5. You never pick a bridge. abletonian uses what is installed in Live and
    says plainly when it cannot do something.
 

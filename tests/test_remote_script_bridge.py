@@ -600,7 +600,7 @@ class BridgeSurfaceDrumRackWorkflowTests(unittest.TestCase):
                 "mutates_real_ableton_set": True,
             },
         )
-        self.assertIn("Use Live Undo", result["backout"]["primary"])
+        self.assertIn("Use Live Undo 4 times", result["backout"]["primary"])
 
     def test_execute_drum_rack_extraction_requires_confirmation(self) -> None:
         surface = bridge_surface(drum_rack_song())

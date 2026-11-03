@@ -170,6 +170,11 @@ Compatibility note:
 - Live mutations are dispatched through `ControlSurface.schedule_message` so
   the socket worker does not call mutating Live APIs directly.
 
+Correction (2026-11-03, issue #26): in Live 12.4.16 scaffold and execute
+each took six Undo presses for three tracks, not three: "Duplicate Track(s)"
+and one more step per track. Since Remote Script 0.5.1 the backout text says
+two presses per track. See the validation log in `live-control.md`.
+
 ## Mutation Gate
 
 Before adding broader mutation workflows:
