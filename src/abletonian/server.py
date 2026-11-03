@@ -26,6 +26,7 @@ from abletonian.adapters.base import (
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
+    UnsupportedOperation,
 )
 from abletonian.adapters.remote_script import RemoteScriptAdapter
 from abletonian.bridge.client import BridgeClient
@@ -212,7 +213,7 @@ def build_mcp(
         )
 
     @mcp.tool(annotations=_op("execute_drum_rack_extraction"))
-    def execute_drum_rack_extraction(confirm: bool = False) -> str:
+    def execute_drum_rack_extraction(confirm: StrictBool = False) -> str:
         """Execute Drum Rack extraction after explicit confirmation."""
 
         return run(
@@ -231,6 +232,12 @@ def build_mcp(
             result = policy.run(name, request, call)
         except PolicyRefused as exc:
             return str(exc)
+        except UnsupportedOperation as exc:
+            return (
+                f"Not supported: {exc}, according to its last health report. Nothing was "
+                "sent. If the Remote Script in Live was updated since, run "
+                "check_bridge_health and try again."
+            )
         except AdapterError as exc:
             return f"{prefix}: {exc}"
         return json.dumps(result, indent=2)

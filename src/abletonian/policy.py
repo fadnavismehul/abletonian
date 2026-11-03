@@ -157,6 +157,9 @@ class LogEntry:
 class SafetyPolicy:
     """Runs adapter calls under the operation table and keeps a session log."""
 
+    # Keep the newest entries only, so a long session does not grow without end.
+    MAX_LOG_ENTRIES = 1000
+
     def __init__(self, adapter: DawAdapter, clock: Callable[[], float] = time.time) -> None:
         self.adapter = adapter
         self.clock = clock
@@ -224,3 +227,5 @@ class SafetyPolicy:
                 undo_steps=undo_steps,
             )
         )
+        if len(self.log) > self.MAX_LOG_ENTRIES:
+            del self.log[: len(self.log) - self.MAX_LOG_ENTRIES]

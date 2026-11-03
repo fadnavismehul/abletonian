@@ -114,6 +114,11 @@ class PolicyTests(unittest.TestCase):
         self.policy.run("batch", _batch(), lambda: {"undo_steps": "one"})
         self.assertEqual(self.policy.log[-1].undo_steps, "one")
 
+    def test_log_is_bounded(self) -> None:
+        for _ in range(SafetyPolicy.MAX_LOG_ENTRIES + 5):
+            self.policy.run("list_tracks", None, lambda: {})
+        self.assertEqual(len(self.policy.log), SafetyPolicy.MAX_LOG_ENTRIES)
+
     def test_policy_refusal_sends_nothing(self) -> None:
         with self.assertRaises(PolicyRefused):
             self.policy.run("execute_drum_rack_extraction", False, lambda: {"sent": True})
@@ -248,7 +253,21 @@ class ToolBehaviourTests(unittest.TestCase):
         )
         text = result.content[0].text  # type: ignore[attr-defined]
         self.assertIn("cannot create return track", text)
+        self.assertIn("run check_bridge_health", text)
         self.assertEqual([c[0] for c in bridge.calls], ["daw.health"])
+
+    def test_drum_rack_execute_needs_a_real_true(self) -> None:
+        for loose in ("true", 1, "yes"):
+            with self.subTest(confirm=loose):
+                bridge = Bridge()
+                mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+                try:
+                    asyncio.run(
+                        mcp.call_tool("execute_drum_rack_extraction", {"confirm": loose})
+                    )
+                except Exception:  # noqa: BLE001 - pydantic may reject it outright
+                    pass
+                self.assertEqual(bridge.calls, [])
 
 
 if __name__ == "__main__":
