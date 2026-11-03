@@ -1,9 +1,9 @@
 # RFC 0004: Bridge port and per-install key
 
-**Status:** Draft  
+**Status:** Accepted  
 **Created:** 2026-11-03  
 **Owner:** @fadnavismehul  
-**Tracking issue:** <link once accepted>
+**Tracking issue:** [#37](https://github.com/fadnavismehul/abletonian/issues/37)
 
 ## Summary
 
