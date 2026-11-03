@@ -128,7 +128,22 @@ class FakeAbletonAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(result["operation"], "split_drum_rack")
-        self.assertEqual(result["mode"], "fake_execute")
+        self.assertEqual(result["mode"], "execute")
+        self.assertEqual(
+            result["touched_tracks"],
+            [track["id"] for track in result["created_tracks"]],
+        )
+        self.assertEqual(
+            result["backout"]["primary"], "Use Live Undo 2 times to remove the scaffold tracks."
+        )
+        self.assertFalse(result["verification"]["mutates_real_ableton_set"])
+        self.assertEqual(
+            [track["track_index"] for track in result["created_tracks"]], [1, 2]
+        )
+        self.assertEqual(
+            [track["clips"][0]["removed_note_count"] for track in result["created_tracks"]],
+            [1, 2],
+        )
         self.assertEqual(result["preserved_tracks"], ["track-drums"])
         self.assertEqual(
             [track["name"] for track in result["created_tracks"]],

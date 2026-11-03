@@ -401,6 +401,13 @@ class FakeAbletonAdapter:
         }
 
     def _execute_drum_rack_extraction(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Same result shape as the Remote Script's execute (bridge_server.py).
+
+        Differences on purpose: verification.mutates_real_ableton_set is
+        False, and the fake adds post_state and each clip's notes. The fake's
+        state is not changed, so a second call returns the same result.
+        """
+
         if params.get("confirm") is not True:
             raise FakeAdapterError(
                 "workflow.execute_drum_rack_extraction requires confirmation"
@@ -412,28 +419,46 @@ class FakeAbletonAdapter:
             _create_extracted_track(source_track, output)
             for output in plan["output_tracks"]
         ]
-        post_tracks = (*self.state.tracks, *created_tracks)
+        # Live duplicates each new track after the previous one, so they sit
+        # right after the source track, in plan order.
+        source_index = self.state.tracks.index(source_track)
+        post_tracks = (
+            *self.state.tracks[: source_index + 1],
+            *created_tracks,
+            *self.state.tracks[source_index + 1 :],
+        )
+        created_payloads = [
+            _created_track_payload(track, output, source_track, source_index + 1 + position)
+            for position, (track, output) in enumerate(
+                zip(created_tracks, plan["output_tracks"], strict=True)
+            )
+        ]
 
         return {
             "operation": "split_drum_rack",
-            "mode": "fake_execute",
+            "mode": "execute",
             "target": plan["target"],
             "preserved_tracks": [source_track.id],
-            "touched_tracks": [],
-            "created_tracks": [
-                _created_track_payload(track, output)
-                for track, output in zip(created_tracks, plan["output_tracks"], strict=True)
-            ],
+            "touched_tracks": [track.id for track in created_tracks],
+            "created_tracks": created_payloads,
+            "warnings": plan["warnings"],
+            "backout": {
+                "primary": (
+                    f"Use Live Undo {len(created_tracks)} times to remove the scaffold tracks."
+                ),
+                "fallback": "Close the Live Set without saving to discard scaffold tracks.",
+            },
+            "verification": {
+                "source_track_preserved": True,
+                "created_track_count": len(created_tracks),
+                "midi_filtering_applied": True,
+                "saved_live_set": False,
+                "mutates_real_ableton_set": False,
+            },
             "post_state": {
                 "track_count": len(post_tracks),
                 "track_names": [track.name for track in post_tracks],
                 "created_track_ids": [track.id for track in created_tracks],
-            },
-            "warnings": plan["warnings"],
-            "verification": {
-                "source_track_preserved": True,
-                "created_track_count": len(created_tracks),
-                "mutates_real_ableton_set": False,
             },
         }
 
@@ -471,23 +496,37 @@ def _filter_clip_for_pitch(clip: FakeClip, pitch: int, pad_name: str) -> FakeCli
     )
 
 
-def _created_track_payload(track: FakeTrack, output: dict[str, Any]) -> dict[str, Any]:
+def _created_track_payload(
+    track: FakeTrack, output: dict[str, Any], source_track: FakeTrack, track_index: int
+) -> dict[str, Any]:
+    pitch = int(output["midi_filter"]["keep_pitch"])
+    source_clips = {clip.id: clip for clip in source_track.clips}
     return {
         "id": track.id,
         "name": track.name,
-        "color": track.color,
+        "track_index": track_index,
         "source_pad": output["source_pad"],
+        "midi_filter": output["midi_filter"],
+        "clip_note_count": output["clip_note_count"],
         "devices": output["devices"],
-        "clips": [_clip_payload(clip) for clip in track.clips],
+        "color": track.color,
+        "contains_unfiltered_clips": False,
+        "clips": [_clip_payload(clip, source_clips, pitch) for clip in track.clips],
     }
 
 
-def _clip_payload(clip: FakeClip) -> dict[str, Any]:
+def _clip_payload(
+    clip: FakeClip, source_clips: dict[str, FakeClip], pitch: int
+) -> dict[str, Any]:
+    source_id = clip.id.rsplit("__", 1)[0]
+    source = source_clips.get(source_id)
+    before = len(source.notes) if source is not None else len(clip.notes)
     return {
         "id": clip.id,
         "name": clip.name,
         "note_count": len(clip.notes),
         "note_pitches": sorted({note.pitch for note in clip.notes}),
+        "removed_note_count": before - len(clip.notes),
         "notes": [
             {
                 "pitch": note.pitch,

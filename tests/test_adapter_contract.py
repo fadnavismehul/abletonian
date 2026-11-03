@@ -6,10 +6,9 @@ Live-shaped objects driven through the real Remote Script code
 implement an operation, they must give the same answer. Where the fake does
 not model an operation yet, it must say so instead of pretending.
 
-Not covered yet (Linear MEH-21): the Drum Rack execute result, whose shape
-differs between the two adapters (mode, touched_tracks, backout, clip
-fields), and refusals, which this direct harness does not map the way the
-real bridge does.
+Not covered yet (Linear MEH-21): refusals, which this direct harness does
+not map the way the real bridge does, and the mix operations, which the fake
+does not model.
 """
 
 import asyncio
@@ -244,6 +243,85 @@ class ServerWithFakeTests(unittest.TestCase):
         text = self.call("list_tracks", {})
         self.assertIn("Not supported", text)
         self.assertIn("Nothing was sent", text)
+
+
+class DrumRackExecuteContractTests(unittest.TestCase):
+    """Execute on the Remote Script's own drum_rack_song fixture vs the same set as fake state.
+
+    Excluded on purpose: ids (each side names objects its own way), "color"
+    (see test_same_output_tracks), verification.mutates_real_ableton_set
+    (False for the fake), and the fake-only post_state and clip notes.
+    """
+
+    def results(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        from test_remote_script_bridge import bridge_surface, drum_rack_song
+
+        remote = RemoteScriptAdapter(_SurfaceBridge(bridge_surface(drum_rack_song())))
+        pads = (
+            FakeDrumPad(36, "Kick", "Kick Chain", devices=("Kick Sampler",)),
+            FakeDrumPad(38, "Snare", "Snare Chain", devices=("Snare Sampler", "Compressor")),
+            FakeDrumPad(42, "Closed Hat", "Hat Chain", devices=("Hat Sampler",)),
+        )
+        clip = FakeClip(
+            id="clip-beat",
+            name="Beat",
+            notes=(
+                FakeMidiNote(pitch=36, start=0.0, duration=0.25, velocity=108),
+                FakeMidiNote(pitch=38, start=0.5, duration=0.25, velocity=96),
+                FakeMidiNote(pitch=36, start=1.0, duration=0.25, velocity=104),
+            ),
+        )
+        rack = FakeDrumRackDevice(id="device-drum-rack", name="Drum Rack", pads=pads)
+        track = FakeTrack(id="track-drums", name="Drums", clips=(clip,), devices=(rack,))
+        fake = FakeAbletonAdapter(
+            FakeAbletonState(
+                live_version="12.4.0",
+                tracks=(track,),
+                selected_track_id="track-drums",
+                selected_device_id="device-drum-rack",
+            )
+        )
+        return fake.execute_drum_rack_extraction(), remote.execute_drum_rack_extraction()
+
+    def test_same_execute_result(self) -> None:
+        def comparable(result: dict[str, Any]) -> dict[str, Any]:
+            out = {
+                key: value
+                for key, value in result.items()
+                if key not in ("touched_tracks", "post_state", "created_tracks", "verification")
+            }
+            out["touched_track_count"] = len(result["touched_tracks"])
+            out["verification"] = {
+                key: value
+                for key, value in result["verification"].items()
+                if key != "mutates_real_ableton_set"
+            }
+            out["created_tracks"] = [
+                {
+                    **{k: v for k, v in track.items() if k not in ("id", "color", "clips")},
+                    "clips": [
+                        {k: v for k, v in clip.items() if k not in ("id", "notes")}
+                        for clip in track["clips"]
+                    ],
+                }
+                for track in result["created_tracks"]
+            ]
+            return out
+
+        fake, remote = self.results()
+        self.assertEqual(comparable(fake), comparable(remote))
+
+    def test_touched_tracks_are_the_created_tracks(self) -> None:
+        for name, result in zip(("fake", "remote_script"), self.results(), strict=True):
+            with self.subTest(adapter=name):
+                self.assertEqual(
+                    result["touched_tracks"], [t["id"] for t in result["created_tracks"]]
+                )
+
+    def test_only_the_fake_says_it_did_not_touch_live(self) -> None:
+        fake, remote = self.results()
+        self.assertFalse(fake["verification"]["mutates_real_ableton_set"])
+        self.assertTrue(remote["verification"]["mutates_real_ableton_set"])
 
 
 if __name__ == "__main__":
