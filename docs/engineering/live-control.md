@@ -47,8 +47,9 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`,
 `idempotentHint`) derived from its safety class, so a client can tell reads
 from changes, for example to approve reads without asking. They are hints;
-`confirm=true` and the undo rules are still enforced by the tools. The
-mapping is in `src/abletonian/server.py`.
+`confirm=true` and the undo rules are enforced by `SafetyPolicy`, which every
+tool that reaches Live goes through. Both come from the operation table in
+`src/abletonian/policy.py` (RFC 0003).
 
 ### Track references
 
