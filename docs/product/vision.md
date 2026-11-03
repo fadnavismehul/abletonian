@@ -37,9 +37,19 @@ temporarily, and save it only if it becomes part of their workflow.
 
 ## Product Thesis
 
+The product is the harness: the layer that decides what an agent may do to a
+Live Set, how a change is proposed, checked, applied and undone, and how the
+result is verified and recorded. That layer does not depend on which code runs
+inside Live, and it is the part that would carry over to another DAW. The
+bridge into Live is necessary but replaceable; in November 2026 about thirty
+other projects had one (see the
+[landscape review](../research/2026-11-landscape-and-direction-review.md)).
+
 The winning shape is a hybrid:
 
-1. **Ableton-native bridge** for reading and mutating Live Set state.
+1. **Ableton-native adapters** for reading and mutating Live Set state: the
+   Remote Script today, and an Extensions SDK adapter next, behind the same
+   bridge protocol and capability handshake.
 2. **Musician-facing intent layer** that exposes safe workflows rather than raw
    low-level controls.
 3. **RTFM/manual intelligence** that grounds operations in Ableton's documented
@@ -94,8 +104,9 @@ depend on cloud infrastructure.
 - A safe automation layer for Ableton Live workflows.
 - An MCP server that lets agents operate on a DAW through typed, reviewable
   tools.
-- A DAW bridge architecture that can support Remote Scripts, Max for Live,
-  AbletonOSC, and test adapters.
+- A DAW bridge architecture that can support Remote Scripts, the Ableton
+  Extensions SDK, AbletonOSC, Max for Live as an optional sensor, and test
+  adapters.
 - A product that turns manual workflows into reusable, inspectable recipes.
 - A product that can generate project-specific UI surfaces from existing Ableton
   controls.
@@ -189,7 +200,11 @@ Expected output:
 
 ### Phase 4: In-Ableton Presence
 
-- Max for Live companion device or local panel.
+- An Ableton Extension that adds context-menu actions ("review plan",
+  "cockpit for this rack") and shows abletonian's HTML in a Live dialog
+  (`showModalDialog`). This needs Live Suite; the local browser page stays the
+  fallback for other editions. Max for Live is kept for audio observation
+  (meters, spectrum), not as the main UI.
 - Context strip for selected track, clip, chain, and device.
 - Plan review UI.
 - Quick actions derived from selection.
@@ -197,6 +212,11 @@ Expected output:
 
 ### Phase 5: Multi-DAW Framework
 
+- Start only after two Ableton adapters (Remote Script and Extension) run
+  behind one in-process adapter interface, so the capability vocabulary is not
+  designed from a single adapter.
+- REAPER before FL Studio: it has a deep documented scripting API, runs on
+  Linux, and has the largest non-Ableton MCP community.
 - Keep Ableton first-class without hardcoding the whole product to Ableton.
 - Let other DAW adapters advertise real capabilities and constraints.
 - Preserve the same intent, safety, and RFC discipline across adapters.

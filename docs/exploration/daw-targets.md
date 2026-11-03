@@ -11,7 +11,7 @@ through one fake universal API. The correct abstraction is:
 
 | Target slug | DAW | Initial adapter strategy | Expected depth |
 | --- | --- | --- | --- |
-| `ableton` | Ableton Live | Native Remote Script or AbletonOSC | Deep session/clip/device control |
+| `ableton` | Ableton Live | Native Remote Script; Extensions SDK as a second adapter | Deep session/clip/device control |
 | `fl-studio` | FL Studio | MIDI scripting bridge | Good transport, mixer, channel, pattern, playlist control; constraints around long-running scripts |
 | `reaper` | REAPER | ReaScript and/or OSC | Deep project control; strong scripting story |
 | `bitwig` | Bitwig Studio | Controller extension API | Good controller/project integration; Java extension packaging |
@@ -19,6 +19,13 @@ through one fake universal API. The correct abstraction is:
 | `logic-pro` | Logic Pro | Control surface, MIDI, Apple automation where safe | Limited and likely more workflow/control focused |
 | `studio-one` | Studio One | MIDI/control-surface style adapter | Limited until a stable public automation surface is selected |
 | `pro-tools` | Pro Tools | HUI/EUCON-style control where legally and technically viable | Conservative; likely transport/mix/control first |
+
+Order of work: a second Ableton adapter comes before any second DAW, and REAPER
+is the likely second DAW (deep documented scripting API, Linux support, the
+largest non-Ableton MCP community). FL Studio bridges depend on virtual MIDI
+triggers and keystrokes, and FL Studio 2026 ships its own assistant. See the
+[landscape review](../research/2026-11-landscape-and-direction-review.md),
+recommendation P6.
 
 ## Shared Capability Vocabulary
 
