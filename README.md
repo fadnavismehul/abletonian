@@ -21,28 +21,22 @@ abletonian --agent-name studio-copilot
 ABLETONIAN_AGENT_NAME=live-room abletonian
 ```
 
-## What the harness does
+## What it is like to use
 
-Many projects can move a fader in Live from an AI agent; there are about thirty
-Ableton MCP servers. `abletonian` aims to be the one a musician can trust with
-an unsaved set:
+1. You ask in plain words in Claude Desktop, Claude Code, or another MCP
+   client, for example "make the drums punchier".
+2. abletonian reads the open Live Set. For bigger jobs, such as Drum Rack
+   extraction, it shows a plan first: what will change, and anything risky.
+3. You approve. Deletes always show what would go and ask first.
+4. The change lands as one Live undo step, so one Undo takes it back (Remote
+   Script 0.5.0, not yet validated in Live).
+5. You never pick a bridge. abletonian uses what is installed in Live and
+   says plainly when it cannot do something.
 
-- **Safety.** Every operation is classified as read-only, additive,
-  transformative, destructive, or realtime
-  ([`robustness-and-safety.md`](docs/engineering/robustness-and-safety.md)).
-  Each tool call that changes the Set is meant to be one Live undo step
-  (Remote Script 0.5.0, not yet validated in Live), multi-step changes fail
-  closed, and deletes need an explicit `confirm=true`.
-- **Workflows, not tool count.** The product unit is a musician task such as
-  Drum Rack extraction or a Macro Cockpit for a rack, with a dry-run plan
-  before anything changes. The MCP surface stays small and typed.
-- **Grounding.** A local, edition-pinned copy of the Live manual answers "what
-  does Ableton say?" with citations, and "can abletonian automate this?".
-- **Verification.** A fake adapter and Live-shaped unit tests run in CI, and a
-  dated validation log records what actually happened in real Live, including
-  failures.
-- **Honest capabilities.** The adapter reports what it can do (`daw.health`),
-  and the server says so when a request is out of reach.
+Later, on Live Suite, the plan and the Macro Cockpit will also open in a
+window inside Live from a right-click menu; other editions get the same view
+in the browser. How the safety rules work is in
+[`robustness-and-safety.md`](docs/engineering/robustness-and-safety.md).
 
 ## Current shape
 
