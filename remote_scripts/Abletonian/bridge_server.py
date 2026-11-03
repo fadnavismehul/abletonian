@@ -48,8 +48,9 @@ ADAPTER_VERSION = "0.6.0"
 # DEFAULT_BRIDGE_KEY_PATH in src/abletonian/bridge/client.py.
 KEY_PATH = os.path.join(os.path.expanduser("~"), ".abletonian", "bridge_key")
 KEY_HINT = (
-    "Reinstall the Remote Script (python -m scripts.install_remote_script), then "
-    "switch the Abletonian Control Surface slot in Live to None and back."
+    "abletonian and Live must run as the same user, so both read the same key file. "
+    "If the key file was replaced or deleted, switch the Abletonian Control Surface "
+    "slot in Live to None and back to load or create it, then try again."
 )
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 # Live must start a request within this time or it is cancelled unrun, so a
@@ -411,7 +412,8 @@ class BridgeKey:
         return value
 
     def matches(self, presented):
-        if not isinstance(presented, str) or not presented:
+        # compare_digest raises on non-ASCII str, so refuse those first.
+        if not isinstance(presented, str) or not presented or not presented.isascii():
             return False
         if self._value is not None and hmac.compare_digest(presented, self._value):
             return True
@@ -420,6 +422,10 @@ class BridgeKey:
         return self._value is not None and hmac.compare_digest(presented, self._value)
 
     def _read(self):
+        # A key in a folder or file other users can write could have been
+        # planted, so it is not trusted.
+        if not _private(os.path.dirname(self.path), 0o022) or not _private(self.path, 0o077):
+            return None
         try:
             with open(self.path, encoding="ascii") as handle:
                 value = handle.read().strip()
@@ -430,14 +436,53 @@ class BridgeKey:
         return value
 
     def _create(self):
-        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        folder = os.path.dirname(self.path)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        _make_private(folder, 0o700)
         value = secrets.token_hex(32)
-        temp = f"{self.path}.{os.getpid()}.tmp"
-        descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="ascii") as handle:
-            handle.write(value + "\n")
-        os.replace(temp, self.path)
+        temp = f"{self.path}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temp, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+                handle.write(value + "\n")
+            os.replace(temp, self.path)
+        except BaseException:
+            # Never leave a working key behind in a stray file.
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+            raise
         return value
+
+
+def _private(path, forbidden_bits):
+    """True if ``path`` is owned by this user and has none of ``forbidden_bits``.
+
+    Always true where POSIX ownership does not apply (Windows), where the
+    home folder's own permissions protect the file.
+    """
+
+    if os.name != "posix":
+        return True
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return info.st_uid == os.getuid() and not info.st_mode & forbidden_bits
+
+
+def _make_private(path, mode):
+    """Tighten a folder this user owns; refuse one owned by someone else."""
+
+    if os.name != "posix":
+        return
+    info = os.lstat(path)
+    if info.st_uid != os.getuid():
+        raise PermissionError(f"{path} is owned by another user")
+    if info.st_mode & 0o077:
+        os.chmod(path, mode)
 
 
 class _Unauthorized(Exception):

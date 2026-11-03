@@ -101,7 +101,9 @@ class BridgeClient:
         except (OSError, UnicodeDecodeError) as exc:
             raise BridgeConnectionError(
                 f"no bridge key found at {self.key_path}. Open Live with the Abletonian "
-                "Remote Script enabled once; it creates the key"
+                "Control Surface enabled, or switch its slot to None and back if Live is "
+                "already open; it creates the key. abletonian must run as the same user "
+                "as Live"
             ) from exc
         if not key:
             raise BridgeConnectionError(

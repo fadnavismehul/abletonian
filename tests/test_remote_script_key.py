@@ -4,6 +4,7 @@ import os
 import stat
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import _bootstrap  # noqa: F401
 
@@ -82,9 +83,60 @@ class KeyFileTests(unittest.TestCase):
     def test_rejects_empty_and_non_text(self):
         key = BridgeKey(self.path)
         key.load_or_create()
-        for bad in (None, "", 123, ["x"]):
+        for bad in (None, "", 123, ["x"], "é" * 64):
             with self.subTest(bad=bad):
                 self.assertFalse(key.matches(bad))
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX permissions")
+class PermissionTests(unittest.TestCase):
+    """Review of #38: a key others could write must never be trusted."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.folder = os.path.join(directory.name, ".abletonian")
+        self.path = os.path.join(self.folder, "bridge_key")
+
+    def test_open_folder_is_tightened(self):
+        os.makedirs(self.folder)
+        os.chmod(self.folder, 0o777)
+        BridgeKey(self.path).load_or_create()
+        self.assertEqual(stat.S_IMODE(os.stat(self.folder).st_mode), 0o700)
+
+    def test_key_in_a_world_writable_folder_is_not_trusted(self):
+        key = BridgeKey(self.path)
+        key.load_or_create()
+        planted = "e" * 64
+        with open(self.path, "w", encoding="ascii") as handle:
+            handle.write(planted)
+        os.chmod(self.folder, 0o777)
+        self.assertFalse(key.matches(planted))
+
+    def test_key_file_others_can_read_or_write_is_not_trusted(self):
+        key = BridgeKey(self.path)
+        key.load_or_create()
+        planted = "e" * 64
+        with open(self.path, "w", encoding="ascii") as handle:
+            handle.write(planted)
+        os.chmod(self.path, 0o666)
+        self.assertFalse(key.matches(planted))
+
+    def test_untrusted_file_is_replaced_on_start(self):
+        os.makedirs(self.folder, mode=0o700)
+        with open(self.path, "w", encoding="ascii") as handle:
+            handle.write("e" * 64)
+        os.chmod(self.path, 0o644)
+        value = BridgeKey(self.path).load_or_create()
+        self.assertNotEqual(value, "e" * 64)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+
+    def test_failed_write_leaves_no_temp_file(self):
+        os.makedirs(self.folder, mode=0o700)
+        with patch("os.replace", side_effect=PermissionError("in use")):
+            with self.assertRaises(PermissionError):
+                BridgeKey(self.path).load_or_create()
+        self.assertEqual(os.listdir(self.folder), [])
 
 
 class DispatchKeyTests(unittest.TestCase):
