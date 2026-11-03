@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import _bootstrap  # noqa: F401
 
-from abletonian.bridge.client import BridgeClient, BridgeConnectionError
+from abletonian.bridge.client import BridgeClient, BridgeConnectionError, BridgeRefusedError
 from abletonian.bridge.protocol import BridgeErrorPayload, BridgeResponse, encode_frame
 
 
@@ -64,3 +64,9 @@ class BridgeClientTests(unittest.TestCase):
         self.assertIn("unsupported_method", str(raised.exception))
         self.assertIn("method is not supported", str(raised.exception))
         self.assertIn("Call daw.health", str(raised.exception))
+        self.assertIsInstance(raised.exception, BridgeRefusedError)
+        self.assertEqual(raised.exception.code, "unsupported_method")
+        self.assertEqual(raised.exception.message, "method is not supported by this adapter")
+        self.assertEqual(
+            raised.exception.hint, "Call daw.health and choose a supported capability."
+        )

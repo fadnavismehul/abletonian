@@ -239,4 +239,16 @@ check is lost in the move. Mitigations:
 
 ## Implementation notes
 
-None yet.
+Code: `src/abletonian/adapters/base.py` (step 1), `adapters/remote_script.py`
+(step 2). Progress is tracked in #28.
+
+- 2026-11-03: The old-script warnings in `RemoteScriptAdapter` are keyed on
+  the result (no `undo_steps`, no `steps`), as the tools do today, rather than
+  on capabilities. The result shows what Live actually did, even when the
+  health read is stale.
+- 2026-11-03: `build_mcp(adapter=...)` moves from step 2 to step 3, so it
+  arrives together with the first tools that use it.
+- 2026-11-03: `BridgeClient` raises `BridgeRefusedError`, a subclass of
+  `BridgeConnectionError` carrying the bridge's code, message and hint, so
+  the adapter can tell a refusal from an unreachable Live. Existing callers
+  are unaffected.

@@ -33,12 +33,22 @@ class AdapterUnavailable(AdapterError):
 class AdapterRefused(AdapterError):
     """The DAW answered and refused the request."""
 
-    def __init__(self, message: str, code: str = "adapter_error", hint: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        code: str = "adapter_error",
+        hint: str | None = None,
+        text: str | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.hint = hint
+        # The exact text to show, when the transport already formatted one.
+        self.text = text
 
     def __str__(self) -> str:
+        if self.text is not None:
+            return self.text
         text = f"{self.code}: {super().__str__()}"
         return f"{text} Hint: {self.hint}" if self.hint else text
 
@@ -212,6 +222,8 @@ class Batch:
     atomic: bool = True
 
     def __post_init__(self) -> None:
+        # Store a tuple even when given a list, so the batch cannot change later.
+        object.__setattr__(self, "operations", tuple(self.operations))
         if not self.operations:
             raise ValueError("a batch needs at least one operation")
         for operation in self.operations:
@@ -222,9 +234,17 @@ class Batch:
 @dataclass(frozen=True)
 class UndoRequest(_Request):
     OPERATION: ClassVar[str] = "undo"
+    MAX_COUNT: ClassVar[int] = 20
 
     count: int = 1
     confirm: bool = False
+
+    def __post_init__(self) -> None:
+        # Fail closed: a bad count must never reach Live as a plain Undo.
+        if isinstance(self.count, bool) or not isinstance(self.count, int):
+            raise ValueError("undo count must be a whole number")
+        if not 1 <= self.count <= self.MAX_COUNT:
+            raise ValueError(f"undo count must be from 1 to {self.MAX_COUNT}")
 
 
 # Health.
