@@ -37,7 +37,6 @@ def dispatch_frame(adapter: Any, frame: bytes) -> bytes:
             "adapter_error",
             str(exc),
             recoverable=False,
-            hint="Check daw.health capabilities before retrying.",
         )
 
     return encode_frame(BridgeResponse(id=request_id, ok=True, result=result).to_wire())
@@ -70,7 +69,7 @@ def _error_response(
     message: str,
     *,
     recoverable: bool,
-    hint: str,
+    hint: str | None = None,
 ) -> bytes:
     return encode_frame(
         BridgeResponse(

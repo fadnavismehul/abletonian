@@ -43,7 +43,7 @@ HOST = "127.0.0.1"
 # (RFC 0004). Must match DEFAULT_BRIDGE_PORT in src/abletonian/config.py.
 PORT = 39877
 PROTOCOL_VERSION = "abletonian.bridge.v2"
-ADAPTER_VERSION = "0.6.0"
+ADAPTER_VERSION = "0.6.1"
 # The per-install key every request must carry (RFC 0004). Same path as
 # DEFAULT_BRIDGE_KEY_PATH in src/abletonian/bridge/client.py.
 KEY_PATH = os.path.join(os.path.expanduser("~"), ".abletonian", "bridge_key")
@@ -102,12 +102,20 @@ class AbletonianBridgeControlSurface(ControlSurface):
         result = live_ops.handle(_live_object(self, "song"), method, params)
         if result is not None:
             return result
-        raise RuntimeError(f"unsupported Abletonian Remote Script method '{method}'")
+        raise live_ops.NotSupported(
+            f"unsupported Abletonian Remote Script method '{method}'",
+            "The Remote Script in Live may be older than abletonian. Reinstall it "
+            "(python -m scripts.install_remote_script), then switch the Abletonian "
+            "Control Surface slot to None and back. daw.health lists what it supports.",
+        )
 
     def _health(self, params):
         target_daw = params.get("target_daw", "ableton")
         if target_daw != "ableton":
-            raise RuntimeError(f"Abletonian Remote Script cannot target '{target_daw}'")
+            raise live_ops.NotSupported(
+                f"Abletonian Remote Script cannot target '{target_daw}'",
+                "Start abletonian with --target-daw ableton.",
+            )
         return {
             "target_daw": "ableton",
             "adapter_type": "ableton_remote_script",
@@ -226,7 +234,9 @@ class AbletonianBridgeControlSurface(ControlSurface):
 
     def _scaffold_drum_rack_extraction(self, params):
         if params.get("confirm") is not True:
-            raise RuntimeError("workflow.scaffold_drum_rack_extraction requires confirmation")
+            raise live_ops.NeedsConfirmation(
+                "workflow.scaffold_drum_rack_extraction requires confirmation"
+            )
 
         song = _live_object(self, "song")
         source_track = song.view.selected_track
@@ -282,7 +292,9 @@ class AbletonianBridgeControlSurface(ControlSurface):
 
     def _execute_drum_rack_extraction(self, params):
         if params.get("confirm") is not True:
-            raise RuntimeError("workflow.execute_drum_rack_extraction requires confirmation")
+            raise live_ops.NeedsConfirmation(
+                "workflow.execute_drum_rack_extraction requires confirmation"
+            )
 
         song = _live_object(self, "song")
         scaffold = self._scaffold_drum_rack_extraction(params)
@@ -526,19 +538,40 @@ def _dispatch_frame(surface, frame):
             }
         )
     except Exception as exc:
-        return _encode_frame(
-            {
-                "id": request_id,
-                "ok": False,
-                "result": {},
-                "error": {
-                    "code": "adapter_error" if request_id else "invalid_frame",
-                    "message": str(exc),
-                    "recoverable": False,
-                    "hint": "Check daw.health capabilities before retrying.",
-                },
-            }
-        )
+        code, hint = _error_code_and_hint(exc, request_id)
+        error = {"code": code, "message": str(exc), "recoverable": False}
+        if hint:
+            error["hint"] = hint
+        return _encode_frame({"id": request_id, "ok": False, "result": {}, "error": error})
+
+
+# Timeouts raised by _call_on_main_thread, matched by their message.
+_NOT_STARTED = "did not start the request"
+_NOT_FINISHED = "did not finish it in time"
+
+
+def _error_code_and_hint(exc, request_id):
+    """The error code and the next-step hint for an exception (issue MEH-25).
+
+    Errors from live_ops carry their own. Timeouts say whether Live may
+    still change the Set. Anything else gets no hint rather than a wrong one.
+    """
+
+    if not request_id:
+        return "invalid_frame", "Send one length-prefixed JSON request object."
+    if isinstance(exc, live_ops.LiveOpsError):
+        return exc.code, exc.hint
+    if isinstance(exc, TimeoutError):
+        if _NOT_STARTED in str(exc):
+            return "timeout", "Live was busy and nothing was changed. Try again in a moment."
+        if _NOT_FINISHED in str(exc):
+            return (
+                "timeout",
+                "Live may still apply this change. Check the Set with list_tracks or "
+                "list_devices before trying again.",
+            )
+        return "timeout", None
+    return "adapter_error", None
 
 
 def _call_surface(surface, method, params):
@@ -617,9 +650,9 @@ def _call_on_main_thread(surface, action, delay=0):
         with lock:
             if not started.is_set():
                 state["cancelled"] = True
-                raise TimeoutError("Live was busy and did not start the request; nothing changed")
+                raise TimeoutError(f"Live was busy and {_NOT_STARTED}; nothing changed")
     if not completed.wait(REQUEST_RUN_TIMEOUT_SECONDS):
-        raise TimeoutError("Live started the request but did not finish it in time")
+        raise TimeoutError(f"Live started the request but {_NOT_FINISHED}")
     if "error" in state:
         raise state["error"]
     return state["result"]
@@ -699,7 +732,10 @@ def _selected_drum_rack(track):
     for device in _as_tuple(getattr(track, "devices", ())):
         if _device_type(_string_attr(device, "class_name")) == "drum_rack":
             return device
-    raise RuntimeError(f"selected track '{_string_attr(track, 'name')}' has no Drum Rack")
+    raise live_ops.NotFound(
+        f"selected track '{_string_attr(track, 'name')}' has no Drum Rack",
+        "Select the track that holds the Drum Rack in Live, then plan again.",
+    )
 
 
 def _drum_pads(device):
