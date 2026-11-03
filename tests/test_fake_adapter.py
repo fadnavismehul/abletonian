@@ -134,7 +134,9 @@ class FakeAbletonAdapterTests(unittest.TestCase):
             [track["id"] for track in result["created_tracks"]],
         )
         self.assertEqual(
-            result["backout"]["primary"], "Use Live Undo 2 times to remove the scaffold tracks."
+            result["backout"]["primary"],
+            "Use Live Undo 4 times to remove the 2 new tracks "
+            "(2 steps per track: the duplicate, then its name and colour).",
         )
         self.assertFalse(result["verification"]["mutates_real_ableton_set"])
         self.assertEqual(

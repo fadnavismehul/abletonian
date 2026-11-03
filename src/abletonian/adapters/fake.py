@@ -443,9 +443,7 @@ class FakeAbletonAdapter:
             "created_tracks": created_payloads,
             "warnings": plan["warnings"],
             "backout": {
-                "primary": (
-                    f"Use Live Undo {len(created_tracks)} times to remove the scaffold tracks."
-                ),
+                "primary": _undo_backout_text(len(created_tracks)),
                 "fallback": "Close the Live Set without saving to discard scaffold tracks.",
             },
             "verification": {
@@ -461,6 +459,22 @@ class FakeAbletonAdapter:
                 "created_track_ids": [track.id for track in created_tracks],
             },
         }
+
+
+# Live Undo presses per track the Drum Rack workflow creates. Same value and
+# text as the Remote Script (bridge_server.py); checked in Live 12.4.16 on
+# 2026-11-03 (issue #26, step 11): "Duplicate Track(s)", then one step for the
+# track's name and colour.
+UNDO_STEPS_PER_CREATED_TRACK = 2
+
+
+def _undo_backout_text(created_count: int) -> str:
+    presses = created_count * UNDO_STEPS_PER_CREATED_TRACK
+    return (
+        f"Use Live Undo {presses} times to remove the {created_count} new tracks "
+        f"({UNDO_STEPS_PER_CREATED_TRACK} steps per track: the duplicate, then its "
+        "name and colour)."
+    )
 
 
 def _skipped_pad_warning(pad_names: list[str]) -> str:
