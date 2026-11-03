@@ -82,7 +82,8 @@ class AbletonSetIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(result["post_state"]["track_count"], 9)
         self.assertEqual(result["post_state"]["track_names"][0], "1-C78 Core Kit")
-        self.assertEqual(result["post_state"]["track_names"][-3:], [
+        # Live places the new tracks right after the source track.
+        self.assertEqual(result["post_state"]["track_names"][1:4], [
             "1-C78 Core Kit - Snare",
             "1-C78 Core Kit - Kick",
             "1-C78 Core Kit - Closed Hi Hat",
