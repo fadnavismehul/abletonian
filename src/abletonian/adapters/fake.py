@@ -11,6 +11,8 @@ from abletonian.adapters.base import (
     AdapterHealth,
     AdapterRefused,
     Batch,
+    ClipGainChange,
+    ClipQuery,
     DeviceDelete,
     DeviceInsert,
     DeviceQuery,
@@ -20,6 +22,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -279,6 +282,15 @@ class FakeAbletonAdapter:
 
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]:
         raise UnsupportedOperation(DeviceDelete.OPERATION)
+
+    def set_device_sidechain(self, change: SidechainChange) -> dict[str, Any]:
+        raise UnsupportedOperation(SidechainChange.OPERATION)
+
+    def list_clips(self, query: ClipQuery) -> dict[str, Any]:
+        raise UnsupportedOperation(ClipQuery.OPERATION)
+
+    def set_clip_gain(self, change: ClipGainChange) -> dict[str, Any]:
+        raise UnsupportedOperation(ClipGainChange.OPERATION)
 
     def apply_batch(self, batch: Batch) -> dict[str, Any]:
         raise UnsupportedOperation(Batch.OPERATION)

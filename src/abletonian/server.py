@@ -14,6 +14,8 @@ from abletonian.adapters.base import (
     AdapterError,
     AdapterResponseError,
     Batch,
+    ClipGainChange,
+    ClipQuery,
     DawAdapter,
     DeviceDelete,
     DeviceInsert,
@@ -24,6 +26,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -74,6 +77,8 @@ _BATCH_TYPES = {
         DeviceInsert,
         ReturnTrackCreate,
         DeviceDelete,
+        SidechainChange,
+        ClipGainChange,
     )
 }
 
@@ -290,7 +295,9 @@ def build_mcp(
         on/off state, and each rack chain's name and device count, with no
         parameters. Devices inside racks are listed under their chains (and
         Drum Rack return chains) with a "path" that get_device,
-        set_device_parameter and delete_device accept. To read parameters, use
+        set_device_parameter and delete_device accept. Devices whose sidechain
+        input Live exposes (Compressor) show "sidechain": {"on", "from",
+        "channel"}. To read parameters, use
         get_device on one path (optionally with a parameter name filter).
 
         detail "full" (or include_parameters=true) adds every parameter of
@@ -332,6 +339,31 @@ def build_mcp(
 
         wanted = tuple(parameters) if isinstance(parameters, list) else parameters
         return send("get_device", DeviceRead(track=track, device=device, parameters=wanted))
+    @mcp.tool(annotations=_op("list_clips"))
+    def list_clips(track: int | str) -> str:
+        """List a track's clips in Arrangement View: index, name, start and end
+        in beats and as Live's bar.beat.sixteenth position (from the song's
+        current time signature), whether each is an audio clip, and for audio
+        clips the gain with its display text ("-3.0 dB"). Session View clips
+        are not listed. Read-only: never changes the Live Set.
+
+        The index is what set_clip_gain takes as clip."""
+
+        return send("list_clips", ClipQuery(track=track))
+
+    @mcp.tool(annotations=_op("set_clip_gain"))
+    def set_clip_gain(track: int | str, clip: int | str, gain_db: float | str) -> str:
+        """Set an Arrangement View audio clip's gain (the clip's Gain, not the
+        track volume). Changes the Live Set; one Live undo step.
+
+        clip is the index from list_clips, or the clip's name if it is unique
+        on the track. gain_db is a number of dB (-3) or text ("-3 dB",
+        "-inf dB"). Live stores clip gain as 0..1, so the value that shows
+        gain_db is searched for; the result reports the display Live shows.
+        MIDI clips have no gain. Splitting clips is not possible from here.
+        """
+
+        return send("set_clip_gain", ClipGainChange(track=track, clip=clip, gain_db=gain_db))
 
     @mcp.tool(annotations=_op("set_device_parameter"))
     def set_device_parameter(
@@ -366,6 +398,30 @@ def build_mcp(
         return send(
             "set_track_output_routing",
             RoutingChange(track=track, routing_type=routing_type, routing_channel=routing_channel),
+        )
+
+    @mcp.tool(annotations=_op("set_device_sidechain"))
+    def set_device_sidechain(
+        track: int | str,
+        device: int | str,
+        from_track: str,
+        channel: str | None = None,
+    ) -> str:
+        """Point a Compressor's sidechain input (Audio From) at a source, such as
+        a kick track. Changes the Live Set; one Live undo step.
+
+        from_track is the source's display name as Live shows it, for example
+        "2-32 Pad Kit Jazz" (a bare track name also works when it is unique);
+        channel is the tap point, such as "Post FX" or "Pre FX". list_devices
+        shows the current source under "sidechain"; a wrong name returns the
+        available choices. This only sets the routing: turn the sidechain on
+        with set_device_parameter ("S/C On" to "On") if it is off. Devices
+        without a "sidechain" entry in list_devices cannot be set.
+        """
+
+        return send(
+            "set_device_sidechain",
+            SidechainChange(track=track, device=device, from_track=from_track, channel=channel),
         )
 
     @mcp.tool(annotations=_op("set_track_properties"))
@@ -449,7 +505,8 @@ def build_mcp(
         Each operation is {"method": ..., "params": {...}}. Methods:
         ableton.set_device_parameter, ableton.set_track_output_routing,
         ableton.set_track_properties, ableton.set_mixer, ableton.insert_device,
-        ableton.create_return_track, ableton.delete_device (needs "confirm": true).
+        ableton.create_return_track, ableton.delete_device (needs "confirm": true),
+        ableton.set_device_sidechain, ableton.set_clip_gain.
         params use the same names as the matching tools. The batch stops at the
         first failure and reports what completed.
 

@@ -32,8 +32,9 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | MCP tool | Bridge method | What it does |
 | --- | --- | --- |
 | `list_tracks` | `ableton.list_tracks` | Names, group parent, colour, output routing, volume, pan, sends, mute/solo, device names. Covers regular, return, and main tracks. The tool defaults to `detail="compact"` (levels as display text, no routing options), about a quarter of the size, so large sets fit; `detail="full"` adds raw values and the output routing choices. `name` keeps tracks whose name contains it. |
-| `list_devices` | `ableton.list_devices` | Devices per track (or all tracks) with name, path, class and on/off, and rack chains with index, name and device count. The tool defaults to `detail="compact"` (no parameters; issue #42, a full dump of one Drum Rack track reached 2.5 MB). `detail="full"` or `include_parameters=true` adds every parameter with raw value, range, display text, and options. `max_depth` (0-4, default 4) limits how many rack levels have their chains expanded; `max_depth=0` lists a Drum Rack's chains by name and device count only (`"truncated": true`). Without `detail` or `include_parameters` the bridge keeps its old default (full for one track, compact for all tracks); the tool always sends `include_parameters`. Read-only. |
+| `list_devices` | `ableton.list_devices` | Devices per track (or all tracks) with name, path, class and on/off, and rack chains with index, name and device count. Devices whose sidechain input Live exposes (Compressor) also show `sidechain: {"on", "from", "channel"}`; see [Sidechain](#sidechain). The tool defaults to `detail="compact"` (no parameters; issue #42, a full dump of one Drum Rack track reached 2.5 MB). `detail="full"` or `include_parameters=true` adds every parameter with raw value, range, display text, and options. `max_depth` (0-4, default 4) limits how many rack levels have their chains expanded; `max_depth=0` lists a Drum Rack's chains by name and device count only (`"truncated": true`). Without `detail` or `include_parameters` the bridge keeps its old default (full for one track, compact for all tracks); the tool always sends `include_parameters`. Read-only. |
 | `get_device` | `ableton.get_device` | One device, by the same index, name or path the write tools take, with its parameters (raw value, display text, min/max, options, original name). `parameters` keeps only those whose name or original name contains it (case-insensitive; Utility's `Gain` alias works), or any of a list. A rack's chains are listed by name and device count only. Use it to read one value instead of a whole `list_devices` dump. Read-only. |
+| `list_clips` | `ableton.list_clips` | A track's Arrangement View clips (`Track.arrangement_clips`, Live 11+): index, name, start/end/length in beats, start/end as `bar.beat.sixteenth` from the song's time signature, audio or MIDI, muted, and for audio clips `gain` (0..1) and `gain_display`. Read-only. Session View clips are not listed. Not validated in Live (issue #50). |
 | `generate_macro_cockpit` | `ableton.get_selected_rack_macros` | Read the selected Rack's macros (read-only) and return a grouped Macro Cockpit spec plus a text summary. See [RFC 0002](../rfcs/0002-selected-rack-macro-cockpit.md). |
 | `save_macro_cockpit` | none | Save a cockpit generated in this session as a JSON file, so it can be reopened. Cockpits are temporary until saved. |
 | `list_saved_macro_cockpits` | none | List saved cockpits. |
@@ -41,6 +42,8 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `show_macro_cockpit` | none | Write a cockpit (generated this session, or saved) as a self-contained HTML page under the cockpit folder's `views/`, and open it in the browser. Display only. |
 | `set_device_parameter` | `ableton.set_device_parameter` | Set by raw value or by display text (`"-3 dB"`, `"2.5 kHz"`, `"Off"`). |
 | `set_track_output_routing` | `ableton.set_track_output_routing` | Set Audio To / MIDI To by display name, such as `Main` or a group name. |
+| `set_device_sidechain` | `ableton.set_device_sidechain` | Point a Compressor's sidechain input at a source by display name (`from_track`, such as `"2-32 Pad Kit Jazz"` or just `"32 Pad Kit Jazz"` when unique) and an optional `channel` (`"Post FX"`). Transformative, one undo step, batchable. Only the routing: "S/C On" is set with `set_device_parameter`. Not validated in Live (issue #49). |
+| `set_clip_gain` | `ableton.set_clip_gain` | Set an arrangement audio clip's Gain in dB (`-3`, `"-3 dB"`, `"-inf dB"`). `clip` is the `list_clips` index (`0` or `"#0"`) or a unique clip name. Transformative, one undo step, batchable. See [Clips](#clips). Not validated in Live (issue #50). |
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). Live shows a return's letter in front of its name, so a leading `A-` is dropped when renaming return A. |
 | `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. |
 | `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, and set its parameters right away. |
@@ -85,6 +88,51 @@ chain named "returns", names with leading or trailing spaces, and names
 containing `/`. For the top-level device, `#N` always means index N, even
 if a device is named `#N`; it is printed instead of `N` when another device
 is literally named `N`. Not yet run in Live.
+
+### Sidechain
+
+Since Live 11 a Compressor is a `Live.CompressorDevice.CompressorDevice` with
+`available_input_routing_types`, `available_input_routing_channels`,
+`input_routing_type` and `input_routing_channel` (Cycling '74 LOM docs). The
+script detects these by attribute, not by class name, so any device that has
+them gets a `sidechain` entry in `list_devices` and can be set with
+`set_device_sidechain`. Guesses, not yet checked in Live (issue #49):
+
+- whether Glue Compressor and Gate expose the same properties;
+- that `display_name` of a sidechain source reads as Live's chooser shows it,
+  with the track number in front (`"2-32 Pad Kit Jazz"`). A bare name
+  (`"32 Pad Kit Jazz"`) also matches when exactly one source has it, for
+  output routing as well;
+- what `input_routing_type` reads when the source track was deleted;
+- that the sidechain switch is a parameter named `S/C On` (`on` is `null`
+  when no parameter has that name).
+
+A channel that does not exist for the new source puts the old source back,
+as with output routing.
+
+### Clips
+
+`list_clips` reads `Track.arrangement_clips` (Live 11+) and, per clip,
+`name`, `start_time`, `end_time`, `is_audio_clip`, `muted`, `gain` and
+`gain_display_string` (Cycling '74 LOM docs). Times are in beats (quarter
+notes). `start_bar` and `end_bar` use `Song.signature_numerator` and
+`signature_denominator`, so they are off after a time signature change in
+the arrangement. Return, main and group tracks list no clips. Splitting a
+clip is not possible: the LOM has no call for it.
+
+`Clip.gain` is normalized 0..1, not dB, and Live offers no conversion:
+`gain_display_string` only shows the current gain. So `set_clip_gain` uses
+the same display-text search as parameters, except that each probe writes
+`Clip.gain` and reads `gain_display_string` back (about 130 writes for one
+call, all inside the call's undo step). Before searching it writes both ends
+twice and refuses if the display did not follow each write. On any failure
+the original gain is put back. Guesses, not yet checked in Live:
+
+- that `gain_display_string` changes at once after a write, within one
+  main-thread callback (if it does not, the call is refused, not wrong);
+- that the probe writes stay in one undo step and leave no extra ones;
+- that `arrangement_clips` is missing or fails, rather than being empty, on
+  tracks without clips, and that bar 1 starts at beat 0.
 
 ### Values by display text
 

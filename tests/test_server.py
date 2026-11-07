@@ -360,3 +360,82 @@ class UndoToolTests(unittest.TestCase):
 
         self.assertIn("confirm=true", text)
         self.assertEqual(bridge.requests, [])
+
+
+class SidechainToolTests(unittest.TestCase):
+    def test_set_device_sidechain_reaches_the_bridge(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(
+            mcp.call_tool(
+                "set_device_sidechain",
+                {"track": "Bass", "device": "Compressor", "from_track": "1-Kick"},
+            )
+        )
+
+        self.assertEqual(
+            bridge.requests,
+            [
+                (
+                    "ableton.set_device_sidechain",
+                    {"track": "Bass", "device": "Compressor", "from_track": "1-Kick"},
+                )
+            ],
+        )
+
+    def test_set_device_sidechain_is_a_change_and_can_be_batched(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+        tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+        self.assertFalse(tools["set_device_sidechain"].annotations.read_only_hint)
+
+        operations = [
+            {
+                "method": "ableton.set_device_sidechain",
+                "params": {"track": 1, "device": 0, "from_track": "Kick"},
+            }
+        ]
+        asyncio.run(mcp.call_tool("apply_batch", {"operations": operations}))
+        self.assertEqual(bridge.requests, [("ableton.batch", {"operations": operations})])
+
+
+class ClipToolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.bridge = PassthroughBridge()
+        self.mcp = build_mcp(AbletonianConfig(), bridge=self.bridge)
+
+    def test_list_clips_is_read_only_and_reaches_the_bridge(self) -> None:
+        tools = {tool.name: tool for tool in asyncio.run(self.mcp.list_tools())}
+        self.assertTrue(tools["list_clips"].annotations.read_only_hint)
+        self.assertFalse(tools["set_clip_gain"].annotations.read_only_hint)
+
+        asyncio.run(self.mcp.call_tool("list_clips", {"track": "Bass"}))
+
+        self.assertEqual(self.bridge.requests, [("ableton.list_clips", {"track": "Bass"})])
+
+    def test_set_clip_gain_accepts_a_number_or_text(self) -> None:
+        asyncio.run(self.mcp.call_tool("set_clip_gain", {"track": 1, "clip": 0, "gain_db": -3}))
+        asyncio.run(
+            self.mcp.call_tool(
+                "set_clip_gain", {"track": "Bass", "clip": "Intro", "gain_db": "-inf dB"}
+            )
+        )
+
+        self.assertEqual(
+            self.bridge.requests,
+            [
+                ("ableton.set_clip_gain", {"track": 1, "clip": 0, "gain_db": -3}),
+                (
+                    "ableton.set_clip_gain",
+                    {"track": "Bass", "clip": "Intro", "gain_db": "-inf dB"},
+                ),
+            ],
+        )
+
+    def test_set_clip_gain_can_be_batched(self) -> None:
+        operations = [
+            {"method": "ableton.set_clip_gain", "params": {"track": 1, "clip": 0, "gain_db": -3}}
+        ]
+        asyncio.run(self.mcp.call_tool("apply_batch", {"operations": operations}))
+        self.assertEqual(self.bridge.requests, [("ableton.batch", {"operations": operations})])

@@ -15,6 +15,8 @@ from abletonian.adapters.base import (
     AdapterRefused,
     AdapterUnavailable,
     Batch,
+    ClipGainChange,
+    ClipQuery,
     DeviceDelete,
     DeviceInsert,
     DeviceQuery,
@@ -24,6 +26,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -96,6 +99,9 @@ class RemoteScriptAdapter:
     def get_selected_rack_macros(self, ref: RackRef) -> dict[str, Any]:
         return self._send(ref)
 
+    def list_clips(self, query: ClipQuery) -> dict[str, Any]:
+        return self._send(query)
+
     def plan_drum_rack_extraction(self) -> dict[str, Any]:
         return self._call("workflow.plan_drum_rack_extraction", {"target_daw": self.target_daw})
 
@@ -120,6 +126,12 @@ class RemoteScriptAdapter:
         return self._send(change)
 
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]:
+        return self._send(change)
+
+    def set_device_sidechain(self, change: SidechainChange) -> dict[str, Any]:
+        return self._send(change)
+
+    def set_clip_gain(self, change: ClipGainChange) -> dict[str, Any]:
         return self._send(change)
 
     def apply_batch(self, batch: Batch) -> dict[str, Any]:

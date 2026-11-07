@@ -6,6 +6,8 @@ from abletonian.adapters.base import (
     AdapterResponseError,
     AdapterUnavailable,
     Batch,
+    ClipGainChange,
+    ClipQuery,
     DawAdapter,
     DeviceDelete,
     DeviceInsert,
@@ -16,6 +18,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -322,6 +325,55 @@ class ErrorTests(unittest.TestCase):
         with self.assertRaises(AdapterUnavailable) as caught:
             RemoteScriptAdapter(bridge).list_tracks(TrackQuery())
         self.assertEqual(str(caught.exception), "could not connect to 127.0.0.1:39877")
+
+
+class SidechainWireTests(unittest.TestCase):
+    def test_set_device_sidechain_sends_names_and_drops_unset_channel(self) -> None:
+        bridge = RecordingBridge()
+        adapter = RemoteScriptAdapter(bridge)
+
+        adapter.set_device_sidechain(SidechainChange(track="Bass", device=1, from_track="1-Kick"))
+        adapter.set_device_sidechain(
+            SidechainChange(track=1, device="Compressor", from_track="Kick", channel="Post FX")
+        )
+
+        self.assertEqual(
+            bridge.calls,
+            [
+                (
+                    "ableton.set_device_sidechain",
+                    {"track": "Bass", "device": 1, "from_track": "1-Kick"},
+                ),
+                (
+                    "ableton.set_device_sidechain",
+                    {
+                        "track": 1,
+                        "device": "Compressor",
+                        "from_track": "Kick",
+                        "channel": "Post FX",
+                    },
+                ),
+            ],
+        )
+
+
+class ClipWireTests(unittest.TestCase):
+    def test_list_clips_and_set_clip_gain(self) -> None:
+        bridge = RecordingBridge()
+        adapter = RemoteScriptAdapter(bridge)
+
+        adapter.list_clips(ClipQuery(track="Bass"))
+        adapter.set_clip_gain(ClipGainChange(track=1, clip=0, gain_db="-3 dB"))
+        adapter.set_clip_gain(ClipGainChange(track="Bass", clip="Intro", gain_db=-6.0))
+
+        self.assertEqual(
+            bridge.calls,
+            [
+                ("ableton.list_clips", {"track": "Bass"}),
+                ("ableton.set_clip_gain", {"track": 1, "clip": 0, "gain_db": "-3 dB"}),
+                ("ableton.set_clip_gain", {"track": "Bass", "clip": "Intro", "gain_db": -6.0}),
+            ],
+        )
 
 
 if __name__ == "__main__":
