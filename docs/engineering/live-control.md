@@ -332,11 +332,19 @@ How it runs, all on Live's main thread:
 2. A sampling callback reads each track's meters, then schedules itself
    again one Live tick later (`LEVEL_SAMPLE_TICK_DELAY`). It ends when the
    window's time is up, after 400 samples, or when the transport stops
-   (the result then says `stopped_early` and warns).
+   (the result then says `stopped_early` and warns). If the transport
+   stopped before the first sample, the read is refused with
+   `transport_stopped` instead of answering with empty readings. If five
+   ticks in a row run with the clock moving less than 10 ms (callbacks run
+   in the same pass, not on Live's timer; a guess at a failure not seen in
+   Live), or Live will not schedule the next tick, the read ends with an
+   error.
 3. The socket thread only waits for the last callback, up to the window plus
    5 s (`LEVEL_READ_GRACE_SECONDS`), then sends the answer. If Live is too
    busy it answers `timeout`; the next tick ends the chain, and since nothing
-   was changed nothing needs putting back.
+   was changed nothing needs putting back. If the bridge stops during the
+   read (the Control Surface is reloaded or disconnected), it answers at once
+   that nothing was changed, and the next tick ends the chain.
 
 Nothing sleeps or loops on the main thread. While a read runs, the bridge's
 single socket thread is busy, so other tool calls wait for it (at most about
@@ -348,7 +356,10 @@ louder of left and right), `peak_left`, `peak_right`, `hold_peak` (the
 highest `output_meter_level`), `rms_of_samples` (the root mean square of the
 momentary readings: a rough loudness average at about the tick rate, not a
 true signal RMS), and `sample_count`. Warnings name tracks that read 0.0 for
-the whole window, tracks that could not be read, and MIDI tracks.
+the whole window, tracks that could not be read, and MIDI tracks, and say so
+when fewer than 2 samples per second were taken (stalled or skipped ticks).
+If abletonian's bridge client times out waiting for a read, its error says
+that nothing was changed.
 
 Live Object Model assumptions, from the Cycling '74 LOM docs (Track, Song)
 as recalled, not re-checked for this change and not yet run in Live:

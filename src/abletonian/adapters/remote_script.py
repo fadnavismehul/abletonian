@@ -132,7 +132,18 @@ class RemoteScriptAdapter:
                 code="bridge_timeout_too_short",
                 hint="Read fewer seconds, or raise ABLETONIAN_BRIDGE_TIMEOUT (--bridge-timeout).",
             )
-        return self._send(request)
+        try:
+            return self._send(request)
+        except AdapterUnavailable as exc:
+            # The client's timeout text says Live may still apply a change;
+            # a level read changes nothing, so say that instead.
+            if not _timed_out(exc):
+                raise
+            raise AdapterUnavailable(
+                f"timed out waiting for Live to finish the {request.seconds:g} s level read; "
+                "read_levels only reads meters, so nothing was changed. Try again, or read "
+                "fewer seconds or tracks"
+            ) from exc
 
     # Changes to the Set.
 
@@ -237,6 +248,17 @@ class RemoteScriptAdapter:
         except BridgeConnectionError as exc:
             self._health = None
             raise AdapterUnavailable(str(exc)) from exc
+
+
+def _timed_out(exc: BaseException) -> bool:
+    """Whether a bridge error was caused by a socket timeout."""
+
+    cause = exc.__cause__
+    while cause is not None:
+        if isinstance(cause, TimeoutError):
+            return True
+        cause = cause.__cause__
+    return False
 
 
 def _method(operation: str) -> str:

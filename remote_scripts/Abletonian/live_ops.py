@@ -1383,6 +1383,14 @@ class LevelWindow:
                 f"The transport stopped after {self.elapsed:.1f} s of the "
                 f"{self.seconds:g} s window; values cover only the part that played."
             )
+        elif self.samples < 2 * self.seconds:
+            # Live's timer normally ticks several times a second; far fewer
+            # samples means ticks stalled or were skipped (Live was busy).
+            warnings.append(
+                f"Only {self.samples} meter samples were taken in the {self.seconds:g} s "
+                "window, so Live skipped ticks and short peaks may be missing. Read again "
+                "if the values look low."
+            )
         silent = [t["name"] for t in tracks if t["sample_count"] and t["peak"] == 0.0]
         if silent:
             warnings.append(

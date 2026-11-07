@@ -11,16 +11,19 @@ import json
 import math
 import queue
 import threading
+import time
 import unittest
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
 import _bootstrap  # noqa: F401
 from _bridge_key import TEST_KEY, StaticKey
 
-from abletonian.adapters.base import AdapterRefused, LevelRead
+from abletonian.adapters.base import AdapterRefused, AdapterUnavailable, LevelRead
 from abletonian.adapters.fake import FakeAbletonAdapter
 from abletonian.adapters.remote_script import LEVEL_READ_OVERHEAD_SECONDS, RemoteScriptAdapter
+from abletonian.bridge.client import BridgeConnectionError
 from abletonian.config import DEFAULT_BRIDGE_TIMEOUT, AbletonianConfig
 from abletonian.policy import OPERATIONS, SafetyClass, SafetyPolicy
 from abletonian.server import build_mcp
@@ -237,6 +240,13 @@ class LevelWindowTests(unittest.TestCase):
             self.assertIsNone(tracks[name]["peak"])
         self.assertTrue(any("No meter values" in w for w in result["warnings"]))
 
+    def test_too_few_samples_for_the_window_are_called_out(self):
+        result = run_window(MeterSong(), seconds=4.0, tick=1.0)
+        self.assertEqual(result["window"]["samples"], 4)
+        self.assertTrue(any("Only 4 meter samples" in w for w in result["warnings"]))
+        normal = run_window(MeterSong(), seconds=4.0, tick=0.1)
+        self.assertFalse(any("meter samples were taken" in w for w in normal["warnings"]))
+
     def test_reading_changes_nothing(self):
         song = MeterSong()
         run_window(song, include_returns=True, include_main=True)
@@ -409,6 +419,95 @@ class DeferredDispatchTests(unittest.TestCase):
         self.assertEqual(len(callbacks), count)
         self.assertTrue(all(t.position == 0 for t in song.tracks))
 
+    def test_ticks_that_do_not_advance_the_clock_end_the_read(self):
+        # A re-entrant schedule_message would run every tick in one pass.
+        song = MeterSong()
+        surface = self.surface(song, tick=0.0)
+
+        response = dispatch_levels(surface, {"seconds": 1.0})
+
+        self.assertFalse(response["ok"])
+        self.assertIn("timer moving on", response["error"]["message"])
+        self.assertIn("nothing was changed", response["error"]["message"])
+        # The first tick, then LEVEL_STALLED_TICK_LIMIT stalled ones; no more.
+        self.assertEqual(len(surface.delays), 2 + bridge_server.LEVEL_STALLED_TICK_LIMIT)
+
+    def test_a_failed_reschedule_ends_the_read_with_an_error(self):
+        song = MeterSong()
+        surface = self.surface(song)
+        schedule = surface.schedule_message
+
+        def refuse_reschedules(delay, callback):
+            if delay:
+                raise RuntimeError("timer is gone")
+            schedule(delay, callback)
+
+        surface.schedule_message = refuse_reschedules
+        response = dispatch_levels(surface, {"seconds": 1.0})
+
+        self.assertFalse(response["ok"])
+        self.assertIn("timer is gone", response["error"]["message"])
+        self.assertIn("nothing was changed", response["error"]["message"])
+
+    def test_bridge_stopping_mid_read_answers_at_once(self):
+        song = MeterSong()
+        surface = self.surface(song, run_ticks=False)
+        surface._server = SimpleNamespace(_stop_event=threading.Event())
+        threading.Timer(0.05, surface._server._stop_event.set).start()
+
+        with mock.patch.object(bridge_server, "LEVEL_READ_GRACE_SECONDS", 30.0):
+            started = time.monotonic()
+            response = dispatch_levels(surface, {"seconds": 10})
+            waited = time.monotonic() - started
+
+        self.assertLess(waited, 2.0)
+        self.assertFalse(response["ok"])
+        self.assertIn("bridge stopped", response["error"]["message"])
+        self.assertIn("nothing was changed", response["error"]["message"])
+
+    def test_an_abandoned_read_after_a_stop_does_not_reschedule(self):
+        song = MeterSong()
+        callbacks = []
+        stop = threading.Event()
+
+        class Surface(AbletonianBridgeControlSurface):
+            def __init__(self):
+                self.song = song
+                self._bridge_key = StaticKey()
+                self._server = SimpleNamespace(_stop_event=stop)
+
+            def schedule_message(self, delay, callback):
+                if callbacks:
+                    callbacks.append(callback)
+                    stop.set()  # the Control Surface is reloaded mid-read
+                else:
+                    callbacks.append(None)
+                    callback()
+
+        response = dispatch_levels(Surface(), {"seconds": 0.5})
+        self.assertIn("bridge stopped", response["error"]["message"])
+        count = len(callbacks)
+        callbacks[-1]()
+        self.assertEqual(len(callbacks), count)
+        self.assertTrue(all(t.position == 0 for t in song.tracks))
+
+    def test_transport_stopping_before_the_first_sample_is_refused(self):
+        song = MeterSong()
+        surface = self.surface(song)
+        prepare = live_ops.prepare_level_read
+
+        def prepare_then_stop(song_, params):
+            plan = prepare(song_, params)
+            song_.is_playing = False
+            return plan
+
+        with mock.patch.object(live_ops, "prepare_level_read", prepare_then_stop):
+            response = dispatch_levels(surface, {"seconds": 1.0})
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "transport_stopped")
+        self.assertIn("before the first meter sample", response["error"]["message"])
+
     def test_without_live_timer_it_is_not_supported(self):
         class Surface(AbletonianBridgeControlSurface):
             def __init__(self):
@@ -507,6 +606,29 @@ class LevelAdapterTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "bridge_timeout_too_short")
         self.assertIn("ABLETONIAN_BRIDGE_TIMEOUT", str(caught.exception))
         self.assertEqual(bridge.calls, [])
+
+    def test_client_timeout_says_nothing_was_changed(self):
+        class TimingOutBridge(RecordingBridge):
+            def request(self, method, params=None):
+                try:
+                    raise TimeoutError("timed out")
+                except TimeoutError as exc:
+                    raise BridgeConnectionError(
+                        "timed out waiting for 127.0.0.1:39877; Live may still apply the change"
+                    ) from exc
+
+        with self.assertRaises(AdapterUnavailable) as caught:
+            RemoteScriptAdapter(TimingOutBridge()).read_levels(LevelRead(seconds=1))
+        self.assertIn("nothing was changed", str(caught.exception))
+        self.assertNotIn("may still apply", str(caught.exception))
+
+    def test_other_connection_errors_keep_their_text(self):
+        class DownBridge(RecordingBridge):
+            def request(self, method, params=None):
+                raise BridgeConnectionError("could not connect")
+
+        with self.assertRaisesRegex(AdapterUnavailable, "could not connect"):
+            RemoteScriptAdapter(DownBridge()).read_levels(LevelRead(seconds=1))
 
     def test_bridge_without_a_timeout_attribute_is_sent(self):
         bridge = RecordingBridge(timeout=None)

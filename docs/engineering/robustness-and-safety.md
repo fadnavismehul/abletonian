@@ -34,9 +34,12 @@ because it changes nothing. Rules for any realtime read:
   callback per tick that schedules the next. Never sleep or loop over time
   on the main thread, and never touch Live from the socket thread.
 - Bound the window, the number of objects, and the number of samples, so a
-  read always ends. The socket thread waits at most the window plus a grace
-  period, and the MCP server's bridge timeout must be longer than that; the
-  adapter refuses before sending when it is not.
+  read always ends. The socket thread waits at most the start wait for the
+  setup call (`REQUEST_START_TIMEOUT_SECONDS`, 5 s) plus the window plus a
+  grace period, and the MCP server's bridge timeout must be longer than that;
+  the adapter refuses before sending when it is not. If the bridge stops
+  mid-read (a reload or disconnect), the socket thread answers at once and
+  the chain of ticks ends.
 - Say what the values are. Meter readings are Live's 0..1 positions, not
   dBFS; do not convert units the LOM does not document, or mark any
   conversion as a guess.

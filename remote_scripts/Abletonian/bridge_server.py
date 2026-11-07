@@ -43,7 +43,7 @@ HOST = "127.0.0.1"
 # (RFC 0004). Must match DEFAULT_BRIDGE_PORT in src/abletonian/config.py.
 PORT = 39877
 PROTOCOL_VERSION = "abletonian.bridge.v2"
-ADAPTER_VERSION = "0.7.0"
+ADAPTER_VERSION = "0.7.1"
 # The per-install key every request must carry (RFC 0004). Same path as
 # DEFAULT_BRIDGE_KEY_PATH in src/abletonian/bridge/client.py.
 KEY_PATH = os.path.join(os.path.expanduser("~"), ".abletonian", "bridge_key")
@@ -70,6 +70,14 @@ LEVEL_SAMPLE_TICK_DELAY = 1
 # src/abletonian/adapters/remote_script.py).
 LEVEL_READ_GRACE_SECONDS = 5.0
 LEVEL_READ_METHOD = "ableton.read_levels"
+# A level tick whose clock moved less than this since the previous tick did
+# not wait for Live's timer; after LEVEL_STALLED_TICK_LIMIT of those in a row
+# the read ends with an error rather than spinning in one main-thread pass
+# (a guess at how a re-entrant schedule_message would look; not seen in Live).
+LEVEL_MIN_TICK_SECONDS = 0.01
+LEVEL_STALLED_TICK_LIMIT = 5
+# How often the waiting socket thread checks whether the bridge is stopping.
+LEVEL_STOP_POLL_SECONDS = 0.1
 # Live Undo presses per track the Drum Rack workflow creates (Live 12.4.16).
 UNDO_STEPS_PER_CREATED_TRACK = 2
 UNFILTERED_SCAFFOLD_WARNING = (
@@ -686,28 +694,71 @@ def _run_level_read(surface, params):
         lambda: live_ops.LevelWindow(live_ops.prepare_level_read(song(), params), _level_clock()),
     )
     finished = threading.Event()
-    state = {"abandoned": False}
+    state = {"abandoned": False, "last": None, "stalled": 0}
 
     def tick():
         if state["abandoned"]:
             return
+        now = _level_clock()
+        if state["last"] is not None and now - state["last"] < LEVEL_MIN_TICK_SECONDS:
+            state["stalled"] += 1
+        else:
+            state["stalled"] = 0
+        state["last"] = now
+        if state["stalled"] >= LEVEL_STALLED_TICK_LIMIT:
+            state["error"] = live_ops.LiveOpsError(
+                "Live ran the level read's ticks without its timer moving on, so the "
+                "window could not be timed; nothing was changed",
+                "Try again. If it keeps happening, reload the Abletonian Control Surface.",
+            )
+            finished.set()
+            return
         try:
-            done = window.sample(song(), _level_clock())
+            done = window.sample(song(), now)
         except Exception as exc:
             state["error"] = exc
             done = True
         if done:
             finished.set()
-        else:
+            return
+        try:
             schedule_message(LEVEL_SAMPLE_TICK_DELAY, tick)
+        except Exception as exc:
+            state["error"] = live_ops.LiveOpsError(
+                f"Live would not schedule the next meter sample ({exc}); nothing was changed"
+            )
+            finished.set()
 
     schedule_message(0, tick)
-    if not finished.wait(window.seconds + LEVEL_READ_GRACE_SECONDS):
-        state["abandoned"] = True
-        raise TimeoutError(f"Live {_LEVELS_NOT_FINISHED}; nothing was changed")
+    stop = _stop_event(surface)
+    deadline = time.monotonic() + window.seconds + LEVEL_READ_GRACE_SECONDS
+    while not finished.wait(LEVEL_STOP_POLL_SECONDS):
+        if stop.is_set():
+            state["abandoned"] = True
+            raise live_ops.LiveOpsError(
+                "the Abletonian bridge stopped during the level read (the Control Surface "
+                "was reloaded or Live disconnected it); nothing was changed",
+                "Check that Abletonian is enabled in Live's Control Surface settings, then "
+                "read levels again.",
+            )
+        if time.monotonic() >= deadline:
+            state["abandoned"] = True
+            raise TimeoutError(f"Live {_LEVELS_NOT_FINISHED}; nothing was changed")
     if "error" in state:
         raise state["error"]
+    if window.stopped_early and window.samples == 0:
+        raise live_ops.TransportStopped(
+            "Live's transport stopped before the first meter sample, so nothing was "
+            "read; nothing was changed"
+        )
     return window.result(tick_delay=LEVEL_SAMPLE_TICK_DELAY)
+
+
+def _stop_event(surface):
+    """The bridge server's stop event, or one that is never set (tests)."""
+
+    event = getattr(getattr(surface, "_server", None), "_stop_event", None)
+    return event if event is not None else threading.Event()
 
 
 def _call_on_main_thread(surface, action, delay=0):
