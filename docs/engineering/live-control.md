@@ -38,11 +38,11 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `list_saved_macro_cockpits` | none | List saved cockpits. |
 | `open_macro_cockpit` | `ableton.get_selected_rack_macros` | Open a saved cockpit and compare it with the selected Rack; warns when the rack or its macros changed. |
 | `show_macro_cockpit` | none | Write a cockpit (generated this session, or saved) as a self-contained HTML page under the cockpit folder's `views/`, and open it in the browser. Display only. |
-| `set_device_parameter` | `ableton.set_device_parameter` | Set by raw value or by display text (`"-3 dB"`, `"2.5 kHz"`, `"Off"`). |
+| `set_device_parameter` | `ableton.set_device_parameter` | Set by display text (`"-3 dB"`, `"2.5 kHz"`, `"1.00"`), option or step name (`"Off"`, `"Auto"`, `"1/8"`), or raw value (`{"raw": 0.5}`). A bare number is raw unless that is ambiguous; see "How a value is read" below. The result says how the value was read (`read_as`) and may carry a `note`. |
 | `set_track_output_routing` | `ableton.set_track_output_routing` | Set Audio To / MIDI To by display name, such as `Main` or a group name. |
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). Live shows a return's letter in front of its name, so a leading `A-` is dropped when renaming return A. |
 | `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. |
-| `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, and set its parameters right away. |
+| `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, and set its parameters right away, read as in `set_device_parameter`. Value shapes are checked before inserting; names and display text after, and a failure removes the device again. |
 | `create_return_track` | `ableton.create_return_track` | Add a return track at the end (`Song.create_return_track`), with an optional name and colour. Additive. |
 | `delete_device` | `ableton.delete_device` | Delete a device (`Track.delete_device`). Destructive: without `confirm=true` it only returns the device and its current settings. The tool accepts only a real boolean, so `"true"` or `1` is refused. In `apply_batch`, every delete needs `"confirm": true` or the whole batch is refused before anything runs, and delete targets refer to the set as it was before the batch, so deleting index 0 does not shift a later index 1. |
 | `apply_batch` | `ableton.batch` | Run many changes as one Live undo step (two when it mixes parameter changes with other changes), or one step per operation with `atomic=false`. Stops at the first failure. |
@@ -104,6 +104,67 @@ plugin's display does not change across the range, or the text is an option
 name the parameter does not list (Mode "Andromeda"), the call is refused with
 the display at both ends and the raw range. Use raw values for plugins.
 
+#### How a value is read (issues #43, #44)
+
+All of this reads `str_for_value` and never writes the parameter, so a
+refused value changes nothing. `DeviceParameter.str_for_value(value)`,
+`is_quantized` and `value_items` ("only valid for quantized parameters") are
+from the Cycling '74 LOM docs.
+
+- **`{"raw": n}`** sets raw `n`, range-checked. This is how a caller asks
+  for a raw value without any interpretation.
+- **A string** is display text or an option name.
+- **A bare number** (JSON number) is the raw value, except:
+  - if Live shows that raw value as the same number (a 0..127 parameter
+    showing `64` at raw 64), raw and display agree and it is simply set;
+  - if the parameter shows plain numbers with no unit (EQ Eight Q, raw 0..1
+    showing `0.10` to `18.00`) or is stepped with numbered steps (Glue
+    Compressor Attack), and the number is also a display value at another
+    raw value, the call is refused as ambiguous. The error names both
+    readings ("1 is ambiguous for '2 Q A': as a raw value it shows as
+    '18.00', but '1.00' is raw 0.443403") and the hint says to send `"1"` for the
+    display value or `{"raw": 1}` for the raw one;
+  - for those same parameters, a number outside the raw range is read as
+    display text (Q `3` sets Q 3.00), and the result's `note` says so;
+  - a parameter that shows units or option names keeps the raw reading
+    (Track Volume `0.85`, Device On `0`). When Live shows something other
+    than the number, the result's `note` says what it shows. A number out of
+    range is refused, and the hint names the display reading.
+
+  Issue #43 was EQ Eight Q set to raw 1.0 (showing 18.0) when the musician
+  meant Q 1.00. Reading bare numbers as display text everywhere was not
+  chosen: it would change what Track Volume `0.85` means for existing
+  callers. Refusing only where both readings are plausible keeps those
+  callers working and makes the dangerous case ask.
+
+**Stepped parameters.** A parameter is stepped when Live marks it
+`is_quantized`, or (a guess, issue #44) when it has an integer raw range of
+2 to 64 whose half step shows the text of a neighbouring step. Each step `i`
+is raw `min + i`. Its options are `value_items` when Live gives them, else
+the `str_for_value` text of each step (up to 128 steps), and `list_devices`
+lists them under `options`. Text matches a step by name (either list, case
+ignored), then by number at the display's resolution (`"0.1"` matches
+`.1`, `"1"` matches `1.00`, `"1 s"` matches `1000 ms`), then by a unique
+prefix (`"Auto"` matches `A`). `"1/8"` is matched as text, never as the
+number 1.
+
+In Live 12.4.16 Glue Compressor Release refused `"Auto"` with "does not show
+numeric values (it shows '.1' to 'A')", and Attack and Ratio behaved the
+same, so Live gave no `value_items` for them (or does not mark them
+quantized). Either way they now resolve through their step texts. Not yet
+checked in Live.
+
+**Other parameters.** When both ends show distinct numbers, a bisection
+finds the raw value (as before). Otherwise the script samples every integer
+step of the raw range (up to 256) plus 33 evenly spaced points, matches the
+text against the distinct display texts it saw, and lists them when nothing
+matches. If every sample shows the same text, as Echo "L Synced" did
+(`'1/64'` for every value, Live 12.4.16), the error says so: `str_for_value`
+may only format the current value, or the display may depend on another
+parameter such as Echo's sync mode. Which of the two applies to Echo is not
+known; check in Live by reading `str_for_value` for each step with L Sync on
+and off.
+
 Some API names differ from the device UI. Utility's gain knob is `Output` in
 the API; `Gain` is accepted as an alias. `list_devices` shows the API names.
 
@@ -158,6 +219,20 @@ Action" or `Change "<parameter>"`; the Live API gives no way to name it.
 
 If setting `parameters` on a newly inserted device fails, `insert_device`
 deletes that device again, so a failed call leaves the track unchanged.
+Value shapes (a number, a string, or `{"raw": n}`) are checked before
+inserting, so a malformed value changes nothing. Parameter names, options and
+display text only exist on the inserted device, so they are checked after:
+all names are resolved before any value is written, and values are then
+resolved and set in the order given (one parameter's display can depend on
+another). The error keeps its code and its hint suggests inserting without
+parameters and reading `list_devices` first.
+
+The insert-and-delete still leaves one "Custom Action" step that changes
+nothing. The LOM's `Song` offers `begin_undo_step`, `end_undo_step` and
+`undo`, but nothing to discard or rename a step (Cycling '74 LOM docs).
+Calling `undo` would move the step to the redo list and, since Live merges
+steps made close together (issue #3, #26), could revert the musician's own
+edit. So the empty step is left and the error says so.
 
 ### Errors
 
@@ -168,7 +243,7 @@ names the object and lists the choices; the hint says what to do.
 | Code | When | Hint, in short |
 | --- | --- | --- |
 | `not_found` | No such track, device, chain, parameter, return, routing or selection | Which list to check: `list_tracks`, or `list_devices` on that track |
-| `invalid_value` | A value is out of range, not an option, or badly formed | See the parameter's range and display text, or send a raw number |
+| `invalid_value` | A value is out of range, not an option, ambiguous, or badly formed | See the parameter's range, display text and options, or send `{"raw": n}`; an ambiguous bare number names both readings |
 | `not_supported` | Live or this Remote Script cannot do it | What to do instead, such as reinstalling an older Remote Script |
 | `confirmation_required` | A delete or multi-step undo without `confirm=true` | Ask the user first |
 | `timeout` | Live did not start, or did not finish, in time | Whether the change may still happen, and to check before retrying |

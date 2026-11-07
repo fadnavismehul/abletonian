@@ -19,7 +19,9 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 
 TrackRef = int | str
 DeviceRef = int | str
-ParameterValue = float | str
+# A raw number, display text ("-3 dB", "Auto"), or {"raw": number} for an
+# explicit raw value. The Remote Script decides how a bare number is read.
+ParameterValue = float | str | Mapping[str, float]
 
 
 class AdapterError(RuntimeError):

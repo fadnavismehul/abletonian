@@ -292,15 +292,29 @@ def build_mcp(
         track: int | str,
         device: int | str,
         parameter: int | str,
-        value: float | str,
+        value: float | str | dict[str, float],
     ) -> str:
         """Set a device parameter in the open Live Set.
 
         device is an index, a device name, or a path to a device inside racks
         from list_devices, such as "Instrument Rack/Piano/Reverb" or
-        "Drum Rack/returns/0/Limiter". value is either a raw number within the
-        parameter's min..max, or display text such as "-3 dB", "2.5 kHz",
-        "25L", or an option name like "Off".
+        "Drum Rack/returns/0/Limiter". value is one of:
+
+        - a string: what Live shows, such as "-3 dB", "2.5 kHz", "25L", "1.00",
+          or an option or step name from list_devices "options" ("Off",
+          "Auto", "1/8");
+        - {"raw": n}: the raw value n within the parameter's min..max, exactly;
+        - a bare number: the raw value, except where that is ambiguous. If
+          the parameter shows plain numbers with no unit (EQ Eight Q) or
+          numbered steps, and the number is also a display value at a
+          different raw value, the call is refused and names both readings;
+          send a string for the display value or {"raw": n} for the raw one.
+          Outside the raw range such a number is read as display text. When
+          raw and display agree (a 0..127 parameter showing "64") it is set.
+
+        The result says how the value was read ("read_as") and, when a bare
+        number was read as raw but Live shows something else, a "note" with
+        both readings.
         """
 
         return send(
@@ -340,15 +354,16 @@ def build_mcp(
     @mcp.tool(annotations=_op("set_mixer"))
     def set_mixer(
         track: int | str,
-        volume: float | str | None = None,
-        panning: float | str | None = None,
-        sends: dict[str, float | str] | None = None,
+        volume: float | str | dict[str, float] | None = None,
+        panning: float | str | dict[str, float] | None = None,
+        sends: dict[str, float | str | dict[str, float]] | None = None,
         mute: bool | None = None,
         solo: bool | None = None,
     ) -> str:
         """Set a track's mixer: volume ("-6 dB" or raw 0..1), panning ("25L",
         "C", or raw -1..1), sends keyed by return name, letter, or index
-        ({"A": "-12 dB"}), mute, and solo."""
+        ({"A": "-12 dB"}), mute, and solo. A raw value can also be sent as
+        {"raw": n}."""
 
         return send(
             "set_mixer",
@@ -362,12 +377,17 @@ def build_mcp(
         track: int | str,
         device_name: str,
         index: int | None = None,
-        parameters: dict[str, float | str] | None = None,
+        parameters: dict[str, float | str | dict[str, float]] | None = None,
     ) -> str:
         """Insert a native Live device (for example "Utility", "EQ Eight",
         "Glue Compressor") by its browser name, using Track.insert_device
         (Live 12.3+). index is the chain position; omit it to append at the end.
-        parameters are set on the new device right away, e.g. {"Gain": "-3 dB"}."""
+        parameters are set on the new device right away, in order, e.g.
+        {"Gain": "-3 dB"}; values are read as in set_device_parameter. If a
+        name or value does not fit the new device, it is removed again and
+        the error says why (Live may keep an undo step that changes nothing).
+        To be sure of names and options, insert first, read list_devices,
+        then use set_device_parameter."""
 
         return send(
             "insert_device",
