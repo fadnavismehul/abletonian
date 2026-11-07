@@ -12,12 +12,25 @@ from remote_scripts.Abletonian import live_ops
 from remote_scripts.Abletonian.live_ops import LiveOpsError
 
 
+class RecordingParam(Param):
+    """A Param that records every write to ``value``, so reads can prove none."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.writes = []
+
+    def __setattr__(self, key, value):
+        if key == "value" and "writes" in self.__dict__:
+            self.writes.append(value)
+        object.__setattr__(self, key, value)
+
+
 def simpler(name, parameter_count=40):
     """A Simpler-sized device: Device On plus many continuous parameters."""
 
-    parameters = [Param("Device On", 1.0, items=("Off", "On"))]
+    parameters = [RecordingParam("Device On", 1.0, items=("Off", "On"))]
     parameters += [
-        Param(f"Param {i}", 0.5, display=lambda v: f"{v * 100:.0f} %")
+        RecordingParam(f"Param {i}", 0.5, display=lambda v: f"{v * 100:.0f} %")
         for i in range(parameter_count - 1)
     ]
     return SimpleNamespace(
@@ -38,10 +51,10 @@ def utility():
         can_have_chains=False,
         is_active=True,
         parameters=(
-            Param("Device On", 1.0, items=("Off", "On")),
-            Param("Output", 0.0, -1.0, 1.0, display=gain_display),
-            Param("Width", 0.5),
-            Param("Mute", 0.0, items=("Off", "On")),
+            RecordingParam("Device On", 1.0, items=("Off", "On")),
+            RecordingParam("Output", 0.0, -1.0, 1.0, display=gain_display),
+            RecordingParam("Width", 0.5),
+            RecordingParam("Mute", 0.0, items=("Off", "On")),
         ),
     )
 
@@ -228,13 +241,20 @@ class GetDeviceTests(unittest.TestCase):
         self.assertEqual(device["return_chains"][0]["name"], "Room")
 
     def test_reads_do_not_change_the_set(self):
-        values = [p.value for p in self.kit.utility.parameters]
+        parameters = [
+            parameter
+            for device in all_objects(self.kit.track.devices)
+            for parameter in getattr(device, "parameters", ())
+            if isinstance(parameter, RecordingParam)
+        ]
+        self.assertIn(self.kit.utility.parameters[1], parameters)
 
         self.get("Utility")
         self.get("Utility", parameters="Gain")
+        self.get("C78 Core Kit/Kick/Kick")
         self.kit.call("ableton.list_devices", track=0, detail="full")
 
-        self.assertEqual([p.value for p in self.kit.utility.parameters], values)
+        self.assertEqual([p.writes for p in parameters if p.writes], [])
         self.assertEqual(self.kit.song.undo_steps, [])
         self.assertEqual(len(self.kit.track.devices), 2)
 

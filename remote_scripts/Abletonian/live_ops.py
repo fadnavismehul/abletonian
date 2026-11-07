@@ -493,16 +493,7 @@ def set_clip_gain(song, params):
             "Set the clip gain in Live yourself.",
         )
 
-    value = _required(params, "gain_db")
-    if isinstance(value, bool):
-        raise InvalidValue("gain_db must be a number of dB or text such as '-3 dB'")
-    if isinstance(value, (int, float)):
-        target, text = float(value), f"{value} dB"
-    else:
-        text = str(value)
-        target = parse_display_number(text)
-        if target is None:
-            raise InvalidValue(f"could not read a dB value from '{text}'")
+    target, text = _gain_db_target(_required(params, "gain_db"))
 
     before = _clip_gain_payload(clip)
     original = float(clip.gain)
@@ -510,7 +501,7 @@ def set_clip_gain(song, params):
     try:
         _check_probe(probe)
         raw = _search_display(probe, probe.read, 0.0, 1.0, target, text)
-        clip.gain = raw
+        note = _clamp_note(f"the {probe.name}", text, probe.read(probe, raw), raw, 0.0, 1.0)
     except Exception as exc:
         clip.gain = original
         if isinstance(exc, LiveOpsError):
@@ -521,7 +512,47 @@ def set_clip_gain(song, params):
         "clip": {"index": clip_index, "name": _str(clip.name)},
         "before": before,
         "after": _clip_gain_payload(clip),
+        **({"note": note} if note else {}),
     }
+
+
+def _gain_db_target(value):
+    """``(dB number, text)`` for ``set_clip_gain``'s ``gain_db``. Needs no Live object.
+
+    Only a number or a string is accepted: ``{"raw": 0.7}`` is refused rather
+    than having a number read out of its text.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise InvalidValue(
+            f"gain_db {value!r} must be a number of dB or text such as '-3 dB'"
+        )
+    if isinstance(value, str):
+        target = parse_display_number(value)
+        if target is None:
+            raise InvalidValue(f"could not read a dB value from '{value}'")
+        return target, value
+    if not math.isfinite(value):
+        raise InvalidValue(f"gain_db {value!r} must be a finite number, or the text '-inf dB'")
+    return float(value), f"{value} dB"
+
+
+def _check_mixer_values(params):
+    """Shape-check ``set_mixer``'s values without a Live object."""
+
+    for key in ("volume", "panning"):
+        if params.get(key) is not None:
+            check_value_shape(params[key], key)
+    sends = params.get("sends")
+    if sends is None:
+        return
+    if not isinstance(sends, dict):
+        raise InvalidValue(
+            "set_mixer 'sends' must be an object of return name to value, such as "
+            '{"A-Reverb": "-12 dB"}'
+        )
+    for ref, value in sends.items():
+        check_value_shape(value, f"send {ref}")
 
 
 def set_track_properties(song, params):
@@ -623,15 +654,17 @@ def set_mixer(song, params):
 
     # Work out every change before applying any, so a bad argument leaves the
     # track untouched.
+    _check_mixer_values(params)
     planned = []
     for key in ("volume", "panning"):
         if params.get(key) is not None:
             parameter = getattr(mixer, key)
-            planned.append((key, None, parameter, _raw_value(parameter, params[key])))
+            planned.append((key, None, parameter, resolve_value(parameter, params[key])))
     for send_ref, value in (params.get("sends") or {}).items():
         send_index = _resolve_send(send_ref, return_names, len(send_params))
         parameter = send_params[send_index]
-        planned.append(("sends", return_names[send_index], parameter, _raw_value(parameter, value)))
+        reading = resolve_value(parameter, value)
+        planned.append(("sends", return_names[send_index], parameter, reading))
     switches = []
     for key in ("mute", "solo"):
         if params.get(key) is not None:
@@ -642,12 +675,16 @@ def set_mixer(song, params):
         raise LiveOpsError("set_mixer needs at least one of volume, panning, sends, mute, solo")
 
     changed = {}
-    for key, send_name, parameter, raw in planned:
-        parameter.value = raw
+    for key, send_name, parameter, reading in planned:
+        parameter.value = reading["raw"]
+        payload = _param_payload(parameter)
+        payload["read_as"] = reading["read_as"]
+        if reading["note"]:
+            payload["note"] = reading["note"]
         if key == "sends":
-            changed.setdefault("sends", {})[send_name] = _param_payload(parameter)
+            changed.setdefault("sends", {})[send_name] = payload
         else:
-            changed[key] = _param_payload(parameter)
+            changed[key] = payload
     for key, value in switches:
         setattr(track, key, value)
         changed[key] = bool(getattr(track, key))
@@ -725,7 +762,15 @@ def insert_device(song, params):
         # stays in Undo History as a step that changes nothing.
         delete = getattr(track, "delete_device", None)
         if callable(delete):
-            delete(position)
+            try:
+                delete(position)
+            except Exception as delete_exc:
+                raise LiveOpsError(
+                    f"{exc}. Removing the new '{device_name}' then failed too "
+                    f"({delete_exc}), so it was NOT removed: it is still on "
+                    f"'{_str(track.name)}' at position {position}, possibly half set up.",
+                    "Check the device in Live, and delete it or press Undo yourself.",
+                ) from exc
             message = (
                 f"{exc}. The new '{device_name}' was removed again; Live may still list "
                 "this as an undo step that changes nothing."
@@ -1003,6 +1048,11 @@ def prepare_batch(song, params):
                     check_value_shape(operation_params["value"], label)
             elif operation["method"] == "ableton.insert_device":
                 _check_parameter_settings(operation_params.get("parameters"))
+            elif operation["method"] == "ableton.set_mixer":
+                _check_mixer_values(operation_params)
+            elif operation["method"] == "ableton.set_clip_gain":
+                if "gain_db" in operation_params:
+                    _gain_db_target(operation_params["gain_db"])
         except LiveOpsError as exc:
             raise type(exc)(f"operation {position}: {exc}; nothing was changed", exc.hint) from exc
 
@@ -1760,12 +1810,6 @@ def set_parameter_value(parameter, value):
     return reading
 
 
-def _raw_value(parameter, value):
-    """Validate ``value`` for ``parameter`` and return the raw value to set."""
-
-    return resolve_value(parameter, value)["raw"]
-
-
 def check_value_shape(value, label):
     """Refuse a value that is not a number, a string or ``{"raw": number}``.
 
@@ -1825,9 +1869,11 @@ def resolve_value(parameter, value):
         value = float(value)
     if isinstance(value, (int, float)):
         return _resolve_number(parameter, float(value), low, high)
-    raw = value_for_display(parameter, str(value))
+    text = str(value)
+    raw = value_for_display(parameter, text)
     _check_range(parameter, raw, low, high)
-    return {"raw": raw, "read_as": "display", "note": None}
+    note = _clamp_note(f"'{name}'", text, _display(parameter, raw), raw, low, high)
+    return {"raw": raw, "read_as": "display", "note": note}
 
 
 def _check_range(parameter, raw, low, high, hint=VALUE_HINT):
@@ -1887,8 +1933,9 @@ def _resolve_number(parameter, number, low, high):
             "read_as": "raw",
             "note": (
                 f"{text} was read as a raw value, which Live shows as '{shown}'. To set "
-                "what Live shows, send display text as a string (for example "
-                f'"{text}" with its unit), or {{"raw": {text}}} to keep this reading.'
+                "what Live shows, send display text as a string, written the way Live "
+                f'shows it (for example "{shown}"), or {{"raw": {text}}} to keep this '
+                "reading."
             ),
         }
     if display_raw is not None:
@@ -2018,26 +2065,35 @@ def _option_names(steps):
     return [item if item is not None else shown for item, shown in steps]
 
 
+# Words for the abbreviations Live shows on stepped parameters, lowercased:
+# Glue Compressor Release shows its Auto setting as "A" (Live 12.4.16, issue
+# #44). Only these whole words are read as the abbreviation; "Attack" or
+# "Au" are not.
+STEP_ALIASES = {"auto": "a"}
+
+
 def _match_step(text, steps):
-    """Index of the step ``text`` names: exact text, then number, then prefix."""
+    """Index of the step ``text`` names: exact text, then a listed alias
+    (``STEP_ALIASES``), then number, then a unique prefix."""
 
     wanted = text.strip().lower()
     if not wanted:
         return None
-    for index, names in enumerate(steps):
-        if any(name is not None and name.strip().lower() == wanted for name in names):
-            return index
+    for candidate in (wanted, STEP_ALIASES.get(wanted)):
+        if candidate is None:
+            continue
+        for index, names in enumerate(steps):
+            if any(name is not None and name.strip().lower() == candidate for name in names):
+                return index
     if _plain_number(text) is not None:
         return _match_step_number(text, steps)
-    # "Auto" for a step Live shows as "A", or "Sp" for "Sparse"; only when
-    # exactly one step fits.
+    # "Sp" for "Sparse": only a prefix of a step's text, and only when exactly
+    # one step fits.
     found = {
         index
         for index, names in enumerate(steps)
         for name in names
-        if name is not None
-        and name.strip()
-        and (name.strip().lower().startswith(wanted) or wanted.startswith(name.strip().lower()))
+        if name is not None and name.strip() and name.strip().lower().startswith(wanted)
     }
     return found.pop() if len(found) == 1 else None
 
@@ -2170,6 +2226,38 @@ def _check_display_match(parameter, reader, raw, target, text, low, high):
             f"closest was '{reader(parameter, raw)}' (range '{reader(parameter, low)}' to "
             f"'{reader(parameter, high)}'). Use a raw value between {low} and {high} instead."
         )
+
+
+def _clamp_note(what, text, shown_text, raw, low, high):
+    """A note when ``text`` was past an end of the range and set to that end.
+
+    ``_search_display`` sets a target just beyond either end to the end
+    itself (within ``_check_display_match``'s tolerance), so "36 dB" on a
+    knob that stops at 35 dB sets 35 dB. Returns None when nothing was
+    clamped.
+    """
+
+    target = parse_display_number(text)
+    shown = parse_display_number(shown_text)
+    if raw not in (low, high) or target is None or shown is None or shown == target:
+        return None
+    if not (math.isinf(shown) or math.isinf(target)):
+        if abs(shown - target) <= _display_resolution(shown_text):
+            return None
+    return (
+        f"'{text}' is past the end of the range of {what}, so it was set to the "
+        f"nearest end, which Live shows as '{shown_text}'."
+    )
+
+
+def _display_resolution(text):
+    """Half the last digit of the number in ``text``, in base units."""
+
+    digits = re.search(r"\d*\.\d+|\d+", text)
+    decimals = len(digits.group(0).split(".")[1]) if digits and "." in digits.group(0) else 0
+    unit = _NUMBER.search(text.strip())
+    scale = _UNIT_SCALE.get((unit.group(2) or "").lower(), 1.0) if unit else 1.0
+    return 0.5 * 10**-decimals * scale + 1e-9
 
 
 def _first_raw_where(number, low, high, rising, predicate, steps=60):

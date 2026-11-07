@@ -50,7 +50,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). Live shows a return's letter in front of its name, so a leading `A-` is dropped when renaming return A. |
 | `set_device_properties` | `ableton.set_device_properties` | Rename a device (`Device.name`), at the top of a track or inside racks by its path. Transformative. Returns the name and printed path before and after; renaming can change the device's own path and a same-named sibling's (issue #46). |
 | `set_chain_properties` | `ableton.set_chain_properties` | Rename a rack chain (`Chain.name`). `chain` is the rack's path plus the chain's name or index: `"Vocal Rack/Main"`, `"Drum Rack/returns/0"`. Transformative. Returns the name and path before and after. |
-| `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. |
+| `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. Values are read like `set_device_parameter` values; each changed value carries `read_as` and may carry a `note`. |
 | `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, optionally `name` it, and set its parameters right away, read as in `set_device_parameter`. Value shapes are checked before inserting; names and display text after, and a failure removes the device again. |
 | `create_return_track` | `ableton.create_return_track` | Add a return track at the end (`Song.create_return_track`), with an optional name and colour. Additive. |
 | `create_track` | `ableton.create_track` | Add an empty MIDI or audio track (`Song.create_midi_track(index)` / `Song.create_audio_track(index)`; index -1 or omitted appends). Optional `name`, `color` and `color_index`; if they cannot be set, the new track is deleted again (`Song.delete_track`). Returns the track as compact `list_tracks` shows it, and a note when later tracks moved down one index. Additive. Groups are not created. |
@@ -207,9 +207,11 @@ is raw `min + i`. Its options are `value_items` when Live gives them, else
 the `str_for_value` text of each step (up to 128 steps), and `list_devices`
 lists them under `options`. Text matches a step by name (either list, case
 ignored), then by number at the display's resolution (`"0.1"` matches
-`.1`, `"1"` matches `1.00`, `"1 s"` matches `1000 ms`), then by a unique
-prefix (`"Auto"` matches `A`). `"1/8"` is matched as text, never as the
-number 1.
+`.1`, `"1"` matches `1.00`, `"1 s"` matches `1000 ms`), then as the
+start of exactly one step's text (`"Sp"` matches `Sparse`). Live's
+abbreviations are read only through a fixed alias list: `"Auto"` matches a
+step shown as `A` (Glue Compressor Release), but `"Attack"` or `"Au"` do
+not. `"1/8"` is matched as text, never as the number 1.
 
 In Live 12.4.16 Glue Compressor Release refused `"Auto"` with "does not show
 numeric values (it shows '.1' to 'A')", and Attack and Ratio behaved the
@@ -218,7 +220,10 @@ quantized). Either way they now resolve through their step texts. Not yet
 checked in Live.
 
 **Other parameters.** When both ends show distinct numbers, a bisection
-finds the raw value (as before). Otherwise the script samples every integer
+finds the raw value (as before). Text a little past either end (within 5%,
+such as `"36 dB"` on a knob that stops at 35 dB) is set to that end rather
+than refused, and the result's `note` says so and quotes what Live shows
+there; text further out is refused. Otherwise the script samples every integer
 step of the raw range (up to 256) plus 33 evenly spaced points, matches the
 text against the distinct display texts it saw, and lists them when nothing
 matches. If every sample shows the same text, as Echo "L Synced" did

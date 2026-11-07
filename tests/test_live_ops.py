@@ -306,6 +306,37 @@ class LiveOpsTests(unittest.TestCase):
         self.assertEqual(result["changed"]["panning"]["display"], "25L")
         self.assertAlmostEqual(self.song.tracks[2].mixer_device.sends[0].value, 0.3)
         self.assertAlmostEqual(self.song.tracks[2].mixer_device.sends[1].value, 0.1, 3)
+        self.assertEqual(result["changed"]["volume"]["read_as"], "display")
+        self.assertEqual(result["changed"]["sends"]["A-Reverb"]["read_as"], "raw")
+
+    def test_batch_shape_checks_mixer_values_before_anything_runs(self):
+        for params in (
+            {"track": 1, "volume": [0.5]},
+            {"track": 1, "panning": {"value": 0}},
+            {"track": 1, "sends": {"A": [1]}},
+            {"track": 1, "sends": [0.5]},
+        ):
+            with self.subTest(params=params):
+                with self.assertRaisesRegex(LiveOpsError, "operation 1.*nothing was changed"):
+                    self.call(
+                        "ableton.batch",
+                        operations=[
+                            {"method": "ableton.set_mixer", "params": {"track": 0, "mute": True}},
+                            {"method": "ableton.set_mixer", "params": params},
+                        ],
+                    )
+        self.assertFalse(self.song.tracks[0].mute)
+        self.assertEqual(self.song.undo_steps, [])
+
+    def test_set_mixer_reports_how_each_value_was_read(self):
+        result = self.call("ableton.set_mixer", track="Vox", volume=0.95, panning="52R")
+
+        volume, panning = result["changed"]["volume"], result["changed"]["panning"]
+        self.assertEqual(volume["read_as"], "raw")
+        self.assertIn("'4.0 dB'", volume["note"])
+        self.assertEqual(panning["read_as"], "display")
+        self.assertIn("past the end", panning["note"])
+        self.assertIn("'50R'", panning["note"])
 
     def test_batch_groups_undo_and_stops_on_first_error(self):
         result = self.call(
@@ -873,6 +904,20 @@ class BareNumberTests(unittest.TestCase):
         self.assertEqual(gain.value, 0.5)
         self.assertEqual(reading["read_as"], "raw")
         self.assertIn("'17.5 dB'", reading["note"])
+        self.assertIn('(for example "17.5 dB")', reading["note"])
+
+    def test_display_text_just_past_an_end_is_clamped_with_a_note(self):
+        gain = Param("Output", 0.0, -1.0, 1.0, display=gain_display)
+
+        reading = live_ops.set_parameter_value(gain, "36 dB")
+
+        self.assertEqual(gain.value, 1.0)
+        self.assertEqual(reading["read_as"], "display")
+        self.assertIn("past the end", reading["note"])
+        self.assertIn("'35.0 dB'", reading["note"])
+        for text in ("35 dB", "-35.0 dB", "0 dB"):
+            with self.subTest(text=text):
+                self.assertIsNone(live_ops.set_parameter_value(gain, text)["note"])
 
     def test_out_of_range_unit_number_names_the_display_reading(self):
         gain = Param("Output", 0.0, -1.0, 1.0, display=gain_display)
@@ -921,6 +966,18 @@ class SteppedParameterTests(unittest.TestCase):
             with self.subTest(quantized=quantized):
                 for text, raw in (("Auto", 6.0), ("A", 6.0), ("0.1", 0.0), ("1.2", 5.0)):
                     self.assertEqual(live_ops.value_for_display(release, text), raw)
+                self.assertEqual(release.writes, [])
+
+    def test_glue_release_refuses_words_that_only_start_with_a(self):
+        # The one-letter step "A" must not swallow any text starting with "a".
+        for quantized in (True, False):
+            release = StepParam("Release", GLUE_RELEASE, quantized=quantized)
+            with self.subTest(quantized=quantized):
+                for text in ("Attack", "abc", "Au"):
+                    with self.assertRaisesRegex(LiveOpsError, "not an option"):
+                        live_ops.value_for_display(release, text)
+                self.assertEqual(live_ops.value_for_display(release, "auto"), 6.0)
+                self.assertEqual(live_ops.value_for_display(release, "a"), 6.0)
                 self.assertEqual(release.writes, [])
 
     def test_glue_release_lists_each_step_as_an_option(self):
@@ -1051,6 +1108,20 @@ class InsertWithParametersTests(unittest.TestCase):
         self.assertIn("list_devices", raised.exception.hint)
         self.assertEqual(self.track.devices, [])
         self.assertEqual(self.track.inserted[0].parameters[2].writes, [])
+
+    def test_a_failed_removal_keeps_the_original_error_and_says_so(self):
+        def refuse(index):
+            raise RuntimeError("delete refused")
+
+        self.track.delete_device = refuse
+        with self.assertRaises(LiveOpsError) as raised:
+            self.insert({"Release": "Slow"})
+
+        message = str(raised.exception)
+        self.assertIn("Options:", message)
+        self.assertIn("delete refused", message)
+        self.assertIn("NOT removed", message)
+        self.assertEqual(len(self.track.devices), 1)
 
     def test_unresolvable_value_keeps_its_code_and_explains(self):
         with self.assertRaises(live_ops.InvalidValue) as raised:

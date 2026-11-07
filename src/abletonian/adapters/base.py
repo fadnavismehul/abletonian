@@ -231,7 +231,14 @@ class ClipGainChange(_Request):
 
     track: TrackRef
     clip: int | str
-    gain_db: ParameterValue
+    gain_db: float | str
+
+    def __post_init__(self) -> None:
+        # Not ParameterValue: a clip gain has no raw form, and {"raw": 0.7}
+        # would otherwise be read as text and set 0.7 dB.
+        value = self.gain_db
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError("gain_db must be a number of dB or text such as '-3 dB'")
 
 
 @dataclass(frozen=True)

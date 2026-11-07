@@ -181,8 +181,15 @@ class SetClipGainTests(unittest.TestCase):
     def test_minus_infinity_and_the_top_of_the_range(self):
         self.call("ableton.set_clip_gain", track=1, clip=0, gain_db="-inf dB")
         self.assertEqual(self.clips[0].gain, 0.0)
-        self.call("ableton.set_clip_gain", track=1, clip=0, gain_db="24 dB")
+        result = self.call("ableton.set_clip_gain", track=1, clip=0, gain_db="24 dB")
         self.assertEqual(self.clips[0].gain, 1.0)
+        self.assertNotIn("note", result)
+
+    def test_gain_just_past_the_top_is_clamped_with_a_note(self):
+        result = self.call("ableton.set_clip_gain", track=1, clip=0, gain_db="25 dB")
+
+        self.assertEqual(self.clips[0].gain, 1.0)
+        self.assertIn("'24.0 dB'", result["note"])
 
     def test_out_of_range_gain_is_refused_and_put_back(self):
         with self.assertRaises(InvalidValue) as raised:
@@ -205,8 +212,9 @@ class SetClipGainTests(unittest.TestCase):
             self.call("ableton.set_clip_gain", track=1, clip="Outro", gain_db=-3)
         with self.assertRaises(InvalidValue):
             self.call("ableton.set_clip_gain", track=1, clip=0, gain_db="loud")
-        with self.assertRaises(InvalidValue):
-            self.call("ableton.set_clip_gain", track=1, clip=0, gain_db=True)
+        for bad in (True, {"raw": 0.7}, [-3], None, float("nan")):
+            with self.subTest(gain_db=bad), self.assertRaises(LiveOpsError):
+                self.call("ableton.set_clip_gain", track=1, clip=0, gain_db=bad)
         self.assertEqual([c.writes for c in self.clips], [0, 0, 0])
 
     def test_a_display_that_lags_the_write_is_refused_and_put_back(self):
@@ -216,6 +224,24 @@ class SetClipGainTests(unittest.TestCase):
         with self.assertRaisesRegex(LiveOpsError, "did not follow the value"):
             self.call("ableton.set_clip_gain", track=1, clip=0, gain_db=-3)
         self.assertEqual(clip._gain, 0.3)
+
+    def test_batch_shape_checks_gain_before_anything_runs(self):
+        with self.assertRaisesRegex(InvalidValue, "operation 1.*nothing was changed"):
+            self.call(
+                "ableton.batch",
+                operations=[
+                    {
+                        "method": "ableton.set_clip_gain",
+                        "params": {"track": 1, "clip": 0, "gain_db": "-3 dB"},
+                    },
+                    {
+                        "method": "ableton.set_clip_gain",
+                        "params": {"track": 1, "clip": 1, "gain_db": {"raw": 0.7}},
+                    },
+                ],
+            )
+        self.assertEqual([c.writes for c in self.clips], [0, 0, 0])
+        self.assertEqual(self.song.undo_steps, [])
 
     def test_runs_inside_a_batch(self):
         result = self.call(
