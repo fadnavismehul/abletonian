@@ -16,6 +16,11 @@ Coding agents start at `AGENTS.md`.
 - [Robustness and Safety](engineering/robustness-and-safety.md): operation classes and invariants.
 - [Ableton Integration Options](engineering/integration-options.md): Remote Scripts, Max for Live, OSC.
 
+## Evals
+
+- [Evals passes](evals/README.md): real-session transcripts read for what the tools did and
+  did not manage. Latest: [Aperol Fritz mix sessions, November 2026](evals/2026-11-08-aperol-fritz-mix-sessions.md).
+
 ## Decisions
 
 - [RFCs](rfcs/README.md): designs for protocol, safety, adapter, and surface changes.
