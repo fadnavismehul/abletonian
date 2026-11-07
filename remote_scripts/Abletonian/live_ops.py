@@ -85,7 +85,7 @@ TRACK_HINT = "Use list_tracks to see track names and indexes."
 DEVICE_HINT = "Use list_devices on that track to see its devices, paths and parameters."
 VALUE_HINT = (
     "Use list_devices on that track to see this parameter's range, display text "
-    "and options, or send a raw number in its range."
+    "and options, or send {\"raw\": <number>} within its range."
 )
 CLIP_HINT = "Use list_clips on that track to see its arrangement clips and their indexes."
 SELECTION_HINT = "Select the track (and Rack) in Live, or name the track and device in the call."
@@ -376,13 +376,17 @@ def set_device_parameter(song, params):
     path, device_index, device, _owner = resolve_device_path(track, _required(params, "device"))
     parameter = resolve_parameter(device, _required(params, "parameter"))
     before = _param_payload(parameter)
-    set_parameter_value(parameter, _required(params, "value"))
-    return {
+    reading = set_parameter_value(parameter, _required(params, "value"))
+    result = {
         "track": _track_ref_payload(kind, index, track),
         "device": {"index": device_index, "name": _str(device.name), "path": path},
         "before": before,
         "after": _param_payload(parameter),
+        "read_as": reading["read_as"],
     }
+    if reading["note"]:
+        result["note"] = reading["note"]
+    return result
 
 
 def set_track_output_routing(song, params):
@@ -505,7 +509,7 @@ def set_clip_gain(song, params):
     probe = _ClipGainProbe(clip, track)
     try:
         _check_probe(probe)
-        raw = _search_display(probe, probe.read, 0.0, 1.0, target, text, False)
+        raw = _search_display(probe, probe.read, 0.0, 1.0, target, text)
         clip.gain = raw
     except Exception as exc:
         clip.gain = original
@@ -654,6 +658,9 @@ def insert_device(song, params):
     kind, index, track = resolve_track(song, _required(params, "track"))
     device_name = str(_required(params, "device_name"))
     new_name = _new_name(params, "device") if params.get("name") is not None else None
+    # Check what can be checked without the device before inserting it, so a
+    # malformed value changes nothing at all (issue #44).
+    requested = _check_parameter_settings(params.get("parameters"))
     position = params.get("index")
     insert = getattr(track, "insert_device", None)
     if not callable(insert):
@@ -695,28 +702,70 @@ def insert_device(song, params):
     device = devices[position]
     changed = []
     try:
+        # Parameter names only exist on the inserted device. Resolve them all
+        # before writing any value, so a wrong name fails before a parameter
+        # changes. Values are resolved and set in the order given, since one
+        # parameter's display can depend on another (a sync switch).
+        targets = [(resolve_parameter(device, ref), value) for ref, value in requested]
         if new_name is not None:
             # Device.name is read/write (Cycling '74 LOM docs, Device).
             device.name = new_name
-        for parameter_ref, value in (params.get("parameters") or {}).items():
-            parameter = resolve_parameter(device, parameter_ref)
-            set_parameter_value(parameter, value)
-            changed.append(_param_payload(parameter))
+        for parameter, value in targets:
+            reading = set_parameter_value(parameter, value)
+            payload = _param_payload(parameter)
+            payload["read_as"] = reading["read_as"]
+            if reading["note"]:
+                payload["note"] = reading["note"]
+            changed.append(payload)
     except Exception as exc:
         # Leave the track as it was rather than with a half-configured device.
+        # The Live API cannot drop an undo step (Song has begin_undo_step,
+        # end_undo_step and undo, Cycling '74 LOM docs), and pressing undo
+        # here could reach the musician's own edits, so the insert-and-delete
+        # stays in Undo History as a step that changes nothing.
         delete = getattr(track, "delete_device", None)
         if callable(delete):
             delete(position)
-            raise LiveOpsError(
+            message = (
                 f"{exc}. The new '{device_name}' was removed again; Live may still list "
                 "this as an undo step that changes nothing."
-            ) from exc
+            )
+            if isinstance(exc, LiveOpsError):
+                raise type(exc)(message, _insert_hint(exc)) from exc
+            raise LiveOpsError(message) from exc
         raise
     return {
         "track": _track_ref_payload(kind, index, track),
         "device": _device_payload(device, position, False, track, position),
         "parameters_set": changed,
     }
+
+
+def _check_parameter_settings(settings):
+    """Check ``insert_device``'s ``parameters`` without a device; return its items."""
+
+    if settings is None:
+        return []
+    if not isinstance(settings, dict):
+        raise InvalidValue(
+            "insert_device 'parameters' must be an object of parameter name to value, "
+            'such as {"Gain": "-3 dB"}'
+        )
+    for ref, value in settings.items():
+        if not isinstance(ref, (str, int)) or isinstance(ref, bool) or not str(ref).strip():
+            raise InvalidValue(f"parameter name {ref!r} in 'parameters' is not a name or index")
+        check_value_shape(value, str(ref))
+    return list(settings.items())
+
+
+def _insert_hint(exc):
+    hint = getattr(exc, "hint", None)
+    extra = (
+        "Parameter names, options and display text can only be checked once the device "
+        "is in the Set: insert it without parameters, read them with list_devices, then "
+        "use set_device_parameter."
+    )
+    return f"{hint} {extra}" if hint else extra
 
 
 def create_return_track(song, params):
@@ -940,6 +989,22 @@ def prepare_batch(song, params):
                 f"operation {position} has unsupported method '{method}'; "
                 f"allowed: {', '.join(BATCHABLE_METHODS)}"
             )
+
+    # Value shapes need no Live object, so a malformed value rejects the whole
+    # batch before anything changes.
+    for position, operation in enumerate(operations):
+        operation_params = operation.get("params", {})
+        try:
+            if not isinstance(operation_params, dict):
+                continue
+            if operation["method"] == "ableton.set_device_parameter":
+                if "value" in operation_params:
+                    label = str(operation_params.get("parameter"))
+                    check_value_shape(operation_params["value"], label)
+            elif operation["method"] == "ableton.insert_device":
+                _check_parameter_settings(operation_params.get("parameters"))
+        except LiveOpsError as exc:
+            raise type(exc)(f"operation {position}: {exc}; nothing was changed", exc.hint) from exc
 
     # Deletes are checked and resolved before anything runs: an unconfirmed
     # delete rejects the whole batch (rather than "completing" as a preview),
@@ -1656,80 +1721,422 @@ def resolve_parameter(device, ref):
 
 
 # Parameter values ---------------------------------------------------------
+#
+# What Live tells us about a parameter (Cycling '74 LOM docs, DeviceParameter):
+# ``min``/``max``/``value`` are raw numbers, ``is_quantized`` marks stepped
+# parameters, ``value_items`` lists their option names ("Only valid for
+# quantized parameters"), and ``str_for_value(value)`` returns the display
+# text for a raw value without setting it. Nothing in this section writes
+# ``parameter.value``: a failed lookup changes nothing and leaves no undo step.
+#
+# Live 12.4.16 runs showed two gaps: some plugins' ``str_for_value`` returns
+# the current value's text whatever it is given (issue #16), and some
+# stepped native parameters (Glue Compressor Attack/Release/Ratio, Echo
+# "L Synced") gave no options and failed display lookups (issue #44). Whether
+# those report ``is_quantized`` and ``value_items`` is not known; the code
+# below works either way, which is a guess until checked in Live.
+
+# A quantized parameter without value_items lists the display text of each
+# step as its options when it has at most this many steps.
+MAX_LISTED_STEPS = 128
+# A parameter that is not marked quantized but has a small integer raw range
+# whose half steps show no new text is treated as stepped (a guess, issue #44).
+MAX_GUESSED_STEPS = 64
+# When looking for display text, every integer step of a range up to this
+# size is sampled, along with EVEN_SAMPLES evenly spaced points.
+MAX_SAMPLED_STEPS = 256
+EVEN_SAMPLES = 33
+# Lists of display texts in error messages are cut to this many entries.
+MAX_LISTED_TEXTS = 24
+
+RAW_VALUE_HINT = 'Send {"raw": <number>} to set a raw value exactly.'
 
 
 def set_parameter_value(parameter, value):
-    """Set a raw number, or a display string such as ``"-6 dB"`` or ``"25L"``."""
+    """Set ``value`` as ``resolve_value`` reads it and return that reading."""
 
-    parameter.value = _raw_value(parameter, value)
+    reading = resolve_value(parameter, value)
+    parameter.value = reading["raw"]
+    return reading
 
 
 def _raw_value(parameter, value):
     """Validate ``value`` for ``parameter`` and return the raw value to set."""
 
+    return resolve_value(parameter, value)["raw"]
+
+
+def check_value_shape(value, label):
+    """Refuse a value that is not a number, a string or ``{"raw": number}``.
+
+    Needs no Live object, so callers can check before changing anything.
+    """
+
+    if isinstance(value, dict):
+        raw = value.get("raw")
+        if (
+            set(value) == {"raw"}
+            and isinstance(raw, (int, float))
+            and not isinstance(raw, bool)
+            and math.isfinite(raw)
+        ):
+            return
+        raise InvalidValue(
+            f"value {value!r} for '{label}' is not understood; an object value must be "
+            '{"raw": <number>}',
+            RAW_VALUE_HINT,
+        )
+    if isinstance(value, bool) or isinstance(value, str):
+        return
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return
+    raise InvalidValue(
+        f"value {value!r} for '{label}' must be a number, display text, or "
+        '{"raw": <number>}',
+        VALUE_HINT,
+    )
+
+
+def resolve_value(parameter, value):
+    """Work out the raw value that ``value`` means for ``parameter``.
+
+    - ``{"raw": n}`` is the raw value ``n``.
+    - A string is display text or an option name: ``"-6 dB"``, ``"1.00"``,
+      ``"Auto"``, ``"1/8"``.
+    - A bare number is read by ``_resolve_number`` (issue #43).
+
+    Returns ``{"raw": float, "read_as": "raw" | "display", "note": str | None}``.
+    Never writes the parameter.
+    """
+
+    name = _str(parameter.name)
     if not bool(_get(parameter, "is_enabled", True)):
         raise LiveOpsError(
-            f"parameter '{_str(parameter.name)}' is not editable right now "
+            f"parameter '{name}' is not editable right now "
             "(it may be controlled by a macro or modulation)"
         )
+    check_value_shape(value, name)
+    low, high = float(parameter.min), float(parameter.max)
+    if isinstance(value, dict):
+        raw = float(value["raw"])
+        _check_range(parameter, raw, low, high)
+        return {"raw": raw, "read_as": "raw", "note": None}
     if isinstance(value, bool):
         value = float(value)
     if isinstance(value, (int, float)):
-        raw = float(value)
-    else:
-        raw = value_for_display(parameter, str(value))
-    low, high = float(parameter.min), float(parameter.max)
+        return _resolve_number(parameter, float(value), low, high)
+    raw = value_for_display(parameter, str(value))
+    _check_range(parameter, raw, low, high)
+    return {"raw": raw, "read_as": "display", "note": None}
+
+
+def _check_range(parameter, raw, low, high, hint=VALUE_HINT):
     if raw < low or raw > high:
         raise InvalidValue(
-            f"value {raw} is outside '{_str(parameter.name)}' range {low}..{high}", VALUE_HINT
+            f"value {raw} is outside '{_str(parameter.name)}' range {low}..{high}", hint
         )
-    return raw
+
+
+def _resolve_number(parameter, number, low, high):
+    """Read a bare JSON number (issue #43).
+
+    A bare number is the raw value, except where that would surprise:
+
+    - If Live shows the raw value as that same number (a 0..127 parameter
+      showing "64" at raw 64), raw and display agree and it is set.
+    - If the parameter shows plain numbers with no unit (EQ Eight Q), or is
+      stepped with numeric steps (Glue Compressor Attack), and the number is
+      also a display value at a different raw value, it is refused as
+      ambiguous; the error names both readings.
+    - Outside the raw range, such a parameter reads it as display text.
+    - A parameter that shows units ("dB", "Hz") or option names keeps the
+      documented raw reading (Track Volume 0.85); the result's note says what
+      Live shows for it.
+    """
+
+    name = _str(parameter.name)
+    text = _format_number(number)
+    in_range = low <= number <= high
+    shown = _display(parameter, number) if in_range else None
+    if shown is not None and _number_agrees(shown, number):
+        return {"raw": number, "read_as": "raw", "note": None}
+
+    steps = _steps(parameter)
+    unitless = steps is None and _shows_plain_numbers(parameter, low, high)
+    display_raw = None
+    if steps is not None:
+        index = _match_step_number(text, steps)
+        if index is not None:
+            display_raw = low + index
+    elif unitless:
+        display_raw = _display_lookup(parameter, text)
+
+    if in_range:
+        if display_raw is not None and _display(parameter, display_raw) != shown:
+            raise InvalidValue(
+                f"{text} is ambiguous for '{name}': as a raw value it shows as '{shown}', "
+                f"but '{_display(parameter, display_raw)}' is raw {_format_number(display_raw)}",
+                f'Send the text "{text}" (a string) to set what Live shows, or '
+                f'{{"raw": {text}}} to set the raw value.',
+            )
+        if steps is not None and _plain_number(shown) is None:
+            # An option name ("On", "Bell"): the step number is the usual reading.
+            return {"raw": number, "read_as": "raw", "note": None}
+        return {
+            "raw": number,
+            "read_as": "raw",
+            "note": (
+                f"{text} was read as a raw value, which Live shows as '{shown}'. To set "
+                "what Live shows, send display text as a string (for example "
+                f'"{text}" with its unit), or {{"raw": {text}}} to keep this reading.'
+            ),
+        }
+    if display_raw is not None:
+        return {
+            "raw": display_raw,
+            "read_as": "display",
+            "note": (
+                f"{text} is outside the raw range {low}..{high}, so it was read as display "
+                f"text; Live shows '{_display(parameter, display_raw)}' at raw "
+                f"{_format_number(display_raw)}."
+            ),
+        }
+    hint = VALUE_HINT
+    if steps is None and not unitless:
+        # Name the display reading too, so the caller can see what they meant.
+        candidate = _display_lookup(parameter, text)
+        if candidate is not None:
+            hint = (
+                f"{VALUE_HINT} Live shows '{_display(parameter, candidate)}' at raw "
+                f"{_format_number(candidate)}; to set that, send the display text as a "
+                f'string, such as "{text}" with its unit.'
+            )
+    raise InvalidValue(f"value {number} is outside '{name}' range {low}..{high}", hint)
+
+
+def _display_lookup(parameter, text):
+    try:
+        return value_for_display(parameter, text)
+    except LiveOpsError:
+        return None
+
+
+def _format_number(number):
+    return f"{number:g}"
 
 
 def value_for_display(parameter, text):
-    """Find the raw value whose display matches ``text``."""
+    """Find the raw value whose display matches ``text``. Never writes."""
 
-    items = [str(item) for item in _tuple(_get(parameter, "value_items", ()))]
-    quantized = bool(_get(parameter, "is_quantized", False))
-    if quantized and items:
-        for item_index, item in enumerate(items):
-            if item.lower() == text.strip().lower():
-                return float(parameter.min) + item_index
+    name = _str(parameter.name)
+    low, high = float(parameter.min), float(parameter.max)
+    steps = _steps(parameter)
+    if steps is not None:
+        index = _match_step(text, steps)
+        if index is not None:
+            return low + index
         raise InvalidValue(
-            f"'{text}' is not an option for '{_str(parameter.name)}'. Options: {', '.join(items)}",
-            "Use one of the options listed, spelled as shown.",
+            f"'{text}' is not an option for '{name}'. "
+            f"Options: {_list_texts(_option_names(steps))}",
+            "Use one of the options listed, spelled as shown, or "
+            '{"raw": <step>} with the step number (the first option is '
+            f"{_format_number(low)}).",
         )
 
     target = parse_display_number(text)
-    if target is None:
-        low, high = float(parameter.min), float(parameter.max)
-        raise InvalidValue(
-            f"could not read a number from '{text}' for '{_str(parameter.name)}' "
-            f"(it shows '{_display(parameter, low)}' to '{_display(parameter, high)}'). "
-            f"Use a raw value between {low} and {high} instead."
+    if target is not None:
+        low_number = parse_display_number(_display(parameter, low))
+        high_number = parse_display_number(_display(parameter, high))
+        if None not in (low_number, high_number) and low_number != high_number:
+            return _search_display(parameter, _display, low, high, target, text)
+
+    # The ends do not show distinct numbers: the display is text ("1/8"), or
+    # Live gives the same text for every value. Look at what Live shows
+    # across the range and match the text against that.
+    samples = _sample_displays(parameter, low, high)
+    index = _match_step(text, [(None, shown) for _raw, shown in samples])
+    if index is not None:
+        return samples[index][0]
+    raise _no_display_match(parameter, text, target, samples, low, high)
+
+
+def _no_display_match(parameter, text, target, samples, low, high):
+    name = _str(parameter.name)
+    seen = [shown for _raw, shown in samples]
+    lead = "" if target is not None else f"could not read a number from '{text}' for '{name}'. "
+    if len(seen) == 1:
+        return InvalidValue(
+            f"{lead}'{name}' shows '{seen[0]}' for every value Live was asked about "
+            f"(raw {low} to {high}), so display text cannot be matched. Live's "
+            "str_for_value may only format the current value (as some plugins do), or "
+            "the display may depend on another parameter such as a sync or mode switch. "
+            f"Use a raw value between {low} and {high} instead.",
+            RAW_VALUE_HINT,
         )
+    return InvalidValue(
+        f"{lead}no value of '{name}' shows '{text}'. Across raw {low} to {high} it shows: "
+        f"{_list_texts(seen)}. Send one of those, or a raw value between {low} and {high}.",
+        RAW_VALUE_HINT,
+    )
+
+
+def _steps(parameter):
+    """``(option name, display text)`` per step of a stepped parameter, or None.
+
+    Step ``i`` is raw ``min + i``. Option names come from ``value_items``
+    when Live gives them; display text from ``str_for_value``. Returns None
+    when the steps cannot be named, for example when ``str_for_value`` shows
+    the same text for every step.
+    """
+
     low, high = float(parameter.min), float(parameter.max)
-    # Only str_for_value is read here; the parameter is never written while
-    # searching, so a failed match changes nothing and leaves no undo step.
-    return _search_display(parameter, _display, low, high, target, text, quantized)
+    items = [str(item) for item in _tuple(_get(parameter, "value_items", ()))]
+    quantized = bool(_get(parameter, "is_quantized", False))
+    if quantized and items:
+        return [(item, _display(parameter, low + i)) for i, item in enumerate(items)]
+    if not (low.is_integer() and high.is_integer() and high > low):
+        return None
+    span = int(high - low)
+    if quantized:
+        if span > MAX_LISTED_STEPS:
+            return None
+    else:
+        # A guess (issue #44): a small integer range whose half step shows the
+        # text of a neighbouring step behaves like a chooser.
+        if span < 2 or span > MAX_GUESSED_STEPS:
+            return None
+        half = _display(parameter, low + 0.5)
+        if half not in (_display(parameter, low), _display(parameter, low + 1)):
+            return None
+    shown = [_display(parameter, low + i) for i in range(span + 1)]
+    if len(set(shown)) < 2:
+        return None
+    return [(None, text) for text in shown]
 
 
-def _search_display(parameter, reader, low, high, target, text, quantized):
+def _option_names(steps):
+    return [item if item is not None else shown for item, shown in steps]
+
+
+def _match_step(text, steps):
+    """Index of the step ``text`` names: exact text, then number, then prefix."""
+
+    wanted = text.strip().lower()
+    if not wanted:
+        return None
+    for index, names in enumerate(steps):
+        if any(name is not None and name.strip().lower() == wanted for name in names):
+            return index
+    if _plain_number(text) is not None:
+        return _match_step_number(text, steps)
+    # "Auto" for a step Live shows as "A", or "Sp" for "Sparse"; only when
+    # exactly one step fits.
+    found = {
+        index
+        for index, names in enumerate(steps)
+        for name in names
+        if name is not None
+        and name.strip()
+        and (name.strip().lower().startswith(wanted) or wanted.startswith(name.strip().lower()))
+    }
+    return found.pop() if len(found) == 1 else None
+
+
+def _match_step_number(text, steps):
+    wanted = _plain_number(text)
+    if wanted is None:
+        return None
+    for index, names in enumerate(steps):
+        for name in names:
+            shown = _plain_number(name) if name is not None else None
+            if shown is not None and _numbers_match(wanted, shown):
+                return index
+    return None
+
+
+_PLAIN = re.compile(r"^\s*([-+]?(?:\d+\.?\d*|\.\d+))\s*([a-z%]*)\s*$", re.IGNORECASE)
+
+
+def _plain_number(text):
+    """``(number, decimals, unit)`` when ``text`` is one number with an optional
+    unit ("1.00", ".1", "10 ms", "50 %"), else None. "1/8" is not one."""
+
+    match = _PLAIN.match(str(text))
+    if not match:
+        return None
+    digits = match.group(1)
+    decimals = len(digits.split(".")[1]) if "." in digits else 0
+    return float(digits), decimals, match.group(2).lower()
+
+
+def _numbers_match(wanted, shown):
+    """Whether a typed number names a displayed one, at the display's resolution."""
+
+    number, _decimals, unit = wanted
+    shown_number, decimals, shown_unit = shown
+    tolerance = 0.5 * 10 ** -decimals + 1e-9
+    if unit and shown_unit and unit != shown_unit:
+        if unit not in _UNIT_SCALE or shown_unit not in _UNIT_SCALE:
+            return False
+        scale = _UNIT_SCALE[shown_unit]
+        return abs(number * _UNIT_SCALE[unit] - shown_number * scale) <= tolerance * scale
+    return abs(number - shown_number) <= tolerance
+
+
+def _number_agrees(shown, number):
+    """Whether Live's text for raw ``number`` reads as that same number."""
+
+    plain = _plain_number(shown)
+    return plain is not None and _numbers_match((number, 0, ""), plain)
+
+
+def _shows_plain_numbers(parameter, low, high):
+    """Whether the display is a bare number with no unit at both ends."""
+
+    for raw in (low, high):
+        plain = _plain_number(_display(parameter, raw))
+        if plain is None or plain[2]:
+            return False
+    return True
+
+
+def _sample_displays(parameter, low, high):
+    """Distinct display texts across the range, as ``(raw, text)`` in raw order.
+
+    Samples every integer step when the range is integer and at most
+    MAX_SAMPLED_STEPS wide, plus EVEN_SAMPLES evenly spaced points. Reads
+    ``str_for_value`` only.
+    """
+
+    points = {low, high}
+    if low.is_integer() and high.is_integer() and 0 < high - low <= MAX_SAMPLED_STEPS:
+        points.update(low + i for i in range(int(high - low) + 1))
+    if high > low:
+        points.update(low + (high - low) * i / (EVEN_SAMPLES - 1) for i in range(EVEN_SAMPLES))
+    seen = {}
+    for raw in sorted(points):
+        seen.setdefault(_display(parameter, raw), raw)
+    return [(raw, text) for text, raw in seen.items()]
+
+
+def _list_texts(texts):
+    texts = list(texts)
+    if len(texts) <= MAX_LISTED_TEXTS:
+        return ", ".join(texts)
+    head = ", ".join(texts[: MAX_LISTED_TEXTS - 1])
+    return f"{head}, ... {texts[-1]} ({len(texts)} in all)"
+
+
+def _search_display(parameter, reader, low, high, target, text):
+    """Bisect for the raw value whose number display is ``target``.
+
+    The caller has checked that both ends show distinct numbers.
+    """
+
     def number(value):
         return parse_display_number(reader(parameter, value))
 
     low_number, high_number = number(low), number(high)
-    if low_number is None or high_number is None:
-        raise InvalidValue(
-            f"'{_str(parameter.name)}' does not show numeric values "
-            f"(it shows '{reader(parameter, low)}' to '{reader(parameter, high)}')"
-        )
-    if low_number == high_number:
-        raise InvalidValue(
-            f"'{_str(parameter.name)}' shows '{reader(parameter, low)}' for every value, so "
-            "display text cannot be matched. Use a raw value between "
-            f"{low} and {high} instead."
-        )
     rising = high_number >= low_number
     bottom, top = (low_number, high_number) if rising else (high_number, low_number)
     if target <= bottom or target >= top:
@@ -1744,7 +2151,7 @@ def _search_display(parameter, reader, low, high, target, text, quantized):
         result = (start + stop) / 2.0
     else:
         result = start
-    if quantized:
+    if bool(_get(parameter, "is_quantized", False)):
         result = float(round(result))
     _check_display_match(parameter, reader, result, target, text, low, high)
     return result
@@ -2028,7 +2435,12 @@ def _param_payload(parameter, compact=False, original_name=False):
         payload["original_name"] = _str(_get(parameter, "original_name", parameter.name))
     payload["min"] = float(parameter.min)
     payload["max"] = float(parameter.max)
-    if bool(_get(parameter, "is_quantized", False)):
+    steps = _steps(parameter)
+    if steps is not None:
+        # Option names, or each step's display text when Live lists none
+        # (Glue Compressor Release, issue #44).
+        payload["options"] = _option_names(steps)
+    elif bool(_get(parameter, "is_quantized", False)):
         payload["options"] = [str(item) for item in _tuple(_get(parameter, "value_items", ()))]
     return payload
 

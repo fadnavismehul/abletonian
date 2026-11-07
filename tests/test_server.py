@@ -191,6 +191,27 @@ class LiveControlToolTests(unittest.TestCase):
             ],
         )
 
+    def test_parameter_values_keep_their_form(self) -> None:
+        # Issue #43: a string is display text, {"raw": n} is raw, and a bare
+        # number stays a number for the Remote Script to read.
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+        target = {"track": "16 Vox", "device": 0, "parameter": "2 Q A"}
+
+        for value in ("1.00", {"raw": 1.0}, 1):
+            asyncio.run(mcp.call_tool("set_device_parameter", {**target, "value": value}))
+        asyncio.run(
+            mcp.call_tool(
+                "insert_device",
+                {"track": 0, "device_name": "EQ Eight", "parameters": {"2 Q A": {"raw": 0.5}}},
+            )
+        )
+
+        values = [params.get("value") for _method, params in bridge.requests[:3]]
+        self.assertEqual(values, ["1.00", {"raw": 1.0}, 1])
+        self.assertIsInstance(values[0], str)
+        self.assertEqual(bridge.requests[3][1]["parameters"], {"2 Q A": {"raw": 0.5}})
+
     def test_track_accepts_index_or_name(self) -> None:
         bridge = PassthroughBridge()
         mcp = build_mcp(AbletonianConfig(), bridge=bridge)
