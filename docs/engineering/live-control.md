@@ -32,7 +32,8 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | MCP tool | Bridge method | What it does |
 | --- | --- | --- |
 | `list_tracks` | `ableton.list_tracks` | Names, group parent, colour, output routing, volume, pan, sends, mute/solo, device names. Covers regular, return, and main tracks. The tool defaults to `detail="compact"` (levels as display text, no routing options), about a quarter of the size, so large sets fit; `detail="full"` adds raw values and the output routing choices. `name` keeps tracks whose name contains it. |
-| `list_devices` | `ableton.list_devices` | Devices per track (or all tracks), rack chains, and every parameter with raw value, range, display text, and options. |
+| `list_devices` | `ableton.list_devices` | Devices per track (or all tracks) with name, path, class and on/off, and rack chains with index, name and device count. The tool defaults to `detail="compact"` (no parameters; issue #42, a full dump of one Drum Rack track reached 2.5 MB). `detail="full"` or `include_parameters=true` adds every parameter with raw value, range, display text, and options. `max_depth` (0-4, default 4) limits how many rack levels have their chains expanded; `max_depth=0` lists a Drum Rack's chains by name and device count only (`"truncated": true`). Without `detail` or `include_parameters` the bridge keeps its old default (full for one track, compact for all tracks); the tool always sends `include_parameters`. Read-only. |
+| `get_device` | `ableton.get_device` | One device, by the same index, name or path the write tools take, with its parameters (raw value, display text, min/max, options, original name). `parameters` keeps only those whose name or original name contains it (case-insensitive; Utility's `Gain` alias works), or any of a list. A rack's chains are listed by name and device count only. Use it to read one value instead of a whole `list_devices` dump. Read-only. |
 | `generate_macro_cockpit` | `ableton.get_selected_rack_macros` | Read the selected Rack's macros (read-only) and return a grouped Macro Cockpit spec plus a text summary. See [RFC 0002](../rfcs/0002-selected-rack-macro-cockpit.md). |
 | `save_macro_cockpit` | none | Save a cockpit generated in this session as a JSON file, so it can be reopened. Cockpits are temporary until saved. |
 | `list_saved_macro_cockpits` | none | List saved cockpits. |
@@ -105,7 +106,10 @@ name the parameter does not list (Mode "Andromeda"), the call is refused with
 the display at both ends and the raw range. Use raw values for plugins.
 
 Some API names differ from the device UI. Utility's gain knob is `Output` in
-the API; `Gain` is accepted as an alias. `list_devices` shows the API names.
+the API; `Gain` is accepted as an alias. `list_devices` with `detail="full"`
+and `get_device` show the API names; `get_device` also shows each
+parameter's `original_name` (`DeviceParameter.original_name`, Cycling '74
+LOM docs).
 
 ### Undo
 

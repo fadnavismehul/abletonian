@@ -102,7 +102,25 @@ class DeviceQuery(_Request):
     OPERATION: ClassVar[str] = "list_devices"
 
     track: TrackRef | None = None
+    # True lists every parameter ("full"); the MCP tool sends False by default.
     include_parameters: bool = True
+    max_depth: int | None = None
+
+
+@dataclass(frozen=True)
+class DeviceRead(_Request):
+    OPERATION: ClassVar[str] = "get_device"
+
+    track: TrackRef
+    device: DeviceRef
+    # A name or substring, or a list of them; None returns every parameter.
+    parameters: str | tuple[str, ...] | None = None
+
+    def params(self) -> dict[str, Any]:
+        out = super().params()
+        if isinstance(self.parameters, tuple):
+            out["parameters"] = list(self.parameters)
+        return out
 
 
 @dataclass(frozen=True)
@@ -315,6 +333,8 @@ class DawAdapter(Protocol):
     def list_tracks(self, query: TrackQuery) -> dict[str, Any]: ...
 
     def list_devices(self, query: DeviceQuery) -> dict[str, Any]: ...
+
+    def get_device(self, request: DeviceRead) -> dict[str, Any]: ...
 
     def get_selected_rack_macros(self, ref: RackRef) -> dict[str, Any]: ...
 

@@ -18,6 +18,7 @@ from abletonian.adapters.base import (
     DeviceDelete,
     DeviceInsert,
     DeviceQuery,
+    DeviceRead,
     MixerChange,
     ParameterChange,
     RackRef,
@@ -88,6 +89,9 @@ class RemoteScriptAdapter:
 
     def list_devices(self, query: DeviceQuery) -> dict[str, Any]:
         return self._send(query)
+
+    def get_device(self, request: DeviceRead) -> dict[str, Any]:
+        return self._send(request)
 
     def get_selected_rack_macros(self, ref: RackRef) -> dict[str, Any]:
         return self._send(ref)

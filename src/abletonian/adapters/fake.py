@@ -14,6 +14,7 @@ from abletonian.adapters.base import (
     DeviceDelete,
     DeviceInsert,
     DeviceQuery,
+    DeviceRead,
     MixerChange,
     ParameterChange,
     RackRef,
@@ -254,6 +255,9 @@ class FakeAbletonAdapter:
 
     def list_devices(self, query: DeviceQuery) -> dict[str, Any]:
         raise UnsupportedOperation(DeviceQuery.OPERATION)
+
+    def get_device(self, request: DeviceRead) -> dict[str, Any]:
+        raise UnsupportedOperation(DeviceRead.OPERATION)
 
     def set_device_parameter(self, change: ParameterChange) -> dict[str, Any]:
         raise UnsupportedOperation(ParameterChange.OPERATION)

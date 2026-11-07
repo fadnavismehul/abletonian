@@ -104,6 +104,7 @@ def _batch_confirm(batch: Batch) -> str | None:
 _OPERATIONS = (
     Operation("list_tracks", SafetyClass.READ_ONLY, "list_tracks"),
     Operation("list_devices", SafetyClass.READ_ONLY, "list_devices"),
+    Operation("get_device", SafetyClass.READ_ONLY, "get_device"),
     Operation("get_selected_rack_macros", SafetyClass.READ_ONLY, "read_rack_macros"),
     Operation("plan_drum_rack_extraction", SafetyClass.READ_ONLY, "plan_drum_rack_extraction"),
     Operation(

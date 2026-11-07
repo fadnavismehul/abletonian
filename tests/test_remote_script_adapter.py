@@ -10,6 +10,7 @@ from abletonian.adapters.base import (
     DeviceDelete,
     DeviceInsert,
     DeviceQuery,
+    DeviceRead,
     MixerChange,
     ParameterChange,
     RackRef,
@@ -80,6 +81,28 @@ class WireShapeTests(unittest.TestCase):
             (
                 lambda: self.adapter.list_devices(DeviceQuery(track=2)),
                 ("ableton.list_devices", {"track": 2, "include_parameters": True}),
+            ),
+            (
+                lambda: self.adapter.list_devices(
+                    DeviceQuery(track=2, include_parameters=False, max_depth=0)
+                ),
+                (
+                    "ableton.list_devices",
+                    {"track": 2, "include_parameters": False, "max_depth": 0},
+                ),
+            ),
+            (
+                lambda: self.adapter.get_device(
+                    DeviceRead(track="Kit", device="Kit/4/Guiro Short", parameters=("Gain", "Pan"))
+                ),
+                (
+                    "ableton.get_device",
+                    {"track": "Kit", "device": "Kit/4/Guiro Short", "parameters": ["Gain", "Pan"]},
+                ),
+            ),
+            (
+                lambda: self.adapter.get_device(DeviceRead(track=0, device=1)),
+                ("ableton.get_device", {"track": 0, "device": 1}),
             ),
             (
                 lambda: self.adapter.get_selected_rack_macros(RackRef()),

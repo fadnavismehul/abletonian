@@ -132,6 +132,7 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "execute_drum_rack_extraction",
                 "list_tracks",
                 "list_devices",
+                "get_device",
                 "read_rack_macros",
                 "set_device_parameter",
                 "set_track_output_routing",

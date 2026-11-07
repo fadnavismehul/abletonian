@@ -24,6 +24,7 @@ PARAMETER_ALIASES = {
 # Live 12 racks have up to 16 macros.
 MAX_RACK_MACROS = 16
 # Racks inside racks are listed this deep; deeper chains are marked truncated.
+# list_devices' max_depth can lower it (issue #42).
 MAX_RACK_DEPTH = 4
 
 BATCHABLE_METHODS = (
@@ -162,11 +163,40 @@ def list_tracks(song, params):
 
 
 def list_devices(song, params):
+    """List devices on one track, or on every track. Never changes the Live Set.
+
+    ``detail`` is "compact" (no parameters) or "full" (every parameter of
+    every listed device). ``include_parameters`` is the older switch and wins
+    when given: true is "full", false is "compact". With neither, the bridge
+    keeps its old default: "full" for one track, "compact" for the whole set
+    (the MCP tool always sends one, defaulting to compact).
+    ``max_depth`` is how many rack levels have their chains expanded
+    (0..MAX_RACK_DEPTH, default MAX_RACK_DEPTH); chains below it are listed by
+    index, name and device count only, marked ``truncated`` (issue #42).
+    """
+
     track_ref = params.get("track")
+    detail = params.get("detail")
+    if detail not in (None, "full", "compact"):
+        raise InvalidValue(f"detail must be 'full' or 'compact', got '{detail}'")
     include_parameters = params.get("include_parameters")
     if include_parameters is None:
         # Every parameter of every device can exceed the bridge frame limit.
-        include_parameters = track_ref is not None
+        include_parameters = detail == "full" if detail else track_ref is not None
+    elif not isinstance(include_parameters, bool):
+        raise InvalidValue("include_parameters must be true or false")
+    detail = "full" if include_parameters else "compact"
+    max_depth = params.get("max_depth")
+    if max_depth is None:
+        max_depth = MAX_RACK_DEPTH
+    elif (
+        isinstance(max_depth, bool)
+        or not isinstance(max_depth, int)
+        or not 0 <= max_depth <= MAX_RACK_DEPTH
+    ):
+        raise InvalidValue(
+            f"max_depth must be a whole number from 0 to {MAX_RACK_DEPTH}, got {max_depth!r}"
+        )
     if track_ref is None:
         targets = _all_tracks(song)
     else:
@@ -177,14 +207,90 @@ def list_devices(song, params):
                 "track": _track_ref_payload(kind, index, track),
                 "devices": [
                     _device_payload(
-                        device, device_index, include_parameters, track, device_index
+                        device,
+                        device_index,
+                        include_parameters,
+                        track,
+                        device_index,
+                        max_depth=max_depth,
                     )
                     for device_index, device in enumerate(_tuple(track.devices))
                 ],
             }
             for kind, index, track in targets
-        ]
+        ],
+        "detail": detail,
+        "max_depth": max_depth,
     }
+
+
+def get_device(song, params):
+    """Read one device and its parameters. Never changes the Live Set.
+
+    ``device`` takes the same index, name or rack path as
+    set_device_parameter. ``parameters`` optionally keeps only parameters
+    whose name (or original name, or a known alias such as Utility's "Gain")
+    contains it, case-insensitively; a list keeps parameters matching any
+    entry. Rack chains are listed by index, name and device count only.
+    Reads Device.parameters, DeviceParameter.name/original_name/value/min/
+    max/is_quantized/value_items and RackDevice.chains/return_chains with
+    Chain.devices (Cycling '74 LOM docs; all already used by list_devices
+    and get_selected_rack_macros). Not yet run in Live.
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    path, device_index, device, _owner = resolve_device_path(track, _required(params, "device"))
+    wanted = _parameter_filter(params.get("parameters"))
+    parameters = _tuple(device.parameters)
+    selected = [
+        (i, parameter)
+        for i, parameter in enumerate(parameters)
+        if wanted is None or _parameter_matches(device, parameter, wanted)
+    ]
+    if wanted is not None and not selected:
+        names = ", ".join(_str(p.name) for p in parameters) or "(none)"
+        raise NotFound(
+            f"no parameter matching {', '.join(repr(w) for w in wanted)} on "
+            f"'{_str(device.name)}'. Parameters: {names}",
+            DEVICE_HINT,
+        )
+    payload = _device_summary(device, device_index, path)
+    if bool(_get(device, "can_have_chains", False)):
+        payload["chains"] = _chain_summaries(_get(device, "chains", ()))
+        return_chains = _tuple(_get(device, "return_chains", ()))
+        if return_chains:
+            payload["return_chains"] = _chain_summaries(return_chains)
+    payload["parameter_count"] = len(parameters)
+    payload["parameters"] = [
+        {"index": i, **_param_payload(parameter, original_name=True)} for i, parameter in selected
+    ]
+    return {"track": _track_ref_payload(kind, index, track), "device": payload}
+
+
+def _parameter_filter(value):
+    if value is None:
+        return None
+    items = [value] if isinstance(value, str) else value
+    if (
+        not isinstance(items, (list, tuple))
+        or not items
+        or not all(isinstance(item, str) and item.strip() for item in items)
+    ):
+        raise InvalidValue("parameters must be a name, or a list of names, to look for")
+    return [item.strip().lower() for item in items]
+
+
+def _parameter_matches(device, parameter, wanted):
+    aliases = PARAMETER_ALIASES.get(_str(_get(device, "class_name", "")), {})
+    names = [
+        _str(parameter.name).lower(),
+        _str(_get(parameter, "original_name", "")).lower(),
+    ]
+    for text in wanted:
+        targets = (text, aliases.get(text, text).lower())
+        if any(target in name for target in targets for name in names if name):
+            return True
+    return False
 
 
 def get_selected_rack_macros(song, params):
@@ -1179,20 +1285,17 @@ def _routing_payload(track):
     return payload
 
 
-def _device_payload(device, index, include_parameters, track, top_index, tail=(), depth=0):
+def _device_payload(
+    device, index, include_parameters, track, top_index, tail=(), depth=0, max_depth=MAX_RACK_DEPTH
+):
     """``track``/``top_index``/``tail`` locate the device so its printed
     ``path`` can be checked to resolve back to it (None if it cannot)."""
 
-    payload = {
-        "index": index,
-        "name": _str(device.name),
-        "path": _printable_path(track, top_index, list(tail), device),
-        "class_name": _str(_get(device, "class_name", "")),
-        "class_display_name": _str(_get(device, "class_display_name", "")),
-        "is_active": bool(_get(device, "is_active", True)),
-    }
+    payload = _device_summary(
+        device, index, _printable_path(track, top_index, list(tail), device)
+    )
     if bool(_get(device, "can_have_chains", False)):
-        context = (include_parameters, track, top_index, depth)
+        context = (include_parameters, track, top_index, depth, max_depth)
         payload["chains"] = _chains_payload(_get(device, "chains", ()), tail, *context)
         return_chains = _tuple(_get(device, "return_chains", ()))
         if return_chains:
@@ -1207,17 +1310,44 @@ def _device_payload(device, index, include_parameters, track, top_index, tail=()
     return payload
 
 
-def _chains_payload(chains, tail, include_parameters, track, top_index, depth):
+def _device_summary(device, index, path):
+    return {
+        "index": index,
+        "name": _str(device.name),
+        "path": path,
+        "class_name": _str(_get(device, "class_name", "")),
+        "class_display_name": _str(_get(device, "class_display_name", "")),
+        "is_active": bool(_get(device, "is_active", True)),
+    }
+
+
+def _chain_summaries(chains):
+    """Chains by index, name and device count, without their devices."""
+
+    return [
+        {
+            "index": i,
+            "name": _str(chain.name),
+            "device_count": len(_tuple(_get(chain, "devices", ()))),
+            "truncated": True,
+        }
+        for i, chain in enumerate(_tuple(chains))
+    ]
+
+
+def _chains_payload(chains, tail, include_parameters, track, top_index, depth, max_depth):
     chains = _tuple(chains)
-    if depth >= MAX_RACK_DEPTH:
-        return [{"name": _str(chain.name), "truncated": True} for chain in chains]
+    if depth >= max_depth:
+        return _chain_summaries(chains)
     result = []
     for chain_index, chain in enumerate(chains):
         chain_tail = (*tail, _path_segment(chains, chain_index))
         devices = _tuple(chain.devices)
         result.append(
             {
+                "index": chain_index,
                 "name": _str(chain.name),
+                "device_count": len(devices),
                 "devices": [
                     _device_payload(
                         device,
@@ -1227,6 +1357,7 @@ def _chains_payload(chains, tail, include_parameters, track, top_index, depth):
                         top_index,
                         (*chain_tail, _path_segment(devices, i)),
                         depth + 1,
+                        max_depth,
                     )
                     for i, device in enumerate(devices)
                 ],
@@ -1235,12 +1366,14 @@ def _chains_payload(chains, tail, include_parameters, track, top_index, depth):
     return result
 
 
-def _param_payload(parameter, compact=False):
+def _param_payload(parameter, compact=False, original_name=False):
     value = float(parameter.value)
     payload = {"value": value, "display": _display(parameter, value)}
     if compact:
         return payload
     payload = {"name": _str(parameter.name), **payload}
+    if original_name:
+        payload["original_name"] = _str(_get(parameter, "original_name", parameter.name))
     payload["min"] = float(parameter.min)
     payload["max"] = float(parameter.max)
     if bool(_get(parameter, "is_quantized", False)):
@@ -1409,6 +1542,7 @@ def _tuple(value):
 _HANDLERS = {
     "ableton.list_tracks": list_tracks,
     "ableton.list_devices": list_devices,
+    "ableton.get_device": get_device,
     "ableton.get_selected_rack_macros": get_selected_rack_macros,
     "ableton.set_device_parameter": set_device_parameter,
     "ableton.set_track_output_routing": set_track_output_routing,

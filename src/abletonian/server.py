@@ -18,6 +18,7 @@ from abletonian.adapters.base import (
     DeviceDelete,
     DeviceInsert,
     DeviceQuery,
+    DeviceRead,
     MixerChange,
     ParameterChange,
     RackRef,
@@ -276,16 +277,61 @@ def build_mcp(
         )
 
     @mcp.tool(annotations=_op("list_devices"))
-    def list_devices(track: int | str | None = None, include_parameters: bool = True) -> str:
-        """List devices on one track (or every track when track is omitted), with
-        each parameter's raw value, range, display text, and options. Devices
-        inside racks are listed under their chains (and Drum Rack return
-        chains) with a "path" that set_device_parameter and delete_device
-        accept. Read-only."""
+    def list_devices(
+        track: int | str | None = None,
+        detail: str = "compact",
+        include_parameters: bool | None = None,
+        max_depth: int | None = None,
+    ) -> str:
+        """List devices on one track (or every track when track is omitted).
+        Read-only: never changes the Live Set.
 
+        detail "compact" (default) gives each device's name, path, class and
+        on/off state, and each rack chain's name and device count, with no
+        parameters. Devices inside racks are listed under their chains (and
+        Drum Rack return chains) with a "path" that get_device,
+        set_device_parameter and delete_device accept. To read parameters, use
+        get_device on one path (optionally with a parameter name filter).
+
+        detail "full" (or include_parameters=true) adds every parameter of
+        every device with raw value, range, display text and options. That is
+        large: a track with a Drum Rack can reach megabytes (2.5 MB seen), so
+        start with compact.
+
+        max_depth (0-4, default 4) is how many rack levels have their chains
+        expanded. max_depth=0 lists a Drum Rack's chains by index, name and
+        device count only ("truncated": true), without their devices.
+        """
+
+        if detail not in ("compact", "full"):
+            return f"detail must be 'compact' or 'full', got '{detail}'. Nothing was read."
+        if include_parameters is None:
+            include_parameters = detail == "full"
         return send(
-            "list_devices", DeviceQuery(track=track, include_parameters=include_parameters)
+            "list_devices",
+            DeviceQuery(track=track, include_parameters=include_parameters, max_depth=max_depth),
         )
+
+    @mcp.tool(annotations=_op("get_device"))
+    def get_device(
+        track: int | str,
+        device: int | str,
+        parameters: str | list[str] | None = None,
+    ) -> str:
+        """Read one device's parameters: raw value, display text, min/max range,
+        and options for switches and menus. Read-only: never changes the Live
+        Set.
+
+        device is an index, a device name, or a path from list_devices, the
+        same as set_device_parameter takes (for example "Drum Rack/Kick/Simpler"
+        or "Drum Rack/4/Guiro Short"). parameters keeps only parameters whose
+        name contains it (case-insensitive), or any of a list of names; omit it
+        for all of them. Use this to check one value before or after setting
+        it. Rack chains are listed by name and device count only.
+        """
+
+        wanted = tuple(parameters) if isinstance(parameters, list) else parameters
+        return send("get_device", DeviceRead(track=track, device=device, parameters=wanted))
 
     @mcp.tool(annotations=_op("set_device_parameter"))
     def set_device_parameter(

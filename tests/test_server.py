@@ -201,6 +201,62 @@ class LiveControlToolTests(unittest.TestCase):
         self.assertEqual(bridge.requests[0][1], {"track": 3, "routing_type": "Main"})
         self.assertEqual(bridge.requests[1][1], {"track": "Vox", "sends": {"A": "-12 dB"}})
 
+    def test_list_devices_is_compact_by_default(self) -> None:
+        """Issue #42: parameters only when asked for."""
+
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(mcp.call_tool("list_devices", {"track": "Kit"}))
+        asyncio.run(mcp.call_tool("list_devices", {"track": "Kit", "detail": "full"}))
+        asyncio.run(mcp.call_tool("list_devices", {"track": "Kit", "include_parameters": True}))
+        asyncio.run(mcp.call_tool("list_devices", {"max_depth": 0}))
+
+        self.assertEqual(
+            [params for _method, params in bridge.requests],
+            [
+                {"track": "Kit", "include_parameters": False},
+                {"track": "Kit", "include_parameters": True},
+                {"track": "Kit", "include_parameters": True},
+                {"include_parameters": False, "max_depth": 0},
+            ],
+        )
+
+    def test_list_devices_rejects_unknown_detail(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        result = asyncio.run(mcp.call_tool("list_devices", {"detail": "everything"}))
+
+        self.assertIn("detail must be", tool_text(result))
+        self.assertEqual(bridge.requests, [])
+
+    def test_get_device_sends_one_device_and_a_filter(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(
+            mcp.call_tool(
+                "get_device", {"track": 0, "device": "Kit/4/Guiro Short", "parameters": "Gain"}
+            )
+        )
+        asyncio.run(
+            mcp.call_tool("get_device", {"track": 0, "device": 1, "parameters": ["A", "B"]})
+        )
+        asyncio.run(mcp.call_tool("get_device", {"track": 0, "device": "Utility"}))
+
+        self.assertEqual(
+            bridge.requests,
+            [
+                (
+                    "ableton.get_device",
+                    {"track": 0, "device": "Kit/4/Guiro Short", "parameters": "Gain"},
+                ),
+                ("ableton.get_device", {"track": 0, "device": 1, "parameters": ["A", "B"]}),
+                ("ableton.get_device", {"track": 0, "device": "Utility"}),
+            ],
+        )
+
     def test_batch_passes_operations_through(self) -> None:
         bridge = PassthroughBridge()
         mcp = build_mcp(AbletonianConfig(), bridge=bridge)
@@ -225,7 +281,13 @@ class ToolAnnotationTests(unittest.TestCase):
                 self.assertIsNotNone(tool.annotations.read_only_hint)
 
     def test_reads_are_read_only(self) -> None:
-        reads = ("list_tracks", "list_devices", "generate_macro_cockpit", "check_bridge_health")
+        reads = (
+            "list_tracks",
+            "list_devices",
+            "get_device",
+            "generate_macro_cockpit",
+            "check_bridge_health",
+        )
         for name in reads:
             with self.subTest(tool=name):
                 self.assertTrue(self.tools[name].annotations.read_only_hint)
