@@ -503,7 +503,15 @@ def set_clip_gain(song, params):
         raw = _search_display(probe, probe.read, 0.0, 1.0, target, text)
         note = _clamp_note(f"the {probe.name}", text, probe.read(probe, raw), raw, 0.0, 1.0)
     except Exception as exc:
-        clip.gain = original
+        try:
+            clip.gain = original
+        except Exception as restore_exc:
+            raise LiveOpsError(
+                f"{exc}. Putting the clip gain back then failed too ({restore_exc}), so "
+                f"the gain of clip '{_str(clip.name)}' on '{_str(track.name)}' could NOT "
+                f"be put back; it was '{before['gain_display']}' (raw {original}).",
+                "Set the clip gain in Live yourself, or press Undo.",
+            ) from exc
         if isinstance(exc, LiveOpsError):
             raise type(exc)(f"{exc}. The clip gain was put back.", exc.hint) from exc
         raise
@@ -2626,9 +2634,11 @@ class _ClipGainProbe:
 
 def _check_probe(probe):
     # If the display lags a write, or never changes, bisection would find a
-    # wrong gain. Write both ends twice and check each read matches its end.
-    shown = [probe.read(probe, value) for value in (0.0, 1.0, 0.0, 1.0)]
-    if shown[0] != shown[2] or shown[1] != shown[3] or shown[0] == shown[1]:
+    # wrong gain. Write 0, 1, 1, 0: a display that lags by one write shows a
+    # different text for the two writes of 1 (or the two of 0), whatever the
+    # original gain was. 0, 1, 0, 1 would pass a lag when the gain was 1.
+    shown = [probe.read(probe, value) for value in (0.0, 1.0, 1.0, 0.0)]
+    if shown[1] != shown[2] or shown[0] != shown[3] or shown[0] == shown[1]:
         raise LiveOpsError(
             f"Live's gain display for the {probe.name} did not follow the value, so a dB "
             f"value cannot be matched (read {', '.join(repr(text) for text in shown)})",
@@ -2704,12 +2714,23 @@ def _apply_routing(target, direction, wanted_type, wanted_channel, labels):
     """
 
     type_label, channel_label, type_noun = labels
+    if direction == "input":
+        # list_devices shows only the current sidechain source, not the choices.
+        hint = (
+            "Use one of the names listed: they are every source Live offers this device "
+            "right now."
+        )
+    else:
+        hint = "Use one of the names listed, or list_tracks with detail 'full' for every choice."
     previous_type = getattr(target, f"{direction}_routing_type")
     setattr(
         target,
         f"{direction}_routing_type",
         _match_routing(
-            getattr(target, f"available_{direction}_routing_types"), wanted_type, type_label
+            getattr(target, f"available_{direction}_routing_types"),
+            wanted_type,
+            type_label,
+            hint,
         ),
     )
     if wanted_channel is not None:
@@ -2720,17 +2741,19 @@ def _apply_routing(target, direction, wanted_type, wanted_channel, labels):
                 getattr(target, f"available_{direction}_routing_channels"),
                 wanted_channel,
                 channel_label,
+                hint,
             )
         except LiveOpsError as exc:
             setattr(target, f"{direction}_routing_type", previous_type)
             raise LiveOpsError(
                 f"{exc}. The {type_noun} was put back; Live may still list this as an "
-                "undo step that changes nothing."
+                "undo step that changes nothing.",
+                exc.hint,
             ) from exc
         setattr(target, f"{direction}_routing_channel", channel)
 
 
-def _match_routing(available, wanted, label):
+def _match_routing(available, wanted, label, hint):
     options = _tuple(available)
     wanted_text = str(wanted).strip().lower()
     for option in options:
@@ -2746,10 +2769,7 @@ def _match_routing(available, wanted, label):
     if len(numbered) == 1:
         return numbered[0]
     names = ", ".join(_str(_get(option, "display_name", "")) for option in options)
-    raise NotFound(
-        f"no {label} '{wanted}'. Available: {names}",
-        "Use one of the names listed, or list_tracks with detail 'full' for every choice.",
-    )
+    raise NotFound(f"no {label} '{wanted}'. Available: {names}", hint)
 
 
 def _resolve_send(ref, return_names, send_count):

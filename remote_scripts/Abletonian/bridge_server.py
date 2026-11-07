@@ -159,6 +159,8 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "create_return_track",
                 "create_track",
                 "delete_device",
+                # No Operation needs it: it says list_devices reports
+                # "sidechain", so its absence on a device means no sidechain.
                 "read_device_sidechain",
                 "set_device_sidechain",
                 "list_clips",

@@ -368,6 +368,8 @@ def build_mcp(
         on the track. gain_db is a number of dB (-3) or text ("-3 dB",
         "-inf dB"). Live stores clip gain as 0..1, so the value that shows
         gain_db is searched for; the result reports the display Live shows.
+        The search writes the gain about 130 times, which may be audible on a
+        clip that is playing.
         MIDI clips have no gain. Splitting clips is not possible from here.
         """
 

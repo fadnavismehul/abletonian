@@ -114,7 +114,13 @@ them gets a `sidechain` entry in `list_devices` and can be set with
   when no parameter has that name).
 
 A channel that does not exist for the new source puts the old source back,
-as with output routing.
+as with output routing. A wrong source or channel lists every choice Live
+offers in the error itself; `list_devices` shows only the current source.
+
+`daw.health` lists `read_device_sidechain` although no tool needs it as a
+capability: it tells a client that `list_devices` reports `sidechain`, so a
+device without that entry from this script has no sidechain input Live
+exposes, rather than coming from an older script that never looked.
 
 ### Clips
 
@@ -130,9 +136,15 @@ clip is not possible: the LOM has no call for it.
 `gain_display_string` only shows the current gain. So `set_clip_gain` uses
 the same display-text search as parameters, except that each probe writes
 `Clip.gain` and reads `gain_display_string` back (about 130 writes for one
-call, all inside the call's undo step). Before searching it writes both ends
-twice and refuses if the display did not follow each write. On any failure
-the original gain is put back. Guesses, not yet checked in Live:
+call, all inside the call's undo step). On a clip that is playing, those
+writes may be audible as a brief jump in its level; set the gain while the
+clip is not playing if that matters. Before searching it writes 0, 1, 1, 0
+and refuses unless both writes of the same end show the same text and the
+two ends differ, so a display that lags one write behind is caught whatever
+the starting gain. On any failure the original gain is put back; if putting
+it back fails too, the error says so. Text a little past either end (such as
+`"25 dB"` when the top shows `24.0 dB`) is set to that end with a `note`.
+Guesses, not yet checked in Live:
 
 - that `gain_display_string` changes at once after a write, within one
   main-thread callback (if it does not, the call is refused, not wrong);

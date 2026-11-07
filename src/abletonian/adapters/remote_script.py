@@ -156,10 +156,12 @@ class RemoteScriptAdapter:
 
     def insert_device(self, change: DeviceInsert) -> dict[str, Any]:
         result = self._send(change)
-        # An older script ignores name and keeps Live's default.
+        # An older script ignores name and keeps Live's default. Live may
+        # normalise the name it stores (strip spaces), so compare stripped.
         if change.name is not None:
             device = result.get("device")
-            if not isinstance(device, dict) or device.get("name") != change.name:
+            shown = device.get("name") if isinstance(device, dict) else None
+            if not isinstance(shown, str) or shown.strip() != change.name.strip():
                 result = {**result, "warning": OLD_SCRIPT_INSERT_NAME_WARNING}
         return result
 

@@ -275,6 +275,13 @@ class InsertNameTests(unittest.TestCase):
         )
         self.assertNotIn("warning", result)
 
+    def test_name_live_stripped_of_spaces_has_no_warning(self) -> None:
+        bridge = RecordingBridge({"ableton.insert_device": {"device": {"name": "De-esser"}}})
+        result = RemoteScriptAdapter(bridge).insert_device(
+            DeviceInsert(track=0, device_name="Compressor", name="  De-esser ")
+        )
+        self.assertNotIn("warning", result)
+
     def test_old_script_that_ignored_the_name_warns(self) -> None:
         bridge = RecordingBridge({"ableton.insert_device": {"device": {"name": "Compressor"}}})
         result = RemoteScriptAdapter(bridge).insert_device(

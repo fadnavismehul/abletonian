@@ -76,6 +76,16 @@ class LaggingClip(Clip):
         return gain_text(self._shown)
 
 
+class FailingRestoreClip(Clip):
+    """Refuses to take its original gain back, as if Live rejected the write."""
+
+    @Clip.gain.setter
+    def gain(self, value):
+        if self.writes and value == 0.25:
+            raise RuntimeError("restore refused")
+        Clip.gain.fset(self, value)
+
+
 class ClipSong(Song):
     def __init__(self):
         super().__init__()
@@ -242,6 +252,28 @@ class SetClipGainTests(unittest.TestCase):
             )
         self.assertEqual([c.writes for c in self.clips], [0, 0, 0])
         self.assertEqual(self.song.undo_steps, [])
+
+    def test_a_lagging_display_is_refused_when_the_gain_starts_at_the_top(self):
+        # With writes 0, 1, 0, 1 a one-write lag from gain 1.0 looked consistent.
+        clip = LaggingClip("Lag", 0.0, 4.0, gain=1.0)
+        self.song.tracks[1].arrangement_clips = (clip,)
+
+        with self.assertRaisesRegex(LiveOpsError, "did not follow the value"):
+            self.call("ableton.set_clip_gain", track=1, clip=0, gain_db=-3)
+        self.assertEqual(clip._gain, 1.0)
+
+    def test_a_failed_restore_keeps_the_error_and_says_the_gain_was_not_put_back(self):
+        clip = FailingRestoreClip("Stuck", 0.0, 4.0, gain=0.25)
+        self.song.tracks[1].arrangement_clips = (clip,)
+
+        with self.assertRaises(LiveOpsError) as raised:
+            self.call("ableton.set_clip_gain", track=1, clip=0, gain_db=40)
+
+        message = str(raised.exception)
+        self.assertIn("could not find", message)
+        self.assertIn("restore refused", message)
+        self.assertIn("could NOT be put back", message)
+        self.assertIn("'-23.0 dB'", message)
 
     def test_runs_inside_a_batch(self):
         result = self.call(

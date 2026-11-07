@@ -123,6 +123,8 @@ class SidechainTests(unittest.TestCase):
             self.call("ableton.set_device_sidechain", track="Bass", device=1, from_track="Drums")
 
         self.assertIn("2-32 Pad Kit Jazz", str(raised.exception))
+        self.assertIn("every source Live offers", raised.exception.hint)
+        self.assertNotIn("list_tracks", raised.exception.hint)
         self.assertEqual(self.compressor.writes, [])
 
     def test_unknown_channel_puts_the_source_back(self):
@@ -165,6 +167,7 @@ class SidechainTests(unittest.TestCase):
                 routing_channel="Nowhere",
             )
         self.assertIn("output type was put back", str(raised.exception))
+        self.assertIn("list_tracks", raised.exception.hint)
         self.assertEqual(self.bass.output_routing_type.display_name, "Master")
 
 
