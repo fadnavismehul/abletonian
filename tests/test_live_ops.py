@@ -633,5 +633,151 @@ class RenameDeviceTests(unittest.TestCase):
         self.assertEqual(self.song.tracks[0].devices, [])
 
 
+class NoColourTrack(Track):
+    """A track whose colour cannot be set, to test fail-closed cleanup."""
+
+    @property
+    def color(self):
+        return 0
+
+    @color.setter
+    def color(self, value):
+        if value != 0x112233:  # Track.__init__ sets this one
+            raise RuntimeError("colour refused")
+
+
+class TrackSong(Song):
+    """Song.create_midi_track / create_audio_track / delete_track (Cycling '74 LOM)."""
+
+    def __init__(self, track_class=Track):
+        super().__init__()
+        self.track_class = track_class
+        self.created = []
+        self.deleted = []
+
+    def _create(self, kind, index):
+        tracks = list(self.tracks)
+        if not -1 <= index <= len(tracks):
+            raise RuntimeError("Index out of range")
+        position = len(tracks) if index == -1 else index
+        track = self.track_class(f"{position + 1}-{kind}")
+        track.has_midi_input = kind == "MIDI"
+        tracks.insert(position, track)
+        self.tracks = tuple(tracks)
+        self.created.append((kind, index))
+
+    def create_midi_track(self, index):
+        self._create("MIDI", index)
+
+    def create_audio_track(self, index):
+        self._create("Audio", index)
+
+    def delete_track(self, index):
+        tracks = list(self.tracks)
+        del tracks[index]
+        self.tracks = tuple(tracks)
+        self.deleted.append(index)
+
+
+class CreateTrackTests(unittest.TestCase):
+    """Issue #47."""
+
+    def setUp(self):
+        self.song = TrackSong()
+
+    def create(self, **params):
+        return live_ops.handle(self.song, "ableton.create_track", params)
+
+    def test_appends_a_midi_track_by_default(self):
+        result = self.create(kind="midi")
+
+        self.assertEqual(self.song.created, [("MIDI", -1)])
+        self.assertEqual([t.name for t in self.song.tracks][-1], "4-MIDI")
+        self.assertEqual(result["track_type"], "midi")
+        self.assertEqual(result["track"]["kind"], "track")
+        self.assertEqual(result["track"]["index"], 3)
+        self.assertEqual(result["track"]["name"], "4-MIDI")
+        self.assertNotIn("note", result)
+        self.assertEqual(self.song.undo_steps, ["begin", "end"])
+
+    def test_result_is_shaped_like_compact_list_tracks(self):
+        result = self.create(kind="audio", name="Vox Double")
+
+        listed = live_ops.handle(self.song, "ableton.list_tracks", {"detail": "compact"})
+        self.assertEqual(result["track"], listed["tracks"][3])
+
+    def test_inserts_named_and_coloured_audio_track_at_an_index(self):
+        result = self.create(kind="Audio", name="Vox Double", index=1, color="#FF0000")
+
+        self.assertEqual(self.song.created, [("Audio", 1)])
+        self.assertEqual(
+            [t.name for t in self.song.tracks], ["Kick", "Vox Double", "Bass", "Vox"]
+        )
+        self.assertEqual(self.song.tracks[1].color, 0xFF0000)
+        self.assertEqual(result["track"]["index"], 1)
+        self.assertEqual(result["track"]["color"], "#FF0000")
+        self.assertIn("moved down by one", result["note"])
+
+    def test_sets_a_palette_colour_index(self):
+        self.create(kind="midi", color_index=12)
+
+        self.assertEqual(self.song.tracks[-1].color_index, 12)
+
+    def test_bad_arguments_create_nothing(self):
+        cases = [
+            ({"kind": "group"}, "must be 'midi' or 'audio'"),
+            ({"kind": "midi", "index": 9}, "out of range"),
+            ({"kind": "midi", "index": -2}, "out of range"),
+            ({"kind": "midi", "index": True}, "out of range"),
+            ({"kind": "midi", "name": " "}, "non-empty"),
+            ({"kind": "midi", "color": "red"}, "color must be"),
+            ({"kind": "midi", "color_index": "3"}, "whole number"),
+            ({}, "missing required parameter 'kind'"),
+        ]
+        for params, message in cases:
+            with self.subTest(params=params), self.assertRaisesRegex(LiveOpsError, message):
+                self.create(**params)
+        self.assertEqual(self.song.created, [])
+        self.assertEqual(len(self.song.tracks), 3)
+
+    def test_a_failed_setup_deletes_the_new_track(self):
+        self.song = TrackSong(track_class=NoColourTrack)
+        self.song.tracks = (Track("Kick"), Track("Bass"))
+
+        with self.assertRaisesRegex(LiveOpsError, "removed again"):
+            self.create(kind="audio", name="Temp", index=0, color="#00FF00")
+
+        self.assertEqual(self.song.deleted, [0])
+        self.assertEqual([t.name for t in self.song.tracks], ["Kick", "Bass"])
+        self.assertEqual(self.song.undo_steps, ["begin", "end"])
+
+    def test_live_errors_and_missing_calls_are_reported(self):
+        with self.assertRaisesRegex(LiveOpsError, "cannot create midi tracks"):
+            live_ops.handle(Song(), "ableton.create_track", {"kind": "midi"})
+
+        def refuse(index):
+            raise RuntimeError("no room")
+
+        self.song.create_audio_track = refuse
+        with self.assertRaisesRegex(LiveOpsError, "could not create a new audio track: no room"):
+            self.create(kind="audio")
+
+    def test_runs_inside_a_batch(self):
+        result = live_ops.handle(
+            self.song,
+            "ableton.batch",
+            {
+                "operations": [
+                    {"method": "ableton.create_track", "params": {"kind": "midi", "name": "Keys"}},
+                    {"method": "ableton.set_mixer", "params": {"track": "Keys", "mute": True}},
+                ]
+            },
+        )
+
+        self.assertIsNone(result["failed"])
+        self.assertTrue(self.song.tracks[-1].mute)
+        self.assertEqual(self.song.undo_steps, ["begin", "end"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import webbrowser
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
@@ -25,6 +25,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -76,6 +77,7 @@ _BATCH_TYPES = {
         MixerChange,
         DeviceInsert,
         ReturnTrackCreate,
+        TrackCreate,
         DeviceDelete,
     )
 }
@@ -426,6 +428,31 @@ def build_mcp(
 
         return send("create_return_track", ReturnTrackCreate(name=name, color=color))
 
+    @mcp.tool(annotations=_op("create_track"))
+    def create_track(
+        kind: Literal["midi", "audio"],
+        name: str | None = None,
+        index: int | None = None,
+        color_index: int | None = None,
+        color: str | None = None,
+    ) -> str:
+        """Add a new, empty MIDI or audio track. Additive; one Live undo step.
+
+        index is where it goes among the regular tracks (0 is first); omit it
+        to add the track after the last one. Tracks after it move down one
+        index, so refresh indexes with list_tracks. name, color ("#RRGGBB",
+        snapped to Live's palette) and color_index (a palette slot) are
+        optional; if they cannot be set, the new track is removed again.
+        Returns the new track as list_tracks shows it. Group tracks cannot be
+        created this way."""
+
+        return send(
+            "create_track",
+            TrackCreate(
+                kind=kind, name=name, index=index, color_index=color_index, color=color
+            ),
+        )
+
     @mcp.tool(annotations=_op("delete_device"))
     def delete_device(track: int | str, device: int | str, confirm: StrictBool = False) -> str:
         """Delete a device from a track, or from inside a rack by its path
@@ -445,7 +472,8 @@ def build_mcp(
         ableton.set_device_parameter, ableton.set_track_output_routing,
         ableton.set_track_properties, ableton.set_device_properties,
         ableton.set_chain_properties, ableton.set_mixer, ableton.insert_device,
-        ableton.create_return_track, ableton.delete_device (needs "confirm": true).
+        ableton.create_return_track, ableton.create_track, ableton.delete_device
+        (needs "confirm": true).
         params use the same names as the matching tools. The batch stops at the
         first failure and reports what completed.
 

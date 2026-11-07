@@ -17,6 +17,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -154,6 +155,19 @@ class WireShapeTests(unittest.TestCase):
                     "ableton.insert_device",
                     {"track": 1, "device_name": "Compressor", "name": "De-esser"},
                 ),
+            ),
+            (
+                TrackCreate(kind="audio", name="Vox Double", index=2, color_index=5),
+                self.adapter.create_track,
+                (
+                    "ableton.create_track",
+                    {"kind": "audio", "name": "Vox Double", "index": 2, "color_index": 5},
+                ),
+            ),
+            (
+                TrackCreate(kind="midi"),
+                self.adapter.create_track,
+                ("ableton.create_track", {"kind": "midi"}),
             ),
             (
                 ReturnTrackCreate(name="Room"),

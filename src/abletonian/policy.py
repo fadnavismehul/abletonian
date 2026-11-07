@@ -133,6 +133,7 @@ _OPERATIONS = (
     Operation("set_mixer", SafetyClass.TRANSFORMATIVE, "set_mixer", repeatable=True),
     Operation("insert_device", SafetyClass.ADDITIVE, "insert_device"),
     Operation("create_return_track", SafetyClass.ADDITIVE, "create_return_track"),
+    Operation("create_track", SafetyClass.ADDITIVE, "create_track"),
     # Without confirm, delete_device is a preview: Live reports what would go.
     Operation(
         "delete_device",

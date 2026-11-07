@@ -252,6 +252,37 @@ class LiveControlToolTests(unittest.TestCase):
                 self.assertFalse(tools[name].annotations.read_only_hint)
                 self.assertTrue(tools[name].annotations.idempotent_hint)
 
+    def test_create_track_drops_unset_arguments(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(mcp.call_tool("create_track", {"kind": "midi"}))
+        asyncio.run(
+            mcp.call_tool(
+                "create_track",
+                {"kind": "audio", "name": "Vox Double", "index": 0, "color": "#FF0000"},
+            )
+        )
+
+        self.assertEqual(
+            bridge.requests,
+            [
+                ("ableton.create_track", {"kind": "midi"}),
+                (
+                    "ableton.create_track",
+                    {"kind": "audio", "name": "Vox Double", "index": 0, "color": "#FF0000"},
+                ),
+            ],
+        )
+
+    def test_create_track_rejects_other_kinds_before_the_bridge(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        with self.assertRaisesRegex(Exception, "'midi' or 'audio'"):
+            asyncio.run(mcp.call_tool("create_track", {"kind": "group"}))
+        self.assertEqual(bridge.requests, [])
+
     def test_batch_passes_operations_through(self) -> None:
         bridge = PassthroughBridge()
         mcp = build_mcp(AbletonianConfig(), bridge=bridge)

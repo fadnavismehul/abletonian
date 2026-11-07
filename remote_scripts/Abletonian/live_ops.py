@@ -35,6 +35,7 @@ BATCHABLE_METHODS = (
     "ableton.set_mixer",
     "ableton.insert_device",
     "ableton.create_return_track",
+    "ableton.create_track",
     "ableton.delete_device",
 )
 
@@ -530,6 +531,90 @@ def create_return_track(song, params):
         "color": _hex_color(_get(track, "color")),
         "note": "Every track now has a send to this return; check send levels before playing.",
     }
+
+
+TRACK_KINDS = {"midi": "create_midi_track", "audio": "create_audio_track"}
+
+
+def create_track(song, params):
+    """Add a MIDI or audio track. Additive.
+
+    Uses ``Song.create_midi_track(index)`` / ``Song.create_audio_track(index)``
+    (Cycling '74 LOM docs, Song: the index must be 0..len(song.tracks), and -1
+    adds the track at the end). Group tracks are out of scope. If naming or
+    colouring the new track fails, it is deleted again with
+    ``Song.delete_track`` so the Set is left as it was.
+    """
+
+    kind = str(_required(params, "kind")).strip().lower()
+    if kind not in TRACK_KINDS:
+        raise InvalidValue(f"track kind must be 'midi' or 'audio', got '{params['kind']}'")
+    name = _new_name(params, "track") if params.get("name") is not None else None
+    color = _parse_color(params["color"]) if params.get("color") is not None else None
+    color_index = params.get("color_index")
+    if color_index is not None and (
+        isinstance(color_index, bool) or not isinstance(color_index, int)
+    ):
+        raise InvalidValue(f"color_index must be a whole number, got '{color_index}'")
+    create = getattr(song, TRACK_KINDS[kind], None)
+    if not callable(create):
+        raise NotSupported(
+            f"this version of Live cannot create {kind} tracks from a script",
+            "Add the track in Live yourself (Create > Insert MIDI Track or Insert Audio Track).",
+        )
+    tracks_before = _tuple(song.tracks)
+    count_before = len(tracks_before)
+    index = params.get("index")
+    index = -1 if index is None else index
+    if isinstance(index, bool) or not isinstance(index, int) or not -1 <= index <= count_before:
+        raise InvalidValue(
+            f"track index {index} is out of range (0..{count_before}, or -1 for the end)",
+            "Leave index out to add the track after the last one.",
+        )
+    try:
+        create(index)
+    except Exception as exc:
+        raise LiveOpsError(f"Live could not create a new {kind} track: {exc}") from exc
+    tracks = _tuple(song.tracks)
+    if len(tracks) != count_before + 1:
+        raise LiveOpsError(f"Live did not report a new track after creating one ({kind})")
+    # Find the new track by Live identity rather than trusting the index.
+    new_positions = [
+        i for i, track in enumerate(tracks) if not any(_same(track, old) for old in tracks_before)
+    ]
+    if len(new_positions) == 1:
+        position = new_positions[0]
+    else:
+        position = count_before if index == -1 else index
+    track = tracks[position]
+    try:
+        if name is not None:
+            track.name = name
+        if color_index is not None:
+            track.color_index = color_index
+        if color is not None:
+            track.color = color
+    except Exception as exc:
+        # Leave the Set as it was rather than with a half-set-up track.
+        delete = getattr(song, "delete_track", None)
+        if callable(delete):
+            delete(position)
+            raise LiveOpsError(
+                f"could not set up the new {kind} track: {exc}. It was removed again; Live "
+                "may still list this as an undo step that changes nothing."
+            ) from exc
+        raise
+    return_names = [_str(t.name) for t in _tuple(song.return_tracks)]
+    result = {
+        "track": _compact_track_payload(track, "track", position, return_names),
+        "track_type": kind,
+    }
+    if position < len(tracks) - 1:
+        result["note"] = (
+            f"Tracks from index {position + 1} on moved down by one; use list_tracks "
+            "before referring to them by index."
+        )
+    return result
 
 
 def delete_device(song, params, target=None):
@@ -1567,6 +1652,7 @@ _HANDLERS = {
     "ableton.set_mixer": set_mixer,
     "ableton.insert_device": insert_device,
     "ableton.create_return_track": create_return_track,
+    "ableton.create_track": create_track,
     "ableton.delete_device": delete_device,
     "ableton.batch": batch,
     "ableton.undo": undo,

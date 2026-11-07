@@ -25,6 +25,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -132,6 +133,9 @@ class RemoteScriptAdapter:
         return result
 
     def create_return_track(self, change: ReturnTrackCreate) -> dict[str, Any]:
+        return self._send(change)
+
+    def create_track(self, change: TrackCreate) -> dict[str, Any]:
         return self._send(change)
 
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]:

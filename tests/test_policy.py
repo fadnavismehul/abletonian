@@ -40,6 +40,7 @@ TOOL_OPERATIONS = {
     "set_mixer": "set_mixer",
     "insert_device": "insert_device",
     "create_return_track": "create_return_track",
+    "create_track": "create_track",
     "delete_device": "delete_device",
     "apply_batch": "batch",
     "undo_last_change": "undo",
@@ -220,6 +221,34 @@ class RenameOperationTests(unittest.TestCase):
             mcp.call_tool("set_device_properties", {"track": 0, "device": 0, "name": "X"})
         )
         self.assertIn("cannot set device properties", result.content[0].text)  # type: ignore[attr-defined]
+        self.assertEqual([c[0] for c in bridge.calls], ["daw.health"])
+
+
+class CreateTrackOperationTests(unittest.TestCase):
+    """Issue #47."""
+
+    def test_create_track_is_additive_and_not_repeatable(self) -> None:
+        operation = OPERATIONS["create_track"]
+        self.assertIs(operation.safety_class, SafetyClass.ADDITIVE)
+        self.assertEqual(operation.capability, "create_track")
+        annotations = operation.annotations()
+        self.assertFalse(annotations.read_only_hint)
+        self.assertFalse(annotations.destructive_hint)
+        self.assertFalse(annotations.idempotent_hint)
+
+    def test_create_track_parses_in_a_batch(self) -> None:
+        (change,) = parse_batch(
+            [{"method": "ableton.create_track", "params": {"kind": "midi", "name": "Keys"}}]
+        )
+        self.assertEqual(change.params(), {"kind": "midi", "name": "Keys"})
+
+    def test_an_older_script_without_the_capability_is_refused_locally(self) -> None:
+        bridge = Bridge({"daw.health": HEALTH})
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+        asyncio.run(mcp.call_tool("check_bridge_health", {}))
+        result = asyncio.run(mcp.call_tool("create_track", {"kind": "midi"}))
+        text = result.content[0].text  # type: ignore[attr-defined]
+        self.assertIn("cannot create track", text)
         self.assertEqual([c[0] for c in bridge.calls], ["daw.health"])
 
 

@@ -141,6 +141,7 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "set_mixer",
                 "insert_device",
                 "create_return_track",
+                "create_track",
                 "delete_device",
                 "batch",
                 "undo",
@@ -149,7 +150,6 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "single_call_undo_steps",
             ],
             "unsupported_capabilities": [
-                "create_track",
                 "group_tracks",
                 "reorder_tracks",
                 "write_midi_notes",

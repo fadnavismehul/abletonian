@@ -46,6 +46,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. |
 | `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, optionally `name` it, and set its parameters right away. If the name or a parameter cannot be set, the new device is deleted again. |
 | `create_return_track` | `ableton.create_return_track` | Add a return track at the end (`Song.create_return_track`), with an optional name and colour. Additive. |
+| `create_track` | `ableton.create_track` | Add an empty MIDI or audio track (`Song.create_midi_track(index)` / `Song.create_audio_track(index)`; index -1 or omitted appends). Optional `name`, `color` and `color_index`; if they cannot be set, the new track is deleted again (`Song.delete_track`). Returns the track as compact `list_tracks` shows it, and a note when later tracks moved down one index. Additive. Groups are not created. |
 | `delete_device` | `ableton.delete_device` | Delete a device (`Track.delete_device`). Destructive: without `confirm=true` it only returns the device and its current settings. The tool accepts only a real boolean, so `"true"` or `1` is refused. In `apply_batch`, every delete needs `"confirm": true` or the whole batch is refused before anything runs, and delete targets refer to the set as it was before the batch, so deleting index 0 does not shift a later index 1. |
 | `apply_batch` | `ableton.batch` | Run many changes as one Live undo step (two when it mixes parameter changes with other changes), or one step per operation with `atomic=false`. Stops at the first failure. |
 | `undo_last_change` | `ableton.undo` | Live Undo, `count` times (default 1, at most 20; more than 1 needs `confirm=true`). |
@@ -461,7 +462,13 @@ Live's Python API has no call to create a group from tracks, and none to
 reorder tracks. Creating group buses therefore still needs Live's UI
 (select tracks, Cmd+G). Once the groups exist, these tools can colour and
 name them, route tracks into them, and insert a Glue Compressor on them.
-Creating tracks and saving the set are also not exposed.
+Saving the set is also not exposed.
+
+`create_track` (issue #47) is not yet run in Live. A Live check should
+confirm: the new track lands at the requested index; what happens when that
+index falls inside a folded or unfolded group (a guess: Live may put the
+track into the group); that the create and the name/colour form one undo
+step; and that the fail-closed `Song.delete_track` leaves no track behind.
 
 ## Prior art
 

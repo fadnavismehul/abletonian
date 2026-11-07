@@ -21,6 +21,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -280,6 +281,9 @@ class FakeAbletonAdapter:
 
     def create_return_track(self, change: ReturnTrackCreate) -> dict[str, Any]:
         raise UnsupportedOperation(ReturnTrackCreate.OPERATION)
+
+    def create_track(self, change: TrackCreate) -> dict[str, Any]:
+        raise UnsupportedOperation(TrackCreate.OPERATION)
 
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]:
         raise UnsupportedOperation(DeviceDelete.OPERATION)

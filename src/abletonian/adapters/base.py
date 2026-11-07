@@ -199,6 +199,19 @@ class ReturnTrackCreate(_Request):
 
 
 @dataclass(frozen=True)
+class TrackCreate(_Request):
+    """Add a MIDI or audio track. index None (or -1) appends after the last track."""
+
+    OPERATION: ClassVar[str] = "create_track"
+
+    kind: str
+    name: str | None = None
+    index: int | None = None
+    color_index: int | None = None
+    color: str | None = None
+
+
+@dataclass(frozen=True)
 class DeviceDelete(_Request):
     """Delete a device. Without confirm it is a preview and changes nothing."""
 
@@ -223,6 +236,7 @@ Change = (
     | MixerChange
     | DeviceInsert
     | ReturnTrackCreate
+    | TrackCreate
     | DeviceDelete
 )
 
@@ -235,6 +249,7 @@ CHANGE_TYPES: tuple[type[_Request], ...] = (
     MixerChange,
     DeviceInsert,
     ReturnTrackCreate,
+    TrackCreate,
     DeviceDelete,
 )
 
@@ -363,6 +378,8 @@ class DawAdapter(Protocol):
     def insert_device(self, change: DeviceInsert) -> dict[str, Any]: ...
 
     def create_return_track(self, change: ReturnTrackCreate) -> dict[str, Any]: ...
+
+    def create_track(self, change: TrackCreate) -> dict[str, Any]: ...
 
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]: ...
 
