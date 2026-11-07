@@ -141,12 +141,38 @@ Not bugs, but the docstrings could prevent them:
 - Calling `list_devices` on a Drum Rack track with parameters on. The
   docstring should warn about size.
 
+## Automation targets
+
+The goal is that nothing in "Hands on the mouse" stays manual. Each step,
+and the tool that should take it over:
+
+| Manual step this week | Times | Issue | Route |
+| --- | --- | --- | --- |
+| Export a bounce, rename it, hand it over for measurement | 7 | #55 | UI-driven (#54) |
+| Press Cmd+S at the end of a session | every session | #56 | UI-driven |
+| Make groups and drag tracks into them | 1 big pass | #57 | UI-driven |
+| Split a clip to fix one word | 1 | #58 then #50 | UI-driven, then bridge |
+| Draw send throws and rides | every session | #59 after #20 | bridge, needs RFC |
+| Level-match compressors by RMS on and off | every compressor | #60 after #45 | bridge |
+| Set thresholds by the GR meter | every compressor | #60 after #45 | bridge |
+| Rename a device | 1 | #46 | bridge |
+| Create a MIDI or audio track | 2 | #47 | bridge |
+| Import a `.mid` the agent wrote | 1 | #48, interim #51 | bridge |
+| Reselect a compressor's sidechain source | 1 | #49 | bridge |
+| Drag an `.adg` or samples onto drum pads | 1 | #51 | bridge via browser |
+| Turn down a rack macro | 1 | #8, note added | may already work |
+| Set Supermassive LowCut and HighCut | 2 | #16 | bridge |
+
+Out of reach even with the UI route: nothing on this list. Reordering
+tracks by drag is the only one deferred, inside #57.
+
 ## Out of reach of the Live API
 
-Recorded so nobody files them as bugs: exporting audio, saving the set,
-creating groups, reordering tracks, splitting clips. The session pattern
-that worked was: the agent asks for one bounce, measures it offline, and
-reports back.
+Exporting audio, saving the set, creating groups, reordering tracks and
+splitting clips have no Live Object Model call. They are not bugs in the
+bridge. #54 proposes driving Live's UI for them instead. Until then the
+session pattern that worked was: the agent asks for one bounce, measures it
+offline, and reports back.
 
 ## Method
 
