@@ -35,6 +35,7 @@ BATCHABLE_METHODS = (
     "ableton.create_return_track",
     "ableton.delete_device",
     "ableton.set_device_sidechain",
+    "ableton.set_clip_gain",
 )
 
 
@@ -82,6 +83,7 @@ VALUE_HINT = (
     "Use list_devices on that track to see this parameter's range, display text "
     "and options, or send a raw number in its range."
 )
+CLIP_HINT = "Use list_clips on that track to see its arrangement clips and their indexes."
 SELECTION_HINT = "Select the track (and Rack) in Live, or name the track and device in the call."
 
 
@@ -324,6 +326,88 @@ def set_device_sidechain(song, params):
         "device": {"index": device_index, "name": _str(device.name), "path": path},
         "before": before,
         "after": _sidechain_payload(device),
+    }
+
+
+def list_clips(song, params):
+    """List a track's Arrangement View clips. Read-only: never changes the Live Set.
+
+    Uses ``Track.arrangement_clips`` (Live 11+), ``Clip.start_time``,
+    ``end_time``, ``is_audio_clip``, ``muted``, and for audio clips ``gain``
+    and ``gain_display_string`` (Cycling '74 LOM docs). Times are in beats
+    (quarter notes); ``start_bar``/``end_bar`` are Live's bar.beat.sixteenth
+    positions from the song's current time signature. Session View clips are
+    not listed.
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    signature = _time_signature(song)
+    return {
+        "track": _track_ref_payload(kind, index, track),
+        "time_signature": f"{signature[0]}/{signature[1]}" if signature else None,
+        "clips": [
+            _clip_payload(clip_index, clip, signature)
+            for clip_index, clip in enumerate(_arrangement_clips(track, kind))
+        ],
+    }
+
+
+def set_clip_gain(song, params):
+    """Set an arrangement audio clip's gain in dB. Transformative.
+
+    ``Clip.gain`` is normalized 0..1, not dB, and Live gives no function from
+    one to the other: ``gain_display_string`` only shows the current gain.
+    So the gain is found the way display text is matched for parameters
+    (``_search_display``), except that each probe writes ``Clip.gain`` and
+    reads ``gain_display_string`` back. All probes run inside this call's
+    undo step; on any failure the original gain is put back.
+    Guess, not checked in Live: that ``gain_display_string`` follows a write
+    at once, within the same main-thread callback. ``_check_probe`` refuses
+    if it does not.
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    clip_index, clip = resolve_clip(track, kind, _required(params, "clip"))
+    if not bool(_get(clip, "is_audio_clip", False)):
+        raise InvalidValue(
+            f"clip '{_str(clip.name)}' on '{_str(track.name)}' is a MIDI clip; only audio "
+            "clips have a gain",
+            "Pick an audio clip from list_clips, or change the track volume instead.",
+        )
+    if _get(clip, "gain") is None:
+        raise NotSupported(
+            "this version of Live does not expose Clip.gain to scripts",
+            "Set the clip gain in Live yourself.",
+        )
+
+    value = _required(params, "gain_db")
+    if isinstance(value, bool):
+        raise InvalidValue("gain_db must be a number of dB or text such as '-3 dB'")
+    if isinstance(value, (int, float)):
+        target, text = float(value), f"{value} dB"
+    else:
+        text = str(value)
+        target = parse_display_number(text)
+        if target is None:
+            raise InvalidValue(f"could not read a dB value from '{text}'")
+
+    before = _clip_gain_payload(clip)
+    original = float(clip.gain)
+    probe = _ClipGainProbe(clip, track)
+    try:
+        _check_probe(probe)
+        raw = _search_display(probe, probe.read, 0.0, 1.0, target, text, False)
+        clip.gain = raw
+    except Exception as exc:
+        clip.gain = original
+        if isinstance(exc, LiveOpsError):
+            raise type(exc)(f"{exc}. The clip gain was put back.", exc.hint) from exc
+        raise
+    return {
+        "track": _track_ref_payload(kind, index, track),
+        "clip": {"index": clip_index, "name": _str(clip.name)},
+        "before": before,
+        "after": _clip_gain_payload(clip),
     }
 
 
@@ -935,6 +1019,39 @@ def _pick(items, ref, label, where):
     raise NotFound(f"no {label} '{text}' in '{where}'. Choices: {names}", DEVICE_HINT)
 
 
+def resolve_clip(track, kind, ref):
+    """Return ``(index, clip)`` for an arrangement clip on ``track``.
+
+    ``ref`` is an index into list_clips (``3`` or ``"#3"``) or a clip name,
+    exact first and then case-insensitive, which must be unique.
+    """
+
+    clips = _arrangement_clips(track, kind)
+    where = _str(track.name)
+    text = str(ref).strip()
+    if re.fullmatch(r"#\d+", text):
+        text = text[1:]
+    if (isinstance(ref, int) and not isinstance(ref, bool)) or text.isdigit():
+        position = int(text)
+        if 0 <= position < len(clips):
+            return position, clips[position]
+        raise NotFound(
+            f"clip index {position} is out of range on '{where}' ({len(clips)} clips)", CLIP_HINT
+        )
+    for matcher in (lambda n: n == text, lambda n: n.lower() == text.lower()):
+        matches = [(i, clip) for i, clip in enumerate(clips) if matcher(_str(clip.name))]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise LiveOpsError(
+                f"clip name '{text}' is ambiguous on '{where}'; use an index: "
+                + ", ".join(str(i) for i, _ in matches),
+                CLIP_HINT,
+            )
+    names = ", ".join(f"{i}:{_str(clip.name)}" for i, clip in enumerate(clips)) or "(none)"
+    raise NotFound(f"no arrangement clip '{text}' on '{where}'. Clips: {names}", CLIP_HINT)
+
+
 def resolve_parameter(device, ref):
     parameters = _tuple(device.parameters)
     if isinstance(ref, int) and not isinstance(ref, bool):
@@ -1309,6 +1426,109 @@ def _param_payload(parameter, compact=False):
     return payload
 
 
+def _arrangement_clips(track, kind):
+    clips = _get(track, "arrangement_clips")
+    if clips is None:
+        # Return, main and group tracks hold no clips; reading the property
+        # there may fail (guess), so they list none instead of an error.
+        if kind == "track" and not bool(_get(track, "is_foldable", False)):
+            raise NotSupported(
+                f"Live does not list arrangement clips for '{_str(track.name)}'; "
+                "Track.arrangement_clips needs Live 11 or later",
+                "Update Live to 11 or later.",
+            )
+        return ()
+    return _tuple(clips)
+
+
+def _clip_payload(index, clip, signature):
+    start = float(clip.start_time)
+    end = float(clip.end_time)
+    payload = {
+        "index": index,
+        "name": _str(clip.name),
+        "start_beats": start,
+        "end_beats": end,
+        "length_beats": end - start,
+        "start_bar": _bar_position(start, signature),
+        "end_bar": _bar_position(end, signature),
+        "is_audio": bool(_get(clip, "is_audio_clip", False)),
+    }
+    if bool(_get(clip, "muted", False)):
+        payload["muted"] = True
+    if payload["is_audio"]:
+        payload.update(_clip_gain_payload(clip))
+    return payload
+
+
+def _clip_gain_payload(clip):
+    gain = _get(clip, "gain")
+    display = _get(clip, "gain_display_string")
+    return {
+        "gain": None if gain is None else float(gain),
+        "gain_display": None if display is None else _str(display),
+    }
+
+
+def _time_signature(song):
+    numerator = _get(song, "signature_numerator")
+    denominator = _get(song, "signature_denominator")
+    try:
+        numerator, denominator = int(numerator), int(denominator)
+    except (TypeError, ValueError):
+        return None
+    if numerator < 1 or denominator < 1:
+        return None
+    return numerator, denominator
+
+
+def _bar_position(beats, signature):
+    """``beats`` (quarter notes from the start) as Live's "bar.beat.sixteenth".
+
+    Uses one time signature for the whole song, so it is off after a time
+    signature change in the arrangement. Returns None without a signature.
+    """
+
+    if signature is None or beats < 0:
+        return None
+    numerator, denominator = signature
+    beat_length = 4.0 / denominator
+    bar_length = numerator * beat_length
+    beats = round(beats, 6)
+    bar = int(beats // bar_length)
+    rest = round(beats - bar * bar_length, 6)
+    beat = int(rest // beat_length)
+    sixteenth = int(round(rest - beat * beat_length, 6) // 0.25)
+    return f"{bar + 1}.{beat + 1}.{sixteenth + 1}"
+
+
+class _ClipGainProbe:
+    """Lets ``_search_display`` treat a clip's gain like a parameter.
+
+    ``read`` writes ``Clip.gain`` and returns ``gain_display_string``.
+    """
+
+    def __init__(self, clip, track):
+        self.clip = clip
+        self.name = f"gain of clip '{_str(clip.name)}' on '{_str(track.name)}'"
+
+    def read(self, _probe, value):
+        self.clip.gain = value
+        return _str(_get(self.clip, "gain_display_string", ""))
+
+
+def _check_probe(probe):
+    # If the display lags a write, or never changes, bisection would find a
+    # wrong gain. Write both ends twice and check each read matches its end.
+    shown = [probe.read(probe, value) for value in (0.0, 1.0, 0.0, 1.0)]
+    if shown[0] != shown[2] or shown[1] != shown[3] or shown[0] == shown[1]:
+        raise LiveOpsError(
+            f"Live's gain display for the {probe.name} did not follow the value, so a dB "
+            f"value cannot be matched (read {', '.join(repr(text) for text in shown)})",
+            "Set the clip gain in Live yourself.",
+        )
+
+
 # Helpers ------------------------------------------------------------------
 
 
@@ -1522,6 +1742,8 @@ _HANDLERS = {
     "ableton.create_return_track": create_return_track,
     "ableton.delete_device": delete_device,
     "ableton.set_device_sidechain": set_device_sidechain,
+    "ableton.list_clips": list_clips,
+    "ableton.set_clip_gain": set_clip_gain,
     "ableton.batch": batch,
     "ableton.undo": undo,
 }

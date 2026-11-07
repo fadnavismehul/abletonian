@@ -104,6 +104,7 @@ def _batch_confirm(batch: Batch) -> str | None:
 _OPERATIONS = (
     Operation("list_tracks", SafetyClass.READ_ONLY, "list_tracks"),
     Operation("list_devices", SafetyClass.READ_ONLY, "list_devices"),
+    Operation("list_clips", SafetyClass.READ_ONLY, "list_clips"),
     Operation("get_selected_rack_macros", SafetyClass.READ_ONLY, "read_rack_macros"),
     Operation("plan_drum_rack_extraction", SafetyClass.READ_ONLY, "plan_drum_rack_extraction"),
     Operation(
@@ -122,6 +123,7 @@ _OPERATIONS = (
     Operation(
         "set_device_sidechain", SafetyClass.TRANSFORMATIVE, "set_device_sidechain", repeatable=True
     ),
+    Operation("set_clip_gain", SafetyClass.TRANSFORMATIVE, "set_clip_gain", repeatable=True),
     Operation("insert_device", SafetyClass.ADDITIVE, "insert_device"),
     Operation("create_return_track", SafetyClass.ADDITIVE, "create_return_track"),
     # Without confirm, delete_device is a preview: Live reports what would go.

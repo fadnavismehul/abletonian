@@ -14,6 +14,8 @@ from abletonian.adapters.base import (
     AdapterError,
     AdapterResponseError,
     Batch,
+    ClipGainChange,
+    ClipQuery,
     DawAdapter,
     DeviceDelete,
     DeviceInsert,
@@ -75,6 +77,7 @@ _BATCH_TYPES = {
         ReturnTrackCreate,
         DeviceDelete,
         SidechainChange,
+        ClipGainChange,
     )
 }
 
@@ -290,6 +293,32 @@ def build_mcp(
             "list_devices", DeviceQuery(track=track, include_parameters=include_parameters)
         )
 
+    @mcp.tool(annotations=_op("list_clips"))
+    def list_clips(track: int | str) -> str:
+        """List a track's clips in Arrangement View: index, name, start and end
+        in beats and as Live's bar.beat.sixteenth position (from the song's
+        current time signature), whether each is an audio clip, and for audio
+        clips the gain with its display text ("-3.0 dB"). Session View clips
+        are not listed. Read-only: never changes the Live Set.
+
+        The index is what set_clip_gain takes as clip."""
+
+        return send("list_clips", ClipQuery(track=track))
+
+    @mcp.tool(annotations=_op("set_clip_gain"))
+    def set_clip_gain(track: int | str, clip: int | str, gain_db: float | str) -> str:
+        """Set an Arrangement View audio clip's gain (the clip's Gain, not the
+        track volume). Changes the Live Set; one Live undo step.
+
+        clip is the index from list_clips, or the clip's name if it is unique
+        on the track. gain_db is a number of dB (-3) or text ("-3 dB",
+        "-inf dB"). Live stores clip gain as 0..1, so the value that shows
+        gain_db is searched for; the result reports the display Live shows.
+        MIDI clips have no gain. Splitting clips is not possible from here.
+        """
+
+        return send("set_clip_gain", ClipGainChange(track=track, clip=clip, gain_db=gain_db))
+
     @mcp.tool(annotations=_op("set_device_parameter"))
     def set_device_parameter(
         track: int | str,
@@ -431,7 +460,7 @@ def build_mcp(
         ableton.set_device_parameter, ableton.set_track_output_routing,
         ableton.set_track_properties, ableton.set_mixer, ableton.insert_device,
         ableton.create_return_track, ableton.delete_device (needs "confirm": true),
-        ableton.set_device_sidechain.
+        ableton.set_device_sidechain, ableton.set_clip_gain.
         params use the same names as the matching tools. The batch stops at the
         first failure and reports what completed.
 

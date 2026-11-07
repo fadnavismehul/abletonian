@@ -6,6 +6,8 @@ from abletonian.adapters.base import (
     AdapterResponseError,
     AdapterUnavailable,
     Batch,
+    ClipGainChange,
+    ClipQuery,
     DawAdapter,
     DeviceDelete,
     DeviceInsert,
@@ -328,6 +330,25 @@ class SidechainWireTests(unittest.TestCase):
                         "channel": "Post FX",
                     },
                 ),
+            ],
+        )
+
+
+class ClipWireTests(unittest.TestCase):
+    def test_list_clips_and_set_clip_gain(self) -> None:
+        bridge = RecordingBridge()
+        adapter = RemoteScriptAdapter(bridge)
+
+        adapter.list_clips(ClipQuery(track="Bass"))
+        adapter.set_clip_gain(ClipGainChange(track=1, clip=0, gain_db="-3 dB"))
+        adapter.set_clip_gain(ClipGainChange(track="Bass", clip="Intro", gain_db=-6.0))
+
+        self.assertEqual(
+            bridge.calls,
+            [
+                ("ableton.list_clips", {"track": "Bass"}),
+                ("ableton.set_clip_gain", {"track": 1, "clip": 0, "gain_db": "-3 dB"}),
+                ("ableton.set_clip_gain", {"track": "Bass", "clip": "Intro", "gain_db": -6.0}),
             ],
         )
 

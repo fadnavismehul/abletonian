@@ -142,6 +142,8 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "delete_device",
                 "read_device_sidechain",
                 "set_device_sidechain",
+                "list_clips",
+                "set_clip_gain",
                 "batch",
                 "undo",
                 "undo_count",

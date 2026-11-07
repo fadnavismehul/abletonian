@@ -113,6 +113,15 @@ class RackRef(_Request):
     device: DeviceRef | None = None
 
 
+@dataclass(frozen=True)
+class ClipQuery(_Request):
+    """A track's Arrangement View clips."""
+
+    OPERATION: ClassVar[str] = "list_clips"
+
+    track: TrackRef
+
+
 # Requests that change the Set. These are the ones a Batch may hold.
 
 
@@ -145,6 +154,17 @@ class SidechainChange(_Request):
     device: DeviceRef
     from_track: str
     channel: str | None = None
+
+
+@dataclass(frozen=True)
+class ClipGainChange(_Request):
+    """Set an arrangement audio clip's gain, in dB ("-3 dB" or -3)."""
+
+    OPERATION: ClassVar[str] = "set_clip_gain"
+
+    track: TrackRef
+    clip: int | str
+    gain_db: ParameterValue
 
 
 @dataclass(frozen=True)
@@ -212,6 +232,7 @@ Change = (
     | ReturnTrackCreate
     | DeviceDelete
     | SidechainChange
+    | ClipGainChange
 )
 
 CHANGE_TYPES: tuple[type[_Request], ...] = (
@@ -223,6 +244,7 @@ CHANGE_TYPES: tuple[type[_Request], ...] = (
     ReturnTrackCreate,
     DeviceDelete,
     SidechainChange,
+    ClipGainChange,
 )
 
 
@@ -332,6 +354,8 @@ class DawAdapter(Protocol):
 
     def get_selected_rack_macros(self, ref: RackRef) -> dict[str, Any]: ...
 
+    def list_clips(self, query: ClipQuery) -> dict[str, Any]: ...
+
     def plan_drum_rack_extraction(self) -> dict[str, Any]: ...
 
     # Change the Set (DeviceDelete without confirm is a read-only preview).
@@ -350,6 +374,8 @@ class DawAdapter(Protocol):
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]: ...
 
     def set_device_sidechain(self, change: SidechainChange) -> dict[str, Any]: ...
+
+    def set_clip_gain(self, change: ClipGainChange) -> dict[str, Any]: ...
 
     def apply_batch(self, batch: Batch) -> dict[str, Any]: ...
 
