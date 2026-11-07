@@ -14,7 +14,32 @@ Classify every operation before execution.
 | Additive | Creates new material without changing originals | create track, create clip variation | Log and report created objects |
 | Transformative | Changes existing material but preserves logical object | rename track, color track, edit notes | Dry-run for batch changes |
 | Destructive | Deletes, replaces, crops, clears, or removes routing/devices | delete track, clear clip notes, remove chains | Explicit confirmation and backout |
-| Realtime | Affects transport or live parameter state | start playback, fire clip, remote parameter | Low-latency path and no agent loop promises |
+| Realtime | Affects transport or live parameter state, or observes it over time | start playback, fire clip, remote parameter; read track meters (`read_levels`) | Low-latency path and no agent loop promises; realtime reads below |
+
+### Realtime reads
+
+A realtime read observes playback over a window of time instead of reading
+the Set once. `read_levels` (issue #45) is the first: it samples track
+meters for 0.5 to 10 seconds. It is classed realtime because its answer
+depends on what is playing and when, and because it holds the bridge for the
+whole window. It is annotated read-only (`readOnlyHint` true,
+`destructiveHint` false; `Operation.changes_state=False` in `policy.py`),
+because it changes nothing. Rules for any realtime read:
+
+- Never start, stop, or move the transport, or change anything else, to get
+  a reading. If the state it needs is missing (the transport is stopped),
+  refuse with a clear code and hint rather than return empty values that
+  look like a real reading. If that state ends mid-window, stop and say so.
+- Sample on Live's main thread from its timer (`schedule_message`), one short
+  callback per tick that schedules the next. Never sleep or loop over time
+  on the main thread, and never touch Live from the socket thread.
+- Bound the window, the number of objects, and the number of samples, so a
+  read always ends. The socket thread waits at most the window plus a grace
+  period, and the MCP server's bridge timeout must be longer than that; the
+  adapter refuses before sending when it is not.
+- Say what the values are. Meter readings are Live's 0..1 positions, not
+  dBFS; do not convert units the LOM does not document, or mark any
+  conversion as a guess.
 
 ## Core Invariants
 

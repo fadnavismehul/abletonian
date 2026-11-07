@@ -61,13 +61,17 @@ class Operation:
     refuse_without_confirm: Callable[[Any], str | None] = _no_confirm_needed
     # A request that changes nothing (a delete preview) logs as read-only.
     is_preview: Callable[[Any], bool] = lambda request: False
+    # False for a realtime read (read_levels): it takes time and depends on
+    # playback, but changes neither the Set nor the transport.
+    changes_state: bool = True
 
     def annotations(self) -> ToolAnnotations:
-        read_only = self.safety_class is SafetyClass.READ_ONLY
+        read_only = self.safety_class is SafetyClass.READ_ONLY or not self.changes_state
         return ToolAnnotations(
             read_only_hint=read_only,
             # MCP's destructiveHint covers overwriting values as well as deleting.
-            destructive_hint=self.safety_class
+            destructive_hint=self.changes_state
+            and self.safety_class
             in (SafetyClass.TRANSFORMATIVE, SafetyClass.DESTRUCTIVE, SafetyClass.REALTIME),
             idempotent_hint=read_only or self.repeatable,
             open_world_hint=False,
@@ -108,6 +112,8 @@ _OPERATIONS = (
     Operation("list_clips", SafetyClass.READ_ONLY, "list_clips"),
     Operation("get_selected_rack_macros", SafetyClass.READ_ONLY, "read_rack_macros"),
     Operation("plan_drum_rack_extraction", SafetyClass.READ_ONLY, "plan_drum_rack_extraction"),
+    # The first realtime read: samples meters over seconds of playback.
+    Operation("read_levels", SafetyClass.REALTIME, "read_levels", changes_state=False),
     Operation(
         "set_device_parameter", SafetyClass.TRANSFORMATIVE, "set_device_parameter", repeatable=True
     ),

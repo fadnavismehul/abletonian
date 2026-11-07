@@ -19,6 +19,7 @@ from abletonian.adapters.base import (
     DevicePropertiesChange,
     DeviceQuery,
     DeviceRead,
+    LevelRead,
     MixerChange,
     ParameterChange,
     RackRef,
@@ -264,6 +265,10 @@ class FakeAbletonAdapter:
 
     def get_device(self, request: DeviceRead) -> dict[str, Any]:
         raise UnsupportedOperation(DeviceRead.OPERATION)
+
+    def read_levels(self, request: LevelRead) -> dict[str, Any]:
+        # The fake has no audio or transport to meter.
+        raise UnsupportedOperation(LevelRead.OPERATION)
 
     def set_device_parameter(self, change: ParameterChange) -> dict[str, Any]:
         raise UnsupportedOperation(ParameterChange.OPERATION)

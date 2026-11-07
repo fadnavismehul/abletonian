@@ -23,6 +23,8 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
   reaches Live (RFC 0004).
 - Every request, reads included, runs on Live's main thread through
   `schedule_message`. The socket thread never touches the Live API.
+  `read_levels` runs as a chain of callbacks, one per Live tick, and answers
+  when its window is over ([Reading levels](#reading-levels)).
 - Live-side operations live in `remote_scripts/Abletonian/live_ops.py`. They
   take the `song` object and plain JSON, so they are unit-tested with fakes in
   `tests/test_live_ops.py`.
@@ -35,6 +37,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `list_devices` | `ableton.list_devices` | Devices per track (or all tracks) with name, path, class and on/off, and rack chains with index, name and device count. Devices whose sidechain input Live exposes (Compressor) also show `sidechain: {"on", "from", "channel"}`; see [Sidechain](#sidechain). The tool defaults to `detail="compact"` (no parameters; issue #42, a full dump of one Drum Rack track reached 2.5 MB). `detail="full"` or `include_parameters=true` adds every parameter with raw value, range, display text, and options. `max_depth` (0-4, default 4) limits how many rack levels have their chains expanded; `max_depth=0` lists a Drum Rack's chains by name and device count only (`"truncated": true`). Without `detail` or `include_parameters` the bridge keeps its old default (full for one track, compact for all tracks); the tool always sends `include_parameters`. Read-only. |
 | `get_device` | `ableton.get_device` | One device, by the same index, name or path the write tools take, with its parameters (raw value, display text, min/max, options, original name). `parameters` keeps only those whose name or original name contains it (case-insensitive; Utility's `Gain` alias works), or any of a list. A rack's chains are listed by name and device count only. Use it to read one value instead of a whole `list_devices` dump. Read-only. |
 | `list_clips` | `ableton.list_clips` | A track's Arrangement View clips (`Track.arrangement_clips`, Live 11+): index, name, start/end/length in beats, start/end as `bar.beat.sixteenth` from the song's time signature, audio or MIDI, muted, and for audio clips `gain` (0..1) and `gain_display`. Read-only. Session View clips are not listed. Not validated in Live (issue #50). |
+| `read_levels` | `ableton.read_levels` | Realtime read (issue #45): sample track output meters for `seconds` (0.5 to 10, default 4) while Live plays, for up to 16 tracks (`tracks`, default every regular track; `include_returns`, `include_main`). Per track: `peak`, `rms_of_samples`, `hold_peak`, left/right peaks, `sample_count`. Meter positions 0..1, not dBFS. Never starts or stops the transport; refuses with `transport_stopped` when Live is not playing. See [Reading levels](#reading-levels). |
 | `generate_macro_cockpit` | `ableton.get_selected_rack_macros` | Read the selected Rack's macros (read-only) and return a grouped Macro Cockpit spec plus a text summary. See [RFC 0002](../rfcs/0002-selected-rack-macro-cockpit.md). |
 | `save_macro_cockpit` | none | Save a cockpit generated in this session as a JSON file, so it can be reopened. Cockpits are temporary until saved. |
 | `list_saved_macro_cockpits` | none | List saved cockpits. |
@@ -222,6 +225,56 @@ Action" or `Change "<parameter>"`; the Live API gives no way to name it.
 If setting `parameters` on a newly inserted device fails, `insert_device`
 deletes that device again, so a failed call leaves the track unchanged.
 
+### Reading levels
+
+`read_levels` (issue #45, not validated in Live) is the first realtime read:
+it takes wall-clock time and its answer depends on what is playing, but it
+changes neither the Set nor the transport and adds nothing to Undo History.
+
+How it runs, all on Live's main thread:
+
+1. One `schedule_message` callback checks the request, resolves the tracks
+   and checks `Song.is_playing`. A stopped transport is refused with
+   `transport_stopped`, so a read never returns a window of zeros as if the
+   tracks were silent.
+2. A sampling callback reads each track's meters, then schedules itself
+   again one Live tick later (`LEVEL_SAMPLE_TICK_DELAY`). It ends when the
+   window's time is up, after 400 samples, or when the transport stops
+   (the result then says `stopped_early` and warns).
+3. The socket thread only waits for the last callback, up to the window plus
+   5 s (`LEVEL_READ_GRACE_SECONDS`), then sends the answer. If Live is too
+   busy it answers `timeout`; the next tick ends the chain, and since nothing
+   was changed nothing needs putting back.
+
+Nothing sleeps or loops on the main thread. While a read runs, the bridge's
+single socket thread is busy, so other tool calls wait for it (at most about
+20 s). abletonian refuses a read before sending it if its bridge timeout
+(35 s by default) is shorter than the window plus 12 s.
+
+Per track the result gives `peak` (the highest momentary reading, the
+louder of left and right), `peak_left`, `peak_right`, `hold_peak` (the
+highest `output_meter_level`), `rms_of_samples` (the root mean square of the
+momentary readings: a rough loudness average at about the tick rate, not a
+true signal RMS), and `sample_count`. Warnings name tracks that read 0.0 for
+the whole window, tracks that could not be read, and MIDI tracks.
+
+Live Object Model assumptions, from the Cycling '74 LOM docs (Track, Song)
+as recalled, not re-checked for this change and not yet run in Live:
+
+- `Track.output_meter_left` / `output_meter_right`: momentary peak per
+  channel, 0.0 to 1.0, for tracks with audio output.
+- `Track.output_meter_level`: hold peak of the meter, 0.0 to 1.0; for MIDI
+  tracks a MIDI meter. A track with `has_audio_output` false is reported with
+  `"meter": "midi"`.
+- `Song.is_playing`: whether the transport runs.
+- The values are meter positions, not dBFS. Live does not document the
+  mapping to dB, so none is reported. That 1.0 is near 0 dBFS is a guess.
+- Live's timer runs about 10 ticks a second (community knowledge, not in the
+  LOM docs; a guess), so a 4 s window gives about 40 samples. The result
+  reports the real sample count and elapsed time.
+- Gain reduction per device (compressors, limiters) is out of scope. It is
+  probably not exposed to Remote Scripts (a guess; not checked).
+
 ### Errors
 
 Every error from the Remote Script has a `code` and, where one fits, a
@@ -235,11 +288,14 @@ names the object and lists the choices; the hint says what to do.
 | `not_supported` | Live or this Remote Script cannot do it | What to do instead, such as reinstalling an older Remote Script |
 | `confirmation_required` | A delete or multi-step undo without `confirm=true` | Ask the user first |
 | `timeout` | Live did not start, or did not finish, in time | Whether the change may still happen, and to check before retrying |
+| `transport_stopped` | `read_levels` while Live's transport is not playing | Start playback (the tool never does), then read again |
 | `unauthorized` | Wrong or missing bridge key (RFC 0004) | Same user for Live and abletonian; switch the slot |
 | `adapter_error` | Anything else | None, rather than a wrong one |
 
 A failed operation in `apply_batch` reports its `code` and `hint` under
-`failed`.
+`failed`. `read_levels` can also be refused by abletonian itself, before
+anything is sent, with `bridge_timeout_too_short` when the configured
+bridge timeout is shorter than the window plus 12 s.
 
 Checked in Live 12.4.16 on 2026-11-03 (PR #40, validation log below).
 

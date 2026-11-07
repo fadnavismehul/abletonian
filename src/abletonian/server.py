@@ -23,6 +23,7 @@ from abletonian.adapters.base import (
     DevicePropertiesChange,
     DeviceQuery,
     DeviceRead,
+    LevelRead,
     MixerChange,
     ParameterChange,
     RackRef,
@@ -345,6 +346,7 @@ def build_mcp(
 
         wanted = tuple(parameters) if isinstance(parameters, list) else parameters
         return send("get_device", DeviceRead(track=track, device=device, parameters=wanted))
+
     @mcp.tool(annotations=_op("list_clips"))
     def list_clips(track: int | str) -> str:
         """List a track's clips in Arrangement View: index, name, start and end
@@ -370,6 +372,46 @@ def build_mcp(
         """
 
         return send("set_clip_gain", ClipGainChange(track=track, clip=clip, gain_db=gain_db))
+
+    @mcp.tool(annotations=_op("read_levels"))
+    def read_levels(
+        tracks: list[int | str] | None = None,
+        seconds: float = 4.0,
+        include_returns: bool = False,
+        include_main: bool = False,
+    ) -> str:
+        """Watch track output meters for a few seconds of playback, to compare
+        levels between tracks or check gain staging. Does not change the Live
+        Set, and never starts or stops the transport: if Live is not playing
+        it refuses (ask the user to press play), and if playback stops during
+        the window it says so.
+
+        tracks takes up to 16 track names or indexes (default: every regular
+        track); include_returns and include_main add the return tracks and the
+        main track. seconds is the window, 0.5 to 10 (default 4); the call
+        takes that long. Pick a loud, representative part of the song.
+
+        Per track it returns peak (highest meter reading), rms_of_samples (the
+        root mean square of the readings, a rough loudness average, not a
+        true signal RMS), hold_peak (Live's held peak meter), left/right peaks,
+        and sample_count. Values are Live meter positions from 0.0 to 1.0, NOT
+        dBFS; Live does not document how they map to dB, so do not convert
+        them. Compare tracks with each other. A peak at or near 1.0 is a reason
+        to check Live's meters for clipping (a guess that the top of the meter
+        is near 0 dBFS; not confirmed). Device gain reduction is not read.
+        Other tool calls wait while a read runs.
+        """
+
+        try:
+            request = LevelRead(
+                tracks=tuple(tracks) if tracks is not None else None,
+                seconds=seconds,
+                include_returns=include_returns,
+                include_main=include_main,
+            )
+        except (TypeError, ValueError) as exc:
+            return f"{exc}. Nothing was read."
+        return send("read_levels", request)
 
     @mcp.tool(annotations=_op("set_device_parameter"))
     def set_device_parameter(

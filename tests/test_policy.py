@@ -35,6 +35,7 @@ TOOL_OPERATIONS = {
     "get_device": "get_device",
     "list_clips": "list_clips",
     "set_clip_gain": "set_clip_gain",
+    "read_levels": "read_levels",
     "set_device_parameter": "set_device_parameter",
     "set_track_output_routing": "set_track_output_routing",
     "set_track_properties": "set_track_properties",
