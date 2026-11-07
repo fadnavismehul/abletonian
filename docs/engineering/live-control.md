@@ -45,9 +45,12 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `set_device_sidechain` | `ableton.set_device_sidechain` | Point a Compressor's sidechain input at a source by display name (`from_track`, such as `"2-32 Pad Kit Jazz"` or just `"32 Pad Kit Jazz"` when unique) and an optional `channel` (`"Post FX"`). Transformative, one undo step, batchable. Only the routing: "S/C On" is set with `set_device_parameter`. Not validated in Live (issue #49). |
 | `set_clip_gain` | `ableton.set_clip_gain` | Set an arrangement audio clip's Gain in dB (`-3`, `"-3 dB"`, `"-inf dB"`). `clip` is the `list_clips` index (`0` or `"#0"`) or a unique clip name. Transformative, one undo step, batchable. See [Clips](#clips). Not validated in Live (issue #50). |
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). Live shows a return's letter in front of its name, so a leading `A-` is dropped when renaming return A. |
+| `set_device_properties` | `ableton.set_device_properties` | Rename a device (`Device.name`), at the top of a track or inside racks by its path. Transformative. Returns the name and printed path before and after; renaming can change the device's own path and a same-named sibling's (issue #46). |
+| `set_chain_properties` | `ableton.set_chain_properties` | Rename a rack chain (`Chain.name`). `chain` is the rack's path plus the chain's name or index: `"Vocal Rack/Main"`, `"Drum Rack/returns/0"`. Transformative. Returns the name and path before and after. |
 | `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. |
-| `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, and set its parameters right away. |
+| `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, optionally `name` it, and set its parameters right away. If the name or a parameter cannot be set, the new device is deleted again. |
 | `create_return_track` | `ableton.create_return_track` | Add a return track at the end (`Song.create_return_track`), with an optional name and colour. Additive. |
+| `create_track` | `ableton.create_track` | Add an empty MIDI or audio track (`Song.create_midi_track(index)` / `Song.create_audio_track(index)`; index -1 or omitted appends). Optional `name`, `color` and `color_index`; if they cannot be set, the new track is deleted again (`Song.delete_track`). Returns the track as compact `list_tracks` shows it, and a note when later tracks moved down one index. Additive. Groups are not created. |
 | `delete_device` | `ableton.delete_device` | Delete a device (`Track.delete_device`). Destructive: without `confirm=true` it only returns the device and its current settings. The tool accepts only a real boolean, so `"true"` or `1` is refused. In `apply_batch`, every delete needs `"confirm": true` or the whole batch is refused before anything runs, and delete targets refer to the set as it was before the batch, so deleting index 0 does not shift a later index 1. |
 | `apply_batch` | `ableton.batch` | Run many changes as one Live undo step (two when it mixes parameter changes with other changes), or one step per operation with `atomic=false`. Stops at the first failure. |
 | `undo_last_change` | `ableton.undo` | Live Undo, `count` times (default 1, at most 20; more than 1 needs `confirm=true`). |
@@ -133,6 +136,14 @@ the original gain is put back. Guesses, not yet checked in Live:
 - that the probe writes stay in one undo step and leave no extra ones;
 - that `arrangement_clips` is missing or fails, rather than being empty, on
   tracks without clips, and that bar 1 starts at beat 0.
+Renaming a device or chain (`set_device_properties`, `set_chain_properties`,
+`insert_device` with `name`) works out the printed path again after the
+rename and returns it. `Device.name` and `Chain.name` are read/write in the
+Cycling '74 LOM docs. Not yet run in Live: a Live check should confirm that
+the name Live shows (and reads back) is the one written, that renaming a
+device inside a rack, or a chain, changes the paths `list_devices` prints
+the way the fakes do, and that renaming a Drum Rack chain does not also
+rename its pad in an unexpected way.
 
 ### Values by display text
 
@@ -502,7 +513,13 @@ Live's Python API has no call to create a group from tracks, and none to
 reorder tracks. Creating group buses therefore still needs Live's UI
 (select tracks, Cmd+G). Once the groups exist, these tools can colour and
 name them, route tracks into them, and insert a Glue Compressor on them.
-Creating tracks and saving the set are also not exposed.
+Saving the set is also not exposed.
+
+`create_track` (issue #47) is not yet run in Live. A Live check should
+confirm: the new track lands at the requested index; what happens when that
+index falls inside a folded or unfolded group (a guess: Live may put the
+track into the group); that the create and the name/colour form one undo
+step; and that the fail-closed `Song.delete_track` leaves no track behind.
 
 ## Prior art
 

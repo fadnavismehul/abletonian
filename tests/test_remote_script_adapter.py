@@ -6,11 +6,13 @@ from abletonian.adapters.base import (
     AdapterResponseError,
     AdapterUnavailable,
     Batch,
+    ChainPropertiesChange,
     ClipGainChange,
     ClipQuery,
     DawAdapter,
     DeviceDelete,
     DeviceInsert,
+    DevicePropertiesChange,
     DeviceQuery,
     DeviceRead,
     MixerChange,
@@ -19,12 +21,14 @@ from abletonian.adapters.base import (
     ReturnTrackCreate,
     RoutingChange,
     SidechainChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
 )
 from abletonian.adapters.remote_script import (
     OLD_SCRIPT_BATCH_WARNING,
+    OLD_SCRIPT_INSERT_NAME_WARNING,
     OLD_SCRIPT_UNDO_WARNING,
     RemoteScriptAdapter,
 )
@@ -155,6 +159,43 @@ class WireShapeTests(unittest.TestCase):
                 ),
             ),
             (
+                DevicePropertiesChange(track="Vox", device="#1", name="De-esser"),
+                self.adapter.set_device_properties,
+                (
+                    "ableton.set_device_properties",
+                    {"track": "Vox", "device": "#1", "name": "De-esser"},
+                ),
+            ),
+            (
+                ChainPropertiesChange(track="Vox", chain="Vocal Rack/Main", name="Body"),
+                self.adapter.set_chain_properties,
+                (
+                    "ableton.set_chain_properties",
+                    {"track": "Vox", "chain": "Vocal Rack/Main", "name": "Body"},
+                ),
+            ),
+            (
+                DeviceInsert(track=1, device_name="Compressor", name="De-esser"),
+                self.adapter.insert_device,
+                (
+                    "ableton.insert_device",
+                    {"track": 1, "device_name": "Compressor", "name": "De-esser"},
+                ),
+            ),
+            (
+                TrackCreate(kind="audio", name="Vox Double", index=2, color_index=5),
+                self.adapter.create_track,
+                (
+                    "ableton.create_track",
+                    {"kind": "audio", "name": "Vox Double", "index": 2, "color_index": 5},
+                ),
+            ),
+            (
+                TrackCreate(kind="midi"),
+                self.adapter.create_track,
+                ("ableton.create_track", {"kind": "midi"}),
+            ),
+            (
                 ReturnTrackCreate(name="Room"),
                 self.adapter.create_return_track,
                 ("ableton.create_return_track", {"name": "Room"}),
@@ -224,6 +265,29 @@ class BatchTests(unittest.TestCase):
             Batch(operations=(MixerChange(track=0, mute=True),), atomic=False)
         )
         self.assertEqual(result["warning"], OLD_SCRIPT_BATCH_WARNING)
+
+
+class InsertNameTests(unittest.TestCase):
+    def test_name_that_reached_live_has_no_warning(self) -> None:
+        bridge = RecordingBridge({"ableton.insert_device": {"device": {"name": "De-esser"}}})
+        result = RemoteScriptAdapter(bridge).insert_device(
+            DeviceInsert(track=0, device_name="Compressor", name="De-esser")
+        )
+        self.assertNotIn("warning", result)
+
+    def test_old_script_that_ignored_the_name_warns(self) -> None:
+        bridge = RecordingBridge({"ableton.insert_device": {"device": {"name": "Compressor"}}})
+        result = RemoteScriptAdapter(bridge).insert_device(
+            DeviceInsert(track=0, device_name="Compressor", name="De-esser")
+        )
+        self.assertEqual(result["warning"], OLD_SCRIPT_INSERT_NAME_WARNING)
+
+    def test_no_name_no_warning(self) -> None:
+        bridge = RecordingBridge({"ableton.insert_device": {"device": {"name": "Compressor"}}})
+        result = RemoteScriptAdapter(bridge).insert_device(
+            DeviceInsert(track=0, device_name="Compressor")
+        )
+        self.assertNotIn("warning", result)
 
 
 class UndoTests(unittest.TestCase):

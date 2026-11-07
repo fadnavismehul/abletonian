@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import webbrowser
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
@@ -14,11 +14,13 @@ from abletonian.adapters.base import (
     AdapterError,
     AdapterResponseError,
     Batch,
+    ChainPropertiesChange,
     ClipGainChange,
     ClipQuery,
     DawAdapter,
     DeviceDelete,
     DeviceInsert,
+    DevicePropertiesChange,
     DeviceQuery,
     DeviceRead,
     MixerChange,
@@ -27,6 +29,7 @@ from abletonian.adapters.base import (
     ReturnTrackCreate,
     RoutingChange,
     SidechainChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -73,9 +76,12 @@ _BATCH_TYPES = {
         ParameterChange,
         RoutingChange,
         TrackPropertiesChange,
+        DevicePropertiesChange,
+        ChainPropertiesChange,
         MixerChange,
         DeviceInsert,
         ReturnTrackCreate,
+        TrackCreate,
         DeviceDelete,
         SidechainChange,
         ClipGainChange,
@@ -439,6 +445,36 @@ def build_mcp(
             TrackPropertiesChange(track=track, name=name, color=color, color_index=color_index),
         )
 
+    @mcp.tool(annotations=_op("set_device_properties"))
+    def set_device_properties(track: int | str, device: int | str, name: str) -> str:
+        """Rename a device on a track, or inside a rack by its path from
+        list_devices (such as "Vocal Rack/Main/Compressor"). Changes the Live
+        Set; Live's Undo reverts it.
+
+        Use it to tell apart devices with the same name, for example two
+        Compressors where one is a de-esser. Returns the name and path before
+        and after: renaming can change the device's path (and a same-named
+        sibling's), so use the new path from here or list_devices afterwards."""
+
+        return send(
+            "set_device_properties",
+            DevicePropertiesChange(track=track, device=device, name=name),
+        )
+
+    @mcp.tool(annotations=_op("set_chain_properties"))
+    def set_chain_properties(track: int | str, chain: str, name: str) -> str:
+        """Rename a chain inside a rack. chain is the rack's path from
+        list_devices followed by the chain name or index: "Vocal Rack/Main",
+        "Drum Rack/returns/0" for a Drum Rack return chain, or
+        "Synth/Pad/Inner Rack/Deep" for a rack inside a rack. Changes the Live
+        Set; Live's Undo reverts it. Returns the name and path before and
+        after; paths of devices in this chain change with it."""
+
+        return send(
+            "set_chain_properties",
+            ChainPropertiesChange(track=track, chain=chain, name=name),
+        )
+
     @mcp.tool(annotations=_op("set_mixer"))
     def set_mixer(
         track: int | str,
@@ -465,16 +501,23 @@ def build_mcp(
         device_name: str,
         index: int | None = None,
         parameters: dict[str, float | str] | None = None,
+        name: str | None = None,
     ) -> str:
         """Insert a native Live device (for example "Utility", "EQ Eight",
         "Glue Compressor") by its browser name, using Track.insert_device
         (Live 12.3+). index is the chain position; omit it to append at the end.
-        parameters are set on the new device right away, e.g. {"Gain": "-3 dB"}."""
+        parameters are set on the new device right away, e.g. {"Gain": "-3 dB"}.
+        name renames the new device, e.g. "De-esser" for a second Compressor.
+        If a parameter or the name cannot be set, the device is removed again."""
 
         return send(
             "insert_device",
             DeviceInsert(
-                track=track, device_name=device_name, index=index, parameters=parameters
+                track=track,
+                device_name=device_name,
+                index=index,
+                parameters=parameters,
+                name=name,
             ),
         )
 
@@ -486,6 +529,31 @@ def build_mcp(
         itself, so pass "Room" (or "E-Room") for "E-Room"."""
 
         return send("create_return_track", ReturnTrackCreate(name=name, color=color))
+
+    @mcp.tool(annotations=_op("create_track"))
+    def create_track(
+        kind: Literal["midi", "audio"],
+        name: str | None = None,
+        index: int | None = None,
+        color_index: int | None = None,
+        color: str | None = None,
+    ) -> str:
+        """Add a new, empty MIDI or audio track. Additive; one Live undo step.
+
+        index is where it goes among the regular tracks (0 is first); omit it
+        to add the track after the last one. Tracks after it move down one
+        index, so refresh indexes with list_tracks. name, color ("#RRGGBB",
+        snapped to Live's palette) and color_index (a palette slot) are
+        optional; if they cannot be set, the new track is removed again.
+        Returns the new track as list_tracks shows it. Group tracks cannot be
+        created this way."""
+
+        return send(
+            "create_track",
+            TrackCreate(
+                kind=kind, name=name, index=index, color_index=color_index, color=color
+            ),
+        )
 
     @mcp.tool(annotations=_op("delete_device"))
     def delete_device(track: int | str, device: int | str, confirm: StrictBool = False) -> str:
@@ -504,9 +572,10 @@ def build_mcp(
 
         Each operation is {"method": ..., "params": {...}}. Methods:
         ableton.set_device_parameter, ableton.set_track_output_routing,
-        ableton.set_track_properties, ableton.set_mixer, ableton.insert_device,
-        ableton.create_return_track, ableton.delete_device (needs "confirm": true),
-        ableton.set_device_sidechain, ableton.set_clip_gain.
+        ableton.set_track_properties, ableton.set_device_properties,
+        ableton.set_chain_properties, ableton.set_mixer, ableton.insert_device,
+        ableton.create_return_track, ableton.create_track, ableton.delete_device
+        (needs "confirm": true), ableton.set_device_sidechain, ableton.set_clip_gain.
         params use the same names as the matching tools. The batch stops at the
         first failure and reports what completed.
 

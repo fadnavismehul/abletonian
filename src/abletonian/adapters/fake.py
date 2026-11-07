@@ -11,10 +11,12 @@ from abletonian.adapters.base import (
     AdapterHealth,
     AdapterRefused,
     Batch,
+    ChainPropertiesChange,
     ClipGainChange,
     ClipQuery,
     DeviceDelete,
     DeviceInsert,
+    DevicePropertiesChange,
     DeviceQuery,
     DeviceRead,
     MixerChange,
@@ -23,6 +25,7 @@ from abletonian.adapters.base import (
     ReturnTrackCreate,
     RoutingChange,
     SidechainChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -271,6 +274,12 @@ class FakeAbletonAdapter:
     def set_track_properties(self, change: TrackPropertiesChange) -> dict[str, Any]:
         raise UnsupportedOperation(TrackPropertiesChange.OPERATION)
 
+    def set_device_properties(self, change: DevicePropertiesChange) -> dict[str, Any]:
+        raise UnsupportedOperation(DevicePropertiesChange.OPERATION)
+
+    def set_chain_properties(self, change: ChainPropertiesChange) -> dict[str, Any]:
+        raise UnsupportedOperation(ChainPropertiesChange.OPERATION)
+
     def set_mixer(self, change: MixerChange) -> dict[str, Any]:
         raise UnsupportedOperation(MixerChange.OPERATION)
 
@@ -279,6 +288,9 @@ class FakeAbletonAdapter:
 
     def create_return_track(self, change: ReturnTrackCreate) -> dict[str, Any]:
         raise UnsupportedOperation(ReturnTrackCreate.OPERATION)
+
+    def create_track(self, change: TrackCreate) -> dict[str, Any]:
+        raise UnsupportedOperation(TrackCreate.OPERATION)
 
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]:
         raise UnsupportedOperation(DeviceDelete.OPERATION)

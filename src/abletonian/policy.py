@@ -120,6 +120,18 @@ _OPERATIONS = (
     Operation(
         "set_track_properties", SafetyClass.TRANSFORMATIVE, "set_track_properties", repeatable=True
     ),
+    Operation(
+        "set_device_properties",
+        SafetyClass.TRANSFORMATIVE,
+        "set_device_properties",
+        repeatable=True,
+    ),
+    Operation(
+        "set_chain_properties",
+        SafetyClass.TRANSFORMATIVE,
+        "set_chain_properties",
+        repeatable=True,
+    ),
     Operation("set_mixer", SafetyClass.TRANSFORMATIVE, "set_mixer", repeatable=True),
     Operation(
         "set_device_sidechain", SafetyClass.TRANSFORMATIVE, "set_device_sidechain", repeatable=True
@@ -127,6 +139,7 @@ _OPERATIONS = (
     Operation("set_clip_gain", SafetyClass.TRANSFORMATIVE, "set_clip_gain", repeatable=True),
     Operation("insert_device", SafetyClass.ADDITIVE, "insert_device"),
     Operation("create_return_track", SafetyClass.ADDITIVE, "create_return_track"),
+    Operation("create_track", SafetyClass.ADDITIVE, "create_track"),
     # Without confirm, delete_device is a preview: Live reports what would go.
     Operation(
         "delete_device",
