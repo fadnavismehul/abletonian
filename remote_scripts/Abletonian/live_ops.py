@@ -30,6 +30,8 @@ BATCHABLE_METHODS = (
     "ableton.set_device_parameter",
     "ableton.set_track_output_routing",
     "ableton.set_track_properties",
+    "ableton.set_device_properties",
+    "ableton.set_chain_properties",
     "ableton.set_mixer",
     "ableton.insert_device",
     "ableton.create_return_track",
@@ -326,6 +328,74 @@ def set_track_properties(song, params):
     }
 
 
+def set_device_properties(song, params):
+    """Rename a device, at the top of a track or inside a rack. Transformative.
+
+    ``Device.name`` is read/write in the Live Object Model (Cycling '74 LOM
+    docs, Device). Renaming can change this device's printed path and its
+    siblings' (a now-unique name replaces an index), so the new path is
+    worked out again after the rename.
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    name = _new_name(params, "device")
+    path, device_index, device, _owner = resolve_device_path(track, _required(params, "device"))
+    before = {"name": _str(device.name), "path": path}
+    device.name = name
+    after_path = _device_path_of(track, device)
+    return {
+        "track": _track_ref_payload(kind, index, track),
+        "device": {
+            "index": device_index,
+            "name": _str(device.name),
+            "path": after_path,
+            "class_name": _str(_get(device, "class_name", "")),
+        },
+        "before": before,
+        "after": {"name": _str(device.name), "path": after_path},
+    }
+
+
+def set_chain_properties(song, params):
+    """Rename a rack chain. Transformative.
+
+    ``chain`` is a path to a rack followed by a chain, as list_devices prints
+    them: ``"Instrument Rack/Piano"``, ``"Drum Rack/returns/0"`` for a Drum
+    Rack return chain, or ``"Rack/Chain/Inner Rack/Deep"`` for nested racks.
+    ``Chain.name`` is read/write in the Live Object Model (Cycling '74 LOM
+    docs, Chain).
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    name = _new_name(params, "chain")
+    rack_path, rack, chains, chain_index, chain, returns = resolve_chain_path(
+        track, _required(params, "chain")
+    )
+    before_path = _chain_path(rack_path, returns, chains, chain_index)
+    before = {"name": _str(chain.name), "path": before_path}
+    chain.name = name
+    after_path = _chain_path(rack_path, returns, chains, chain_index)
+    return {
+        "track": _track_ref_payload(kind, index, track),
+        "rack": {"name": _str(rack.name), "path": rack_path},
+        "chain": {
+            "index": chain_index,
+            "name": _str(chain.name),
+            "path": after_path,
+            "is_return_chain": returns,
+        },
+        "before": before,
+        "after": {"name": _str(chain.name), "path": after_path},
+    }
+
+
+def _new_name(params, label):
+    name = _required(params, "name")
+    if not isinstance(name, str) or not name.strip():
+        raise InvalidValue(f"the new {label} name must be non-empty text")
+    return name
+
+
 def set_mixer(song, params):
     kind, index, track = resolve_track(song, _required(params, "track"))
     mixer = track.mixer_device
@@ -368,6 +438,7 @@ def set_mixer(song, params):
 def insert_device(song, params):
     kind, index, track = resolve_track(song, _required(params, "track"))
     device_name = str(_required(params, "device_name"))
+    new_name = _new_name(params, "device") if params.get("name") is not None else None
     position = params.get("index")
     insert = getattr(track, "insert_device", None)
     if not callable(insert):
@@ -409,6 +480,9 @@ def insert_device(song, params):
     device = devices[position]
     changed = []
     try:
+        if new_name is not None:
+            # Device.name is read/write (Cycling '74 LOM docs, Device).
+            device.name = new_name
         for parameter_ref, value in (params.get("parameters") or {}).items():
             parameter = resolve_parameter(device, parameter_ref)
             set_parameter_value(parameter, value)
@@ -888,6 +962,81 @@ def _printable_path(track, top_index, tail, device):
 
 def _has_device_named(track, name):
     return any(_str(d.name).lower() == name.lower() for d in _tuple(track.devices))
+
+
+def resolve_chain_path(track, ref):
+    """Resolve a rack chain on a track from ``<rack path>/<chain>``.
+
+    ``<rack path>`` is anything ``resolve_device_path`` accepts for the rack;
+    ``<rack path>/returns/<chain>`` picks a Drum Rack return chain. The chain
+    is a name or an index. Returns ``(rack_path, rack, chains, chain_index,
+    chain, is_return_chain)``, where ``rack_path`` is the rack's printed path
+    (None if none resolves back to it).
+
+    "returns" before the last part is always the return-chain marker: chains
+    and devices named "returns" are printed by index (``_path_segment``).
+    """
+
+    text = str(ref)
+    if "/" not in text:
+        raise InvalidValue(
+            f"chain path '{ref}' needs a rack and a chain, such as 'Instrument Rack/Piano'",
+            DEVICE_HINT,
+        )
+    head, chain_ref = text.rsplit("/", 1)
+    returns = False
+    if "/" in head and head.rsplit("/", 1)[1].strip().lower() == "returns":
+        head = head.rsplit("/", 1)[0]
+        returns = True
+    if not head.strip() or not chain_ref.strip():
+        raise InvalidValue(f"chain path '{ref}' has an empty part", DEVICE_HINT)
+    rack_path, _index, rack, _owner = resolve_device_path(track, head)
+    where = rack_path or _str(rack.name)
+    if not bool(_get(rack, "can_have_chains", False)):
+        raise NotFound(f"'{where}' is not a Rack, so it has no chains", DEVICE_HINT)
+    chains = _tuple(_get(rack, "return_chains" if returns else "chains", ()))
+    label = "return chain" if returns else "chain"
+    chain_index, chain = _pick(chains, chain_ref, label, where)
+    return rack_path, rack, chains, chain_index, chain, returns
+
+
+def _chain_path(rack_path, returns, chains, chain_index):
+    """How list_devices prints a chain's place: the rack's path plus the chain."""
+
+    if rack_path is None:
+        return None
+    middle = "/returns" if returns else ""
+    return f"{rack_path}{middle}/{_path_segment(chains, chain_index)}"
+
+
+def _device_path_of(track, target):
+    """The printed path of ``target`` on ``track`` as it is now, or None."""
+
+    for top_index, device in enumerate(_tuple(track.devices)):
+        if _same(device, target):
+            return _printable_path(track, top_index, [], device)
+        found, path = _find_in_chains(track, top_index, device, [], target)
+        if found:
+            return path
+    return None
+
+
+def _find_in_chains(track, top_index, rack, tail, target):
+    if not bool(_get(rack, "can_have_chains", False)):
+        return False, None
+    for marker, attribute in (((), "chains"), (("returns",), "return_chains")):
+        chains = _tuple(_get(rack, attribute, ()))
+        for chain_index, chain in enumerate(chains):
+            chain_tail = [*tail, *marker, _path_segment(chains, chain_index)]
+            devices = _tuple(_get(chain, "devices", ()))
+            for device_index, device in enumerate(devices):
+                device_tail = [*chain_tail, _path_segment(devices, device_index)]
+                if _same(device, target):
+                    return True, _printable_path(track, top_index, device_tail, device)
+                found, path = _find_in_chains(track, top_index, device, device_tail, target)
+                if found:
+                    return True, path
+    return False, None
 
 
 def _pick(items, ref, label, where):
@@ -1413,6 +1562,8 @@ _HANDLERS = {
     "ableton.set_device_parameter": set_device_parameter,
     "ableton.set_track_output_routing": set_track_output_routing,
     "ableton.set_track_properties": set_track_properties,
+    "ableton.set_device_properties": set_device_properties,
+    "ableton.set_chain_properties": set_chain_properties,
     "ableton.set_mixer": set_mixer,
     "ableton.insert_device": insert_device,
     "ableton.create_return_track": create_return_track,

@@ -146,6 +146,28 @@ class TrackPropertiesChange(_Request):
 
 
 @dataclass(frozen=True)
+class DevicePropertiesChange(_Request):
+    """Rename a device; ``device`` may be a path inside racks."""
+
+    OPERATION: ClassVar[str] = "set_device_properties"
+
+    track: TrackRef
+    device: DeviceRef
+    name: str
+
+
+@dataclass(frozen=True)
+class ChainPropertiesChange(_Request):
+    """Rename a rack chain; ``chain`` is a rack path plus a chain, "Rack/Piano"."""
+
+    OPERATION: ClassVar[str] = "set_chain_properties"
+
+    track: TrackRef
+    chain: str
+    name: str
+
+
+@dataclass(frozen=True)
 class MixerChange(_Request):
     OPERATION: ClassVar[str] = "set_mixer"
 
@@ -165,6 +187,7 @@ class DeviceInsert(_Request):
     device_name: str
     index: int | None = None
     parameters: Mapping[str, ParameterValue] | None = None
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +218,8 @@ Change = (
     ParameterChange
     | RoutingChange
     | TrackPropertiesChange
+    | DevicePropertiesChange
+    | ChainPropertiesChange
     | MixerChange
     | DeviceInsert
     | ReturnTrackCreate
@@ -205,6 +230,8 @@ CHANGE_TYPES: tuple[type[_Request], ...] = (
     ParameterChange,
     RoutingChange,
     TrackPropertiesChange,
+    DevicePropertiesChange,
+    ChainPropertiesChange,
     MixerChange,
     DeviceInsert,
     ReturnTrackCreate,
@@ -326,6 +353,10 @@ class DawAdapter(Protocol):
     def set_track_output_routing(self, change: RoutingChange) -> dict[str, Any]: ...
 
     def set_track_properties(self, change: TrackPropertiesChange) -> dict[str, Any]: ...
+
+    def set_device_properties(self, change: DevicePropertiesChange) -> dict[str, Any]: ...
+
+    def set_chain_properties(self, change: ChainPropertiesChange) -> dict[str, Any]: ...
 
     def set_mixer(self, change: MixerChange) -> dict[str, Any]: ...
 

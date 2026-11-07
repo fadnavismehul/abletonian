@@ -118,6 +118,18 @@ _OPERATIONS = (
     Operation(
         "set_track_properties", SafetyClass.TRANSFORMATIVE, "set_track_properties", repeatable=True
     ),
+    Operation(
+        "set_device_properties",
+        SafetyClass.TRANSFORMATIVE,
+        "set_device_properties",
+        repeatable=True,
+    ),
+    Operation(
+        "set_chain_properties",
+        SafetyClass.TRANSFORMATIVE,
+        "set_chain_properties",
+        repeatable=True,
+    ),
     Operation("set_mixer", SafetyClass.TRANSFORMATIVE, "set_mixer", repeatable=True),
     Operation("insert_device", SafetyClass.ADDITIVE, "insert_device"),
     Operation("create_return_track", SafetyClass.ADDITIVE, "create_return_track"),

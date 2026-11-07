@@ -444,5 +444,194 @@ class LiveOpsTests(unittest.TestCase):
         self.assertEqual(len(result["tracks"]), 4)
 
 
+def named_device(name, class_name="Compressor2"):
+    return SimpleNamespace(
+        name=name,
+        class_name=class_name,
+        can_have_chains=False,
+        parameters=(Param("Device On", 1.0, items=("Off", "On")),),
+    )
+
+
+def chain(name, devices):
+    return SimpleNamespace(name=name, devices=list(devices))
+
+
+def rack(name, chains, return_chains=(), class_name="AudioEffectGroupDevice"):
+    return SimpleNamespace(
+        name=name,
+        class_name=class_name,
+        can_have_chains=True,
+        chains=tuple(chains),
+        return_chains=tuple(return_chains),
+        parameters=(Param("Device On", 1.0, items=("Off", "On")),),
+    )
+
+
+class RenameDeviceTests(unittest.TestCase):
+    """Issue #46: Device.name and Chain.name are read/write (Cycling '74 LOM docs)."""
+
+    def setUp(self):
+        self.song = Song()
+        self.track = self.song.tracks[2]
+        self.inner = rack("Inner", [chain("Deep", [named_device("Reverb", "Reverb")])])
+        self.vocal_rack = rack(
+            "Vocal Rack",
+            [chain("Main", [named_device("Compressor"), self.inner]), chain("Air", [])],
+        )
+        self.kit = rack(
+            "Kit",
+            [chain("Kick", [])],
+            return_chains=[chain("Room", [named_device("Limiter", "Limiter")])],
+            class_name="DrumGroupDevice",
+        )
+        self.track.devices = [
+            named_device("Compressor"),
+            named_device("Compressor"),
+            self.vocal_rack,
+            self.kit,
+        ]
+
+    def rename(self, device, name):
+        return live_ops.handle(
+            self.song,
+            "ableton.set_device_properties",
+            {"track": "Vox", "device": device, "name": name},
+        )
+
+    def rename_chain(self, path, name):
+        return live_ops.handle(
+            self.song,
+            "ableton.set_chain_properties",
+            {"track": "Vox", "chain": path, "name": name},
+        )
+
+    def test_renames_a_duplicate_top_level_device_and_reports_new_paths(self):
+        result = self.rename("#1", "De-esser")
+
+        self.assertEqual(self.track.devices[1].name, "De-esser")
+        self.assertEqual(result["before"], {"name": "Compressor", "path": "1"})
+        self.assertEqual(result["after"], {"name": "De-esser", "path": "De-esser"})
+        self.assertEqual(result["device"]["index"], 1)
+        # The other Compressor is unique now, so list_devices prints it by name.
+        listed = live_ops.handle(self.song, "ableton.list_devices", {"track": "Vox"})
+        paths = [d["path"] for d in listed["tracks"][0]["devices"]]
+        self.assertEqual(paths, ["Compressor", "De-esser", "Vocal Rack", "Kit"])
+        self.assertEqual(self.song.undo_steps, ["begin", "end"])
+
+    def test_renames_a_device_inside_nested_racks(self):
+        result = self.rename("Vocal Rack/Main/Inner/Deep/Reverb", "Plate")
+
+        self.assertEqual(self.inner.chains[0].devices[0].name, "Plate")
+        self.assertEqual(result["after"]["path"], "Vocal Rack/Main/Inner/Deep/Plate")
+        _path, _index, device, _owner = live_ops.resolve_device_path(
+            self.track, result["after"]["path"]
+        )
+        self.assertIs(device, self.inner.chains[0].devices[0])
+
+    def test_renaming_a_rack_changes_the_paths_below_it(self):
+        result = self.rename("Vocal Rack", "Vox Chain")
+
+        self.assertEqual(result["after"]["path"], "Vox Chain")
+        self.assertEqual(
+            live_ops.resolve_device_path(self.track, "Vox Chain/Main/Compressor")[2],
+            self.vocal_rack.chains[0].devices[0],
+        )
+
+    def test_rejects_empty_names_and_missing_devices_without_changing_anything(self):
+        for name in ("", "   ", 5):
+            with self.subTest(name=name), self.assertRaisesRegex(LiveOpsError, "non-empty"):
+                self.rename(0, name)
+        with self.assertRaisesRegex(LiveOpsError, "missing required parameter 'name'"):
+            live_ops.handle(
+                self.song, "ableton.set_device_properties", {"track": "Vox", "device": 0}
+            )
+        with self.assertRaisesRegex(LiveOpsError, "no device 'Gate'"):
+            self.rename("Vocal Rack/Main/Gate", "X")
+        self.assertEqual([d.name for d in self.track.devices][:2], ["Compressor", "Compressor"])
+
+    def test_renames_a_rack_chain(self):
+        result = self.rename_chain("Vocal Rack/Main", "Body")
+
+        self.assertEqual(self.vocal_rack.chains[0].name, "Body")
+        self.assertEqual(result["before"], {"name": "Main", "path": "Vocal Rack/Main"})
+        self.assertEqual(result["after"], {"name": "Body", "path": "Vocal Rack/Body"})
+        self.assertEqual(result["rack"], {"name": "Vocal Rack", "path": "Vocal Rack"})
+        self.assertFalse(result["chain"]["is_return_chain"])
+        self.assertEqual(
+            live_ops.resolve_device_path(self.track, "Vocal Rack/Body/Compressor")[2],
+            self.vocal_rack.chains[0].devices[0],
+        )
+
+    def test_renames_by_index_nested_and_return_chains(self):
+        self.assertEqual(self.rename_chain("2/1", "Shine")["after"]["path"], "Vocal Rack/Shine")
+        nested = self.rename_chain("Vocal Rack/Main/Inner/0", "Tail")
+        self.assertEqual(nested["after"]["path"], "Vocal Rack/Main/Inner/Tail")
+        returns = self.rename_chain("Kit/returns/Room", "Hall")
+        self.assertEqual(self.kit.return_chains[0].name, "Hall")
+        self.assertEqual(returns["after"]["path"], "Kit/returns/Hall")
+        self.assertTrue(returns["chain"]["is_return_chain"])
+
+    def test_a_chain_name_that_would_be_misread_is_printed_by_index(self):
+        result = self.rename_chain("Vocal Rack/Air", "returns")
+
+        self.assertEqual(result["after"]["path"], "Vocal Rack/1")
+
+    def test_chain_errors_name_the_rack_and_choices(self):
+        cases = {
+            "Vocal Rack": "needs a rack and a chain",
+            "Compressor/Main": "ambiguous",
+            "#0/Main": "is not a Rack",
+            "Vocal Rack/Drums": "no chain 'Drums' in 'Vocal Rack'. Choices: 0:Main, 1:Air",
+            "Kit/returns/Nope": "no return chain 'Nope'",
+            "Vocal Rack/": "empty part",
+        }
+        for path, message in cases.items():
+            with self.subTest(path=path), self.assertRaisesRegex(LiveOpsError, message):
+                self.rename_chain(path, "X")
+
+    def test_renames_run_inside_a_batch(self):
+        result = live_ops.handle(
+            self.song,
+            "ableton.batch",
+            {
+                "operations": [
+                    {
+                        "method": "ableton.set_device_properties",
+                        "params": {"track": 2, "device": "#1", "name": "De-esser"},
+                    },
+                    {
+                        "method": "ableton.set_chain_properties",
+                        "params": {"track": 2, "chain": "Vocal Rack/Air", "name": "Shine"},
+                    },
+                ]
+            },
+        )
+
+        self.assertIsNone(result["failed"])
+        self.assertEqual(self.track.devices[1].name, "De-esser")
+        self.assertEqual(self.vocal_rack.chains[1].name, "Shine")
+
+    def test_insert_device_can_name_the_new_device(self):
+        result = live_ops.handle(
+            self.song,
+            "ableton.insert_device",
+            {"track": 0, "device_name": "Glue Compressor", "name": "Bus Glue"},
+        )
+
+        self.assertEqual(self.song.tracks[0].devices[0].name, "Bus Glue")
+        self.assertEqual(result["device"]["name"], "Bus Glue")
+        self.assertEqual(result["device"]["path"], "Bus Glue")
+
+    def test_insert_device_with_an_empty_name_inserts_nothing(self):
+        with self.assertRaisesRegex(LiveOpsError, "non-empty"):
+            live_ops.handle(
+                self.song,
+                "ableton.insert_device",
+                {"track": 0, "device_name": "Utility", "name": " "},
+            )
+        self.assertEqual(self.song.tracks[0].devices, [])
+
+
 if __name__ == "__main__":
     unittest.main()

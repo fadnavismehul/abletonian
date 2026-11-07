@@ -136,6 +136,8 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "set_device_parameter",
                 "set_track_output_routing",
                 "set_track_properties",
+                "set_device_properties",
+                "set_chain_properties",
                 "set_mixer",
                 "insert_device",
                 "create_return_track",

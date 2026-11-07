@@ -14,9 +14,11 @@ from abletonian.adapters.base import (
     AdapterError,
     AdapterResponseError,
     Batch,
+    ChainPropertiesChange,
     DawAdapter,
     DeviceDelete,
     DeviceInsert,
+    DevicePropertiesChange,
     DeviceQuery,
     MixerChange,
     ParameterChange,
@@ -69,6 +71,8 @@ _BATCH_TYPES = {
         ParameterChange,
         RoutingChange,
         TrackPropertiesChange,
+        DevicePropertiesChange,
+        ChainPropertiesChange,
         MixerChange,
         DeviceInsert,
         ReturnTrackCreate,
@@ -337,6 +341,36 @@ def build_mcp(
             TrackPropertiesChange(track=track, name=name, color=color, color_index=color_index),
         )
 
+    @mcp.tool(annotations=_op("set_device_properties"))
+    def set_device_properties(track: int | str, device: int | str, name: str) -> str:
+        """Rename a device on a track, or inside a rack by its path from
+        list_devices (such as "Vocal Rack/Main/Compressor"). Changes the Live
+        Set; Live's Undo reverts it.
+
+        Use it to tell apart devices with the same name, for example two
+        Compressors where one is a de-esser. Returns the name and path before
+        and after: renaming can change the device's path (and a same-named
+        sibling's), so use the new path from here or list_devices afterwards."""
+
+        return send(
+            "set_device_properties",
+            DevicePropertiesChange(track=track, device=device, name=name),
+        )
+
+    @mcp.tool(annotations=_op("set_chain_properties"))
+    def set_chain_properties(track: int | str, chain: str, name: str) -> str:
+        """Rename a chain inside a rack. chain is the rack's path from
+        list_devices followed by the chain name or index: "Vocal Rack/Main",
+        "Drum Rack/returns/0" for a Drum Rack return chain, or
+        "Synth/Pad/Inner Rack/Deep" for a rack inside a rack. Changes the Live
+        Set; Live's Undo reverts it. Returns the name and path before and
+        after; paths of devices in this chain change with it."""
+
+        return send(
+            "set_chain_properties",
+            ChainPropertiesChange(track=track, chain=chain, name=name),
+        )
+
     @mcp.tool(annotations=_op("set_mixer"))
     def set_mixer(
         track: int | str,
@@ -363,16 +397,23 @@ def build_mcp(
         device_name: str,
         index: int | None = None,
         parameters: dict[str, float | str] | None = None,
+        name: str | None = None,
     ) -> str:
         """Insert a native Live device (for example "Utility", "EQ Eight",
         "Glue Compressor") by its browser name, using Track.insert_device
         (Live 12.3+). index is the chain position; omit it to append at the end.
-        parameters are set on the new device right away, e.g. {"Gain": "-3 dB"}."""
+        parameters are set on the new device right away, e.g. {"Gain": "-3 dB"}.
+        name renames the new device, e.g. "De-esser" for a second Compressor.
+        If a parameter or the name cannot be set, the device is removed again."""
 
         return send(
             "insert_device",
             DeviceInsert(
-                track=track, device_name=device_name, index=index, parameters=parameters
+                track=track,
+                device_name=device_name,
+                index=index,
+                parameters=parameters,
+                name=name,
             ),
         )
 
@@ -402,7 +443,8 @@ def build_mcp(
 
         Each operation is {"method": ..., "params": {...}}. Methods:
         ableton.set_device_parameter, ableton.set_track_output_routing,
-        ableton.set_track_properties, ableton.set_mixer, ableton.insert_device,
+        ableton.set_track_properties, ableton.set_device_properties,
+        ableton.set_chain_properties, ableton.set_mixer, ableton.insert_device,
         ableton.create_return_track, ableton.delete_device (needs "confirm": true).
         params use the same names as the matching tools. The batch stops at the
         first failure and reports what completed.

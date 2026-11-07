@@ -41,8 +41,10 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `set_device_parameter` | `ableton.set_device_parameter` | Set by raw value or by display text (`"-3 dB"`, `"2.5 kHz"`, `"Off"`). |
 | `set_track_output_routing` | `ableton.set_track_output_routing` | Set Audio To / MIDI To by display name, such as `Main` or a group name. |
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). Live shows a return's letter in front of its name, so a leading `A-` is dropped when renaming return A. |
+| `set_device_properties` | `ableton.set_device_properties` | Rename a device (`Device.name`), at the top of a track or inside racks by its path. Transformative. Returns the name and printed path before and after; renaming can change the device's own path and a same-named sibling's (issue #46). |
+| `set_chain_properties` | `ableton.set_chain_properties` | Rename a rack chain (`Chain.name`). `chain` is the rack's path plus the chain's name or index: `"Vocal Rack/Main"`, `"Drum Rack/returns/0"`. Transformative. Returns the name and path before and after. |
 | `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. |
-| `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, and set its parameters right away. |
+| `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, optionally `name` it, and set its parameters right away. If the name or a parameter cannot be set, the new device is deleted again. |
 | `create_return_track` | `ableton.create_return_track` | Add a return track at the end (`Song.create_return_track`), with an optional name and colour. Additive. |
 | `delete_device` | `ableton.delete_device` | Delete a device (`Track.delete_device`). Destructive: without `confirm=true` it only returns the device and its current settings. The tool accepts only a real boolean, so `"true"` or `1` is refused. In `apply_batch`, every delete needs `"confirm": true` or the whole batch is refused before anything runs, and delete targets refer to the set as it was before the batch, so deleting index 0 does not shift a later index 1. |
 | `apply_batch` | `ableton.batch` | Run many changes as one Live undo step (two when it mixes parameter changes with other changes), or one step per operation with `atomic=false`. Stops at the first failure. |
@@ -84,6 +86,15 @@ chain named "returns", names with leading or trailing spaces, and names
 containing `/`. For the top-level device, `#N` always means index N, even
 if a device is named `#N`; it is printed instead of `N` when another device
 is literally named `N`. Not yet run in Live.
+
+Renaming a device or chain (`set_device_properties`, `set_chain_properties`,
+`insert_device` with `name`) works out the printed path again after the
+rename and returns it. `Device.name` and `Chain.name` are read/write in the
+Cycling '74 LOM docs. Not yet run in Live: a Live check should confirm that
+the name Live shows (and reads back) is the one written, that renaming a
+device inside a rack, or a chain, changes the paths `list_devices` prints
+the way the fakes do, and that renaming a Drum Rack chain does not also
+rename its pad in an unexpected way.
 
 ### Values by display text
 

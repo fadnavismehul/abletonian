@@ -201,6 +201,57 @@ class LiveControlToolTests(unittest.TestCase):
         self.assertEqual(bridge.requests[0][1], {"track": 3, "routing_type": "Main"})
         self.assertEqual(bridge.requests[1][1], {"track": "Vox", "sends": {"A": "-12 dB"}})
 
+    def test_rename_tools_send_track_target_and_name(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(
+            mcp.call_tool(
+                "set_device_properties", {"track": "Vox", "device": "#1", "name": "De-esser"}
+            )
+        )
+        asyncio.run(
+            mcp.call_tool(
+                "set_chain_properties",
+                {"track": "Vox", "chain": "Vocal Rack/returns/0", "name": "Room"},
+            )
+        )
+        asyncio.run(
+            mcp.call_tool(
+                "insert_device",
+                {"track": "Vox", "device_name": "Compressor", "name": "De-esser"},
+            )
+        )
+
+        self.assertEqual(
+            bridge.requests[:2],
+            [
+                (
+                    "ableton.set_device_properties",
+                    {"track": "Vox", "device": "#1", "name": "De-esser"},
+                ),
+                (
+                    "ableton.set_chain_properties",
+                    {"track": "Vox", "chain": "Vocal Rack/returns/0", "name": "Room"},
+                ),
+            ],
+        )
+        self.assertEqual(
+            bridge.requests[2],
+            (
+                "ableton.insert_device",
+                {"track": "Vox", "device_name": "Compressor", "name": "De-esser"},
+            ),
+        )
+
+    def test_rename_tools_change_the_set_but_are_repeatable(self) -> None:
+        mcp = build_mcp(AbletonianConfig(), bridge=PassthroughBridge())
+        tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+        for name in ("set_device_properties", "set_chain_properties"):
+            with self.subTest(tool=name):
+                self.assertFalse(tools[name].annotations.read_only_hint)
+                self.assertTrue(tools[name].annotations.idempotent_hint)
+
     def test_batch_passes_operations_through(self) -> None:
         bridge = PassthroughBridge()
         mcp = build_mcp(AbletonianConfig(), bridge=bridge)

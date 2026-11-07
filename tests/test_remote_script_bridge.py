@@ -500,6 +500,17 @@ class BridgeSurfaceDrumRackWorkflowTests(unittest.TestCase):
         self.assertIn("execute_drum_rack_extraction", health["capabilities"])
         self.assertIn("write_midi_notes", health["unsupported_capabilities"])
 
+    def test_health_advertises_every_policy_operation(self) -> None:
+        from abletonian.policy import OPERATIONS
+
+        surface = bridge_surface(FakeSong(FakeTrack("Drums", ())), live_version="12.1.0")
+        health = surface.handle_request("daw.health", {"target_daw": "ableton"})
+
+        for operation in OPERATIONS.values():
+            with self.subTest(operation=operation.name):
+                self.assertIn(operation.capability, health["capabilities"])
+                self.assertNotIn(operation.capability, health["unsupported_capabilities"])
+
     def test_selected_context_reports_track_and_selected_drum_rack(self) -> None:
         drum_rack = FakeDevice("Drum Rack", "DrumGroupDevice")
         surface = bridge_surface(

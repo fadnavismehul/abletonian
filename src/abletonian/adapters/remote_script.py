@@ -15,8 +15,10 @@ from abletonian.adapters.base import (
     AdapterRefused,
     AdapterUnavailable,
     Batch,
+    ChainPropertiesChange,
     DeviceDelete,
     DeviceInsert,
+    DevicePropertiesChange,
     DeviceQuery,
     MixerChange,
     ParameterChange,
@@ -34,6 +36,11 @@ from abletonian.bridge.client import BridgeConnectionError, BridgeRefusedError
 OLD_SCRIPT_BATCH_WARNING = (
     "The Remote Script in Live is older and ran this batch as one undo "
     "step. Reinstall it to get one step per operation."
+)
+OLD_SCRIPT_INSERT_NAME_WARNING = (
+    "The device was inserted, but Live does not show the name asked for; the "
+    "Remote Script in Live may be older. Rename it with set_device_properties, "
+    "or reinstall the Remote Script."
 )
 OLD_SCRIPT_UNDO_WARNING = (
     "The Remote Script in Live is older and undid only one step. "
@@ -106,11 +113,23 @@ class RemoteScriptAdapter:
     def set_track_properties(self, change: TrackPropertiesChange) -> dict[str, Any]:
         return self._send(change)
 
+    def set_device_properties(self, change: DevicePropertiesChange) -> dict[str, Any]:
+        return self._send(change)
+
+    def set_chain_properties(self, change: ChainPropertiesChange) -> dict[str, Any]:
+        return self._send(change)
+
     def set_mixer(self, change: MixerChange) -> dict[str, Any]:
         return self._send(change)
 
     def insert_device(self, change: DeviceInsert) -> dict[str, Any]:
-        return self._send(change)
+        result = self._send(change)
+        # An older script ignores name and keeps Live's default.
+        if change.name is not None:
+            device = result.get("device")
+            if not isinstance(device, dict) or device.get("name") != change.name:
+                result = {**result, "warning": OLD_SCRIPT_INSERT_NAME_WARNING}
+        return result
 
     def create_return_track(self, change: ReturnTrackCreate) -> dict[str, Any]:
         return self._send(change)
