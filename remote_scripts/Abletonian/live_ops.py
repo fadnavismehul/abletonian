@@ -680,6 +680,246 @@ def undo(song, params):
     return result
 
 
+# Meters (issue #45) ---------------------------------------------------------
+#
+# ableton.read_levels samples track output meters over a window of seconds.
+# It is the first realtime read: it takes wall-clock time and its answer
+# depends on what is playing, but it never changes the Set or the transport.
+# The bridge (bridge_server._run_level_read) calls prepare_level_read once,
+# then LevelWindow.sample on each of Live's timer ticks, all on the main
+# thread. Nothing here sleeps or loops over time.
+#
+# Live Object Model properties used (Cycling '74 LOM docs, Track and Song;
+# wording recalled from the docs, not re-checked against them for this change,
+# and not yet run in Live):
+# - Track.output_meter_left / output_meter_right: momentary peak of each
+#   output channel, 0.0..1.0. Audio output only.
+# - Track.output_meter_level: hold peak of the output meter, 0.0..1.0; for
+#   audio, the louder channel. Also set for MIDI tracks (a MIDI meter).
+# - Track.has_audio_output: whether the track outputs audio.
+# - Song.is_playing: whether the transport runs.
+# These are meter positions, not dBFS. How Live maps a position to dB is not
+# documented, so no dB value is reported.
+
+LEVEL_MIN_SECONDS = 0.5
+LEVEL_MAX_SECONDS = 10.0
+LEVEL_DEFAULT_SECONDS = 4.0
+MAX_LEVEL_TRACKS = 16
+# Upper bound on samples per window whatever Live's tick rate, so a read
+# always ends. At the ~10 ticks a second Live is said to run (a guess: it is
+# community knowledge, not in the LOM docs) a 10 s window takes ~100.
+MAX_LEVEL_SAMPLES = 400
+LEVEL_SCALE = "live_meter_position_0_to_1"
+LEVEL_SCALE_NOTE = (
+    "Values are Live meter positions from 0.0 (silence) to 1.0, read from "
+    "Track.output_meter_left/right/level. They are not dBFS and the mapping to dB is "
+    "not documented, so compare tracks with each other rather than reading them as dB."
+)
+
+
+class TransportStopped(LiveOpsError):
+    code = "transport_stopped"
+    hint = (
+        "Start playback in Live (or ask the musician to), then read levels again. "
+        "read_levels never starts or stops the transport."
+    )
+
+
+def prepare_level_read(song, params):
+    """Check a read_levels request and pin its tracks. Changes nothing.
+
+    Raises ``TransportStopped`` when the transport is not playing, so a read
+    never returns a window of zeros as if the tracks were silent.
+    """
+
+    seconds = _level_seconds(params.get("seconds", LEVEL_DEFAULT_SECONDS))
+    targets = _level_targets(song, params)
+    if not bool(_get(song, "is_playing", False)):
+        raise TransportStopped(
+            "Live's transport is not playing, so the meters show no playback level; "
+            "nothing was read"
+        )
+    return {"seconds": seconds, "targets": targets}
+
+
+def _level_seconds(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise InvalidValue(f"seconds must be a number, got '{value}'")
+    if not LEVEL_MIN_SECONDS <= value <= LEVEL_MAX_SECONDS:
+        raise InvalidValue(
+            f"seconds must be from {LEVEL_MIN_SECONDS} to {LEVEL_MAX_SECONDS}, got {value}"
+        )
+    return float(value)
+
+
+def _flag(params, key):
+    value = params.get(key, False)
+    if not isinstance(value, bool):
+        raise InvalidValue(f"'{key}' must be true or false")
+    return value
+
+
+def _level_targets(song, params):
+    refs = params.get("tracks")
+    if refs is None:
+        targets = [("track", i, t) for i, t in enumerate(_tuple(song.tracks))]
+    elif isinstance(refs, list):
+        targets = [resolve_track(song, ref) for ref in refs]
+    else:
+        raise InvalidValue("tracks must be a list of track names or indexes")
+    if _flag(params, "include_returns"):
+        targets.extend(("return", i, t) for i, t in enumerate(_tuple(song.return_tracks)))
+    if _flag(params, "include_main"):
+        targets.append(("master", 0, song.master_track))
+    unique = []
+    seen = set()
+    for kind, index, track in targets:
+        if (kind, index) not in seen:
+            seen.add((kind, index))
+            unique.append((kind, index, track))
+    if not unique:
+        raise InvalidValue("no tracks to read", TRACK_HINT)
+    if len(unique) > MAX_LEVEL_TRACKS:
+        raise InvalidValue(
+            f"read_levels reads at most {MAX_LEVEL_TRACKS} tracks at once, got {len(unique)}",
+            "Name the tracks to read in 'tracks', or read them in groups.",
+        )
+    return unique
+
+
+def _meter_value(track, name):
+    value = _get(track, name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value >= 0.0 else None
+
+
+class _MeterStats:
+    def __init__(self, kind, index, track):
+        self.track = track
+        self.ref = _track_ref_payload(kind, index, track)
+        # Main and return tracks always output audio; MIDI tracks without an
+        # instrument report has_audio_output False (LOM, recalled).
+        self.audio = kind != "track" or bool(_get(track, "has_audio_output", True))
+        self.samples = 0
+        self.missing = 0
+        self.peak = 0.0
+        self.peak_left = None
+        self.peak_right = None
+        self.hold_peak = None
+        self.sum_squares = 0.0
+
+    def add(self):
+        track = self.track
+        left = _meter_value(track, "output_meter_left") if self.audio else None
+        right = _meter_value(track, "output_meter_right") if self.audio else None
+        level = _meter_value(track, "output_meter_level")
+        channels = [value for value in (left, right) if value is not None]
+        momentary = max(channels) if channels else level
+        if momentary is None:
+            # A track deleted mid-window, or a meter this Live does not have.
+            self.missing += 1
+            return
+        self.samples += 1
+        self.peak = max(self.peak, momentary)
+        self.sum_squares += momentary * momentary
+        if left is not None:
+            self.peak_left = max(self.peak_left or 0.0, left)
+        if right is not None:
+            self.peak_right = max(self.peak_right or 0.0, right)
+        if level is not None:
+            self.hold_peak = max(self.hold_peak or 0.0, level)
+
+    def payload(self):
+        rms = math.sqrt(self.sum_squares / self.samples) if self.samples else None
+        payload = {
+            **self.ref,
+            "meter": "audio" if self.audio else "midi",
+            "peak": _round(self.peak) if self.samples else None,
+            "rms_of_samples": _round(rms),
+            "sample_count": self.samples,
+        }
+        if self.audio:
+            payload["peak_left"] = _round(self.peak_left)
+            payload["peak_right"] = _round(self.peak_right)
+        payload["hold_peak"] = _round(self.hold_peak)
+        if self.missing:
+            payload["missing_samples"] = self.missing
+        return payload
+
+
+def _round(value):
+    return None if value is None else round(value, 4)
+
+
+class LevelWindow:
+    """One read_levels window: meter samples taken on Live's timer ticks.
+
+    ``sample`` runs on Live's main thread, once per tick, and returns True
+    when the window is over: its time is up, the sample cap is reached, or
+    the transport stopped. ``now`` is a monotonic clock reading in seconds.
+    """
+
+    def __init__(self, plan, now):
+        self.seconds = plan["seconds"]
+        self.started = now
+        self.elapsed = 0.0
+        self.samples = 0
+        self.stopped_early = False
+        self._stats = [_MeterStats(*target) for target in plan["targets"]]
+
+    def sample(self, song, now):
+        self.elapsed = max(0.0, now - self.started)
+        if not bool(_get(song, "is_playing", False)):
+            self.stopped_early = True
+            return True
+        for stats in self._stats:
+            stats.add()
+        self.samples += 1
+        return self.elapsed >= self.seconds or self.samples >= MAX_LEVEL_SAMPLES
+
+    def result(self, tick_delay=None):
+        tracks = [stats.payload() for stats in self._stats]
+        warnings = []
+        if self.stopped_early:
+            warnings.append(
+                f"The transport stopped after {self.elapsed:.1f} s of the "
+                f"{self.seconds:g} s window; values cover only the part that played."
+            )
+        silent = [t["name"] for t in tracks if t["sample_count"] and t["peak"] == 0.0]
+        if silent:
+            warnings.append(
+                "Meters read 0.0 for the whole window on: " + ", ".join(silent)
+                + ". They may be muted, have no clip playing here, or be routed elsewhere."
+            )
+        unreadable = [t["name"] for t in tracks if t["sample_count"] == 0]
+        if unreadable:
+            warnings.append("No meter values could be read for: " + ", ".join(unreadable))
+        midi = [t["name"] for t in tracks if t["meter"] == "midi"]
+        if midi:
+            warnings.append(
+                "These tracks have no audio output, so their meter shows MIDI activity, "
+                "not audio level: " + ", ".join(midi)
+            )
+        window = {
+            "requested_seconds": self.seconds,
+            "elapsed_seconds": round(self.elapsed, 3),
+            "samples": self.samples,
+            "stopped_early": self.stopped_early,
+        }
+        if tick_delay is not None:
+            window["tick_delay"] = tick_delay
+        return {
+            "scale": LEVEL_SCALE,
+            "scale_note": LEVEL_SCALE_NOTE,
+            "transport_playing": not self.stopped_early,
+            "window": window,
+            "tracks": tracks,
+            "warnings": warnings,
+        }
+
+
 # Lookup -------------------------------------------------------------------
 
 

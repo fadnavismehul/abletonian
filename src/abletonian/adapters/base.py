@@ -113,6 +113,53 @@ class RackRef(_Request):
     device: DeviceRef | None = None
 
 
+# Realtime reads: they take wall-clock time and depend on playback, but do
+# not change the Set or the transport.
+
+
+@dataclass(frozen=True)
+class LevelRead(_Request):
+    """Sample track output meters for ``seconds`` while Live plays (issue #45).
+
+    Values are Live meter positions 0..1, not dBFS. Limits match
+    LEVEL_MIN_SECONDS, LEVEL_MAX_SECONDS and MAX_LEVEL_TRACKS in the Remote
+    Script's live_ops.py, which checks them again.
+    """
+
+    OPERATION: ClassVar[str] = "read_levels"
+    MIN_SECONDS: ClassVar[float] = 0.5
+    MAX_SECONDS: ClassVar[float] = 10.0
+    MAX_TRACKS: ClassVar[int] = 16
+
+    tracks: tuple[TrackRef, ...] | None = None
+    seconds: float = 4.0
+    include_returns: bool = False
+    include_main: bool = False
+
+    def __post_init__(self) -> None:
+        if self.tracks is not None:
+            object.__setattr__(self, "tracks", tuple(self.tracks))
+            if not self.tracks:
+                raise ValueError("tracks must name at least one track, or be left out")
+            if len(self.tracks) > self.MAX_TRACKS:
+                raise ValueError(
+                    f"read at most {self.MAX_TRACKS} tracks at once, got {len(self.tracks)}"
+                )
+        seconds = self.seconds
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            raise ValueError("seconds must be a number")
+        if not self.MIN_SECONDS <= seconds <= self.MAX_SECONDS:
+            raise ValueError(
+                f"seconds must be from {self.MIN_SECONDS} to {self.MAX_SECONDS}, got {seconds}"
+            )
+
+    def params(self) -> dict[str, Any]:
+        out = super().params()
+        if self.tracks is not None:
+            out["tracks"] = list(self.tracks)
+        return out
+
+
 # Requests that change the Set. These are the ones a Batch may hold.
 
 
@@ -319,6 +366,9 @@ class DawAdapter(Protocol):
     def get_selected_rack_macros(self, ref: RackRef) -> dict[str, Any]: ...
 
     def plan_drum_rack_extraction(self) -> dict[str, Any]: ...
+
+    # Realtime read: samples meters over time; must not change the Set or transport.
+    def read_levels(self, request: LevelRead) -> dict[str, Any]: ...
 
     # Change the Set (DeviceDelete without confirm is a read-only preview).
     def set_device_parameter(self, change: ParameterChange) -> dict[str, Any]: ...

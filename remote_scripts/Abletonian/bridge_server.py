@@ -61,6 +61,15 @@ REQUEST_RUN_TIMEOUT_SECONDS = 25.0
 # A per-operation batch runs each operation this many Live ticks after the
 # previous one, so Live does not merge their undo steps.
 BATCH_OPERATION_TICK_DELAY = 1
+# ableton.read_levels takes one meter sample every this many Live ticks.
+LEVEL_SAMPLE_TICK_DELAY = 1
+# How much longer than its window a level read may take (slow or skipped
+# ticks) before the socket thread gives up on it. With the start timeout of
+# the setup call, a read ends within seconds + 10 s; the MCP server's client
+# timeout must be longer (LEVEL_READ_OVERHEAD_SECONDS in
+# src/abletonian/adapters/remote_script.py).
+LEVEL_READ_GRACE_SECONDS = 5.0
+LEVEL_READ_METHOD = "ableton.read_levels"
 # Live Undo presses per track the Drum Rack workflow creates (Live 12.4.16).
 UNDO_STEPS_PER_CREATED_TRACK = 2
 UNFILTERED_SCAFFOLD_WARNING = (
@@ -99,6 +108,12 @@ class AbletonianBridgeControlSurface(ControlSurface):
             return self._scaffold_drum_rack_extraction(params)
         if method == "workflow.execute_drum_rack_extraction":
             return self._execute_drum_rack_extraction(params)
+        if method == LEVEL_READ_METHOD:
+            # Reached only without Live's timer: _call_surface runs level
+            # reads through _run_level_read when schedule_message exists.
+            raise live_ops.NotSupported(
+                "read_levels samples meters on Live's timer, which this host does not have"
+            )
         result = live_ops.handle(_live_object(self, "song"), method, params)
         if result is not None:
             return result
@@ -145,6 +160,7 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "undo_count",
                 "batch_per_operation_undo",
                 "single_call_undo_steps",
+                "read_levels",
             ],
             "unsupported_capabilities": [
                 "create_track",
@@ -548,6 +564,7 @@ def _dispatch_frame(surface, frame):
 # Timeouts raised by _call_on_main_thread, matched by their message.
 _NOT_STARTED = "did not start the request"
 _NOT_FINISHED = "did not finish it in time"
+_LEVELS_NOT_FINISHED = "did not finish sampling meters in time"
 
 
 def _error_code_and_hint(exc, request_id):
@@ -570,11 +587,19 @@ def _error_code_and_hint(exc, request_id):
                 "Live may still apply this change. Check the Set with list_tracks or "
                 "list_devices before trying again.",
             )
+        if _LEVELS_NOT_FINISHED in str(exc):
+            return (
+                "timeout",
+                "Live was too busy to sample the whole window; nothing was changed. Try "
+                "again, or read fewer seconds or tracks.",
+            )
         return "timeout", None
     return "adapter_error", None
 
 
 def _call_surface(surface, method, params):
+    if method == LEVEL_READ_METHOD and callable(getattr(surface, "schedule_message", None)):
+        return _run_level_read(surface, params)
     if _is_per_operation_batch(method, params) and callable(
         getattr(surface, "schedule_message", None)
     ):
@@ -621,6 +646,59 @@ def _run_batch_per_operation(surface, params):
         except Exception as exc:
             return live_ops.batch_failure(plan, results, position, exc)
     return live_ops.batch_success(plan, results)
+
+
+def _level_clock():
+    """Seconds on a monotonic clock, for level windows. Tests replace it."""
+
+    return time.monotonic()
+
+
+def _run_level_read(surface, params):
+    """Sample track meters over several Live ticks, then answer (issue #45).
+
+    Runs on the socket thread, which only waits; every Live read happens on
+    the main thread. The setup call checks the request and the transport and
+    pins the tracks. Then one callback samples the meters and schedules
+    itself again LEVEL_SAMPLE_TICK_DELAY ticks later, until the window says
+    it is over. Nothing sleeps or loops on the main thread, and the
+    transport is never touched. If the window does not finish in time the
+    socket thread stops waiting and the next tick ends the chain; the read
+    changed nothing, so there is nothing to put back.
+    """
+
+    schedule_message = surface.schedule_message
+
+    def song():
+        return _live_object(surface, "song")
+
+    window = _call_on_main_thread(
+        surface,
+        lambda: live_ops.LevelWindow(live_ops.prepare_level_read(song(), params), _level_clock()),
+    )
+    finished = threading.Event()
+    state = {"abandoned": False}
+
+    def tick():
+        if state["abandoned"]:
+            return
+        try:
+            done = window.sample(song(), _level_clock())
+        except Exception as exc:
+            state["error"] = exc
+            done = True
+        if done:
+            finished.set()
+        else:
+            schedule_message(LEVEL_SAMPLE_TICK_DELAY, tick)
+
+    schedule_message(0, tick)
+    if not finished.wait(window.seconds + LEVEL_READ_GRACE_SECONDS):
+        state["abandoned"] = True
+        raise TimeoutError(f"Live {_LEVELS_NOT_FINISHED}; nothing was changed")
+    if "error" in state:
+        raise state["error"]
+    return window.result(tick_delay=LEVEL_SAMPLE_TICK_DELAY)
 
 
 def _call_on_main_thread(surface, action, delay=0):

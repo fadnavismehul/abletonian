@@ -32,6 +32,7 @@ HEALTH = {
 TOOL_OPERATIONS = {
     "list_tracks": "list_tracks",
     "list_devices": "list_devices",
+    "read_levels": "read_levels",
     "set_device_parameter": "set_device_parameter",
     "set_track_output_routing": "set_track_output_routing",
     "set_track_properties": "set_track_properties",

@@ -18,6 +18,7 @@ from abletonian.adapters.base import (
     DeviceDelete,
     DeviceInsert,
     DeviceQuery,
+    LevelRead,
     MixerChange,
     ParameterChange,
     RackRef,
@@ -39,6 +40,10 @@ OLD_SCRIPT_UNDO_WARNING = (
     "The Remote Script in Live is older and undid only one step. "
     "Reinstall it to undo several at once."
 )
+# A level read answers within its window plus this: up to 5 s for Live to
+# start the setup call (REQUEST_START_TIMEOUT_SECONDS) and a 5 s grace for
+# slow ticks (LEVEL_READ_GRACE_SECONDS) in the Remote Script, plus slack.
+LEVEL_READ_OVERHEAD_SECONDS = 12.0
 
 
 class BridgeLike(Protocol):
@@ -94,6 +99,22 @@ class RemoteScriptAdapter:
 
     def plan_drum_rack_extraction(self) -> dict[str, Any]:
         return self._call("workflow.plan_drum_rack_extraction", {"target_daw": self.target_daw})
+
+    # Realtime read.
+
+    def read_levels(self, request: LevelRead) -> dict[str, Any]:
+        # The bridge client must wait longer than the read takes, or it would
+        # give up on an answer that is still coming.
+        timeout = getattr(self.bridge, "timeout", None)
+        needed = request.seconds + LEVEL_READ_OVERHEAD_SECONDS
+        if isinstance(timeout, (int, float)) and timeout < needed:
+            raise AdapterRefused(
+                f"a {request.seconds:g} s level read needs a bridge timeout of at least "
+                f"{needed:g} s, but it is {timeout:g} s; nothing was sent",
+                code="bridge_timeout_too_short",
+                hint="Read fewer seconds, or raise ABLETONIAN_BRIDGE_TIMEOUT (--bridge-timeout).",
+            )
+        return self._send(request)
 
     # Changes to the Set.
 
