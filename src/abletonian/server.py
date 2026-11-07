@@ -23,6 +23,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -73,6 +74,7 @@ _BATCH_TYPES = {
         DeviceInsert,
         ReturnTrackCreate,
         DeviceDelete,
+        SidechainChange,
     )
 }
 
@@ -281,7 +283,8 @@ def build_mcp(
         each parameter's raw value, range, display text, and options. Devices
         inside racks are listed under their chains (and Drum Rack return
         chains) with a "path" that set_device_parameter and delete_device
-        accept. Read-only."""
+        accept. Devices whose sidechain input Live exposes (Compressor) show
+        "sidechain": {"on", "from", "channel"}. Read-only."""
 
         return send(
             "list_devices", DeviceQuery(track=track, include_parameters=include_parameters)
@@ -320,6 +323,30 @@ def build_mcp(
         return send(
             "set_track_output_routing",
             RoutingChange(track=track, routing_type=routing_type, routing_channel=routing_channel),
+        )
+
+    @mcp.tool(annotations=_op("set_device_sidechain"))
+    def set_device_sidechain(
+        track: int | str,
+        device: int | str,
+        from_track: str,
+        channel: str | None = None,
+    ) -> str:
+        """Point a Compressor's sidechain input (Audio From) at a source, such as
+        a kick track. Changes the Live Set; one Live undo step.
+
+        from_track is the source's display name as Live shows it, for example
+        "2-32 Pad Kit Jazz" (a bare track name also works when it is unique);
+        channel is the tap point, such as "Post FX" or "Pre FX". list_devices
+        shows the current source under "sidechain"; a wrong name returns the
+        available choices. This only sets the routing: turn the sidechain on
+        with set_device_parameter ("S/C On" to "On") if it is off. Devices
+        without a "sidechain" entry in list_devices cannot be set.
+        """
+
+        return send(
+            "set_device_sidechain",
+            SidechainChange(track=track, device=device, from_track=from_track, channel=channel),
         )
 
     @mcp.tool(annotations=_op("set_track_properties"))
@@ -403,7 +430,8 @@ def build_mcp(
         Each operation is {"method": ..., "params": {...}}. Methods:
         ableton.set_device_parameter, ableton.set_track_output_routing,
         ableton.set_track_properties, ableton.set_mixer, ableton.insert_device,
-        ableton.create_return_track, ableton.delete_device (needs "confirm": true).
+        ableton.create_return_track, ableton.delete_device (needs "confirm": true),
+        ableton.set_device_sidechain.
         params use the same names as the matching tools. The batch stops at the
         first failure and reports what completed.
 

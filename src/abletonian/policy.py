@@ -119,6 +119,9 @@ _OPERATIONS = (
         "set_track_properties", SafetyClass.TRANSFORMATIVE, "set_track_properties", repeatable=True
     ),
     Operation("set_mixer", SafetyClass.TRANSFORMATIVE, "set_mixer", repeatable=True),
+    Operation(
+        "set_device_sidechain", SafetyClass.TRANSFORMATIVE, "set_device_sidechain", repeatable=True
+    ),
     Operation("insert_device", SafetyClass.ADDITIVE, "insert_device"),
     Operation("create_return_track", SafetyClass.ADDITIVE, "create_return_track"),
     # Without confirm, delete_device is a preview: Live reports what would go.

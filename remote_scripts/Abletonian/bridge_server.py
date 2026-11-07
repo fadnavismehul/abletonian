@@ -140,6 +140,8 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "insert_device",
                 "create_return_track",
                 "delete_device",
+                "read_device_sidechain",
+                "set_device_sidechain",
                 "batch",
                 "undo",
                 "undo_count",

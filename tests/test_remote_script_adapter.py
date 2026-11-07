@@ -15,6 +15,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -299,6 +300,36 @@ class ErrorTests(unittest.TestCase):
         with self.assertRaises(AdapterUnavailable) as caught:
             RemoteScriptAdapter(bridge).list_tracks(TrackQuery())
         self.assertEqual(str(caught.exception), "could not connect to 127.0.0.1:39877")
+
+
+class SidechainWireTests(unittest.TestCase):
+    def test_set_device_sidechain_sends_names_and_drops_unset_channel(self) -> None:
+        bridge = RecordingBridge()
+        adapter = RemoteScriptAdapter(bridge)
+
+        adapter.set_device_sidechain(SidechainChange(track="Bass", device=1, from_track="1-Kick"))
+        adapter.set_device_sidechain(
+            SidechainChange(track=1, device="Compressor", from_track="Kick", channel="Post FX")
+        )
+
+        self.assertEqual(
+            bridge.calls,
+            [
+                (
+                    "ableton.set_device_sidechain",
+                    {"track": "Bass", "device": 1, "from_track": "1-Kick"},
+                ),
+                (
+                    "ableton.set_device_sidechain",
+                    {
+                        "track": 1,
+                        "device": "Compressor",
+                        "from_track": "Kick",
+                        "channel": "Post FX",
+                    },
+                ),
+            ],
+        )
 
 
 if __name__ == "__main__":

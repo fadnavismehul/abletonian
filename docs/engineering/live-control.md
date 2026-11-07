@@ -32,7 +32,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | MCP tool | Bridge method | What it does |
 | --- | --- | --- |
 | `list_tracks` | `ableton.list_tracks` | Names, group parent, colour, output routing, volume, pan, sends, mute/solo, device names. Covers regular, return, and main tracks. The tool defaults to `detail="compact"` (levels as display text, no routing options), about a quarter of the size, so large sets fit; `detail="full"` adds raw values and the output routing choices. `name` keeps tracks whose name contains it. |
-| `list_devices` | `ableton.list_devices` | Devices per track (or all tracks), rack chains, and every parameter with raw value, range, display text, and options. |
+| `list_devices` | `ableton.list_devices` | Devices per track (or all tracks), rack chains, and every parameter with raw value, range, display text, and options. Devices whose sidechain input Live exposes (Compressor) also show `sidechain: {"on", "from", "channel"}`; see [Sidechain](#sidechain). |
 | `generate_macro_cockpit` | `ableton.get_selected_rack_macros` | Read the selected Rack's macros (read-only) and return a grouped Macro Cockpit spec plus a text summary. See [RFC 0002](../rfcs/0002-selected-rack-macro-cockpit.md). |
 | `save_macro_cockpit` | none | Save a cockpit generated in this session as a JSON file, so it can be reopened. Cockpits are temporary until saved. |
 | `list_saved_macro_cockpits` | none | List saved cockpits. |
@@ -40,6 +40,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `show_macro_cockpit` | none | Write a cockpit (generated this session, or saved) as a self-contained HTML page under the cockpit folder's `views/`, and open it in the browser. Display only. |
 | `set_device_parameter` | `ableton.set_device_parameter` | Set by raw value or by display text (`"-3 dB"`, `"2.5 kHz"`, `"Off"`). |
 | `set_track_output_routing` | `ableton.set_track_output_routing` | Set Audio To / MIDI To by display name, such as `Main` or a group name. |
+| `set_device_sidechain` | `ableton.set_device_sidechain` | Point a Compressor's sidechain input at a source by display name (`from_track`, such as `"2-32 Pad Kit Jazz"` or just `"32 Pad Kit Jazz"` when unique) and an optional `channel` (`"Post FX"`). Transformative, one undo step, batchable. Only the routing: "S/C On" is set with `set_device_parameter`. Not validated in Live (issue #49). |
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). Live shows a return's letter in front of its name, so a leading `A-` is dropped when renaming return A. |
 | `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. |
 | `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, and set its parameters right away. |
@@ -84,6 +85,27 @@ chain named "returns", names with leading or trailing spaces, and names
 containing `/`. For the top-level device, `#N` always means index N, even
 if a device is named `#N`; it is printed instead of `N` when another device
 is literally named `N`. Not yet run in Live.
+
+### Sidechain
+
+Since Live 11 a Compressor is a `Live.CompressorDevice.CompressorDevice` with
+`available_input_routing_types`, `available_input_routing_channels`,
+`input_routing_type` and `input_routing_channel` (Cycling '74 LOM docs). The
+script detects these by attribute, not by class name, so any device that has
+them gets a `sidechain` entry in `list_devices` and can be set with
+`set_device_sidechain`. Guesses, not yet checked in Live (issue #49):
+
+- whether Glue Compressor and Gate expose the same properties;
+- that `display_name` of a sidechain source reads as Live's chooser shows it,
+  with the track number in front (`"2-32 Pad Kit Jazz"`). A bare name
+  (`"32 Pad Kit Jazz"`) also matches when exactly one source has it, for
+  output routing as well;
+- what `input_routing_type` reads when the source track was deleted;
+- that the sidechain switch is a parameter named `S/C On` (`on` is `null`
+  when no parameter has that name).
+
+A channel that does not exist for the new source puts the old source back,
+as with output routing.
 
 ### Values by display text
 

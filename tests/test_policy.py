@@ -36,6 +36,7 @@ TOOL_OPERATIONS = {
     "set_track_output_routing": "set_track_output_routing",
     "set_track_properties": "set_track_properties",
     "set_mixer": "set_mixer",
+    "set_device_sidechain": "set_device_sidechain",
     "insert_device": "insert_device",
     "create_return_track": "create_return_track",
     "delete_device": "delete_device",

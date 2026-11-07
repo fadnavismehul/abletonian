@@ -34,6 +34,7 @@ BATCHABLE_METHODS = (
     "ableton.insert_device",
     "ableton.create_return_track",
     "ableton.delete_device",
+    "ableton.set_device_sidechain",
 )
 
 
@@ -278,28 +279,51 @@ def set_track_output_routing(song, params):
     routing_type = _required(params, "routing_type")
     routing_channel = params.get("routing_channel")
     before = _routing_payload(track)
-    previous_type = track.output_routing_type
-    track.output_routing_type = _match_routing(
-        track.available_output_routing_types, routing_type, "output routing type"
+    _apply_routing(
+        track,
+        "output",
+        routing_type,
+        routing_channel,
+        ("output routing type", "output routing channel", "output type"),
     )
-    if routing_channel is not None:
-        # Channel options depend on the type, so match after setting it and
-        # put the old type back if the channel does not exist.
-        try:
-            channel = _match_routing(
-                track.available_output_routing_channels, routing_channel, "output routing channel"
-            )
-        except LiveOpsError as exc:
-            track.output_routing_type = previous_type
-            raise LiveOpsError(
-                f"{exc}. The output type was put back; Live may still list this as an "
-                "undo step that changes nothing."
-            ) from exc
-        track.output_routing_channel = channel
     return {
         "track": _track_ref_payload(kind, index, track),
         "before": before,
         "after": _routing_payload(track),
+    }
+
+
+def set_device_sidechain(song, params):
+    """Point a device's sidechain input at a source by display name. Transformative.
+
+    ``from_track`` and ``channel`` are matched against the device's
+    ``available_input_routing_types`` and ``available_input_routing_channels``
+    the same way ``set_track_output_routing`` matches output names. Only the
+    routing changes; "S/C On" is a normal parameter (set_device_parameter).
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    path, device_index, device, _owner = resolve_device_path(track, _required(params, "device"))
+    before = _sidechain_payload(device)
+    if before is None:
+        raise NotSupported(
+            f"device '{_str(device.name)}' on '{_str(track.name)}' has no sidechain input "
+            "that Live's API exposes",
+            "In Live 11 and later Compressor exposes its sidechain input. Use list_devices: "
+            "devices with a 'sidechain' entry can be set.",
+        )
+    _apply_routing(
+        device,
+        "input",
+        _required(params, "from_track"),
+        params.get("channel"),
+        ("sidechain source", "sidechain channel", "sidechain source"),
+    )
+    return {
+        "track": _track_ref_payload(kind, index, track),
+        "device": {"index": device_index, "name": _str(device.name), "path": path},
+        "before": before,
+        "after": _sidechain_payload(device),
     }
 
 
@@ -1199,11 +1223,48 @@ def _device_payload(device, index, include_parameters, track, top_index, tail=()
             payload["return_chains"] = _chains_payload(
                 return_chains, (*tail, "returns"), *context
             )
+    sidechain = _sidechain_payload(device)
+    if sidechain is not None:
+        payload["sidechain"] = sidechain
     if include_parameters:
         payload["parameters"] = [
             {"index": i, **_param_payload(parameter)}
             for i, parameter in enumerate(_tuple(device.parameters))
         ]
+    return payload
+
+
+# Compressor's sidechain switch. A DeviceParameter name seen in Max for Live
+# parameter listings of Compressor; not yet checked in a dated Live run.
+SIDECHAIN_ON_PARAMETER = "s/c on"
+
+
+def _sidechain_payload(device):
+    """The device's sidechain input, or None if Live's API does not expose one.
+
+    Live 11 added ``Live.CompressorDevice.CompressorDevice`` with
+    ``available_input_routing_types``, ``available_input_routing_channels``,
+    ``input_routing_type`` and ``input_routing_channel`` (Cycling '74 LOM
+    docs). Detected by attribute, not class name. Guess, not checked in
+    Live: Glue Compressor and Gate may or may not expose the same
+    properties; this shows whatever the device has. ``on`` is the "S/C On"
+    parameter, or None when the device has no parameter by that name.
+    """
+
+    if _get(device, "available_input_routing_types") is None:
+        return None
+    payload = {"on": None}
+    for parameter in _tuple(_get(device, "parameters", ())):
+        names = (_str(_get(parameter, "name", "")), _str(_get(parameter, "original_name", "")))
+        if SIDECHAIN_ON_PARAMETER in (name.lower() for name in names):
+            try:
+                payload["on"] = float(parameter.value) > float(parameter.min)
+            except (TypeError, ValueError):
+                payload["on"] = None
+            break
+    for key, attribute in (("from", "input_routing_type"), ("channel", "input_routing_channel")):
+        value = _get(device, attribute)
+        payload[key] = _str(_get(value, "display_name", "")) if value is not None else None
     return payload
 
 
@@ -1308,12 +1369,55 @@ def _all_tracks(song):
     return items
 
 
+def _apply_routing(target, direction, wanted_type, wanted_channel, labels):
+    """Set ``target.<direction>_routing_type`` (and channel) by display name.
+
+    ``direction`` is "output" (a track) or "input" (a sidechain). ``labels``
+    is (type label, channel label, what to call the type when it is put back).
+    """
+
+    type_label, channel_label, type_noun = labels
+    previous_type = getattr(target, f"{direction}_routing_type")
+    setattr(
+        target,
+        f"{direction}_routing_type",
+        _match_routing(
+            getattr(target, f"available_{direction}_routing_types"), wanted_type, type_label
+        ),
+    )
+    if wanted_channel is not None:
+        # Channel options depend on the type, so match after setting it and
+        # put the old type back if the channel does not exist.
+        try:
+            channel = _match_routing(
+                getattr(target, f"available_{direction}_routing_channels"),
+                wanted_channel,
+                channel_label,
+            )
+        except LiveOpsError as exc:
+            setattr(target, f"{direction}_routing_type", previous_type)
+            raise LiveOpsError(
+                f"{exc}. The {type_noun} was put back; Live may still list this as an "
+                "undo step that changes nothing."
+            ) from exc
+        setattr(target, f"{direction}_routing_channel", channel)
+
+
 def _match_routing(available, wanted, label):
     options = _tuple(available)
     wanted_text = str(wanted).strip().lower()
     for option in options:
         if _str(_get(option, "display_name", "")).lower() == wanted_text:
             return option
+    # Sidechain sources show a track number in front ("2-32 Pad Kit Jazz"),
+    # so a bare track name also matches when exactly one option has it.
+    numbered = [
+        option
+        for option in options
+        if re.sub(r"^\d+-", "", _str(_get(option, "display_name", ""))).lower() == wanted_text
+    ]
+    if len(numbered) == 1:
+        return numbered[0]
     names = ", ".join(_str(_get(option, "display_name", "")) for option in options)
     raise NotFound(
         f"no {label} '{wanted}'. Available: {names}",
@@ -1417,6 +1521,7 @@ _HANDLERS = {
     "ableton.insert_device": insert_device,
     "ableton.create_return_track": create_return_track,
     "ableton.delete_device": delete_device,
+    "ableton.set_device_sidechain": set_device_sidechain,
     "ableton.batch": batch,
     "ableton.undo": undo,
 }

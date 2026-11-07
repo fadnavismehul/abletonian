@@ -136,6 +136,18 @@ class RoutingChange(_Request):
 
 
 @dataclass(frozen=True)
+class SidechainChange(_Request):
+    """Point a device's sidechain input at a source, by display name."""
+
+    OPERATION: ClassVar[str] = "set_device_sidechain"
+
+    track: TrackRef
+    device: DeviceRef
+    from_track: str
+    channel: str | None = None
+
+
+@dataclass(frozen=True)
 class TrackPropertiesChange(_Request):
     OPERATION: ClassVar[str] = "set_track_properties"
 
@@ -199,6 +211,7 @@ Change = (
     | DeviceInsert
     | ReturnTrackCreate
     | DeviceDelete
+    | SidechainChange
 )
 
 CHANGE_TYPES: tuple[type[_Request], ...] = (
@@ -209,6 +222,7 @@ CHANGE_TYPES: tuple[type[_Request], ...] = (
     DeviceInsert,
     ReturnTrackCreate,
     DeviceDelete,
+    SidechainChange,
 )
 
 
@@ -334,6 +348,8 @@ class DawAdapter(Protocol):
     def create_return_track(self, change: ReturnTrackCreate) -> dict[str, Any]: ...
 
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]: ...
+
+    def set_device_sidechain(self, change: SidechainChange) -> dict[str, Any]: ...
 
     def apply_batch(self, batch: Batch) -> dict[str, Any]: ...
 

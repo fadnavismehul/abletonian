@@ -23,6 +23,7 @@ from abletonian.adapters.base import (
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -116,6 +117,9 @@ class RemoteScriptAdapter:
         return self._send(change)
 
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]:
+        return self._send(change)
+
+    def set_device_sidechain(self, change: SidechainChange) -> dict[str, Any]:
         return self._send(change)
 
     def apply_batch(self, batch: Batch) -> dict[str, Any]:
