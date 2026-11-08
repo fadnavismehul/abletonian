@@ -39,3 +39,4 @@ whatever their status, so links never break.
 | [0002](0002-selected-rack-macro-cockpit.md) | Selected Rack Macro Cockpit | Accepted (read-only slice built) |
 | [0003](0003-daw-adapter-and-safety-policy.md) | DawAdapter interface and SafetyPolicy in the Python core | Accepted |
 | [0004](0004-bridge-port-and-key.md) | Bridge port and per-install key | Accepted |
+| [0005](0005-hum-to-midi-variations.md) | Hum to MIDI, with variations to choose from | Draft |
