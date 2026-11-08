@@ -191,6 +191,27 @@ class LiveControlToolTests(unittest.TestCase):
             ],
         )
 
+    def test_parameter_values_keep_their_form(self) -> None:
+        # Issue #43: a string is display text, {"raw": n} is raw, and a bare
+        # number stays a number for the Remote Script to read.
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+        target = {"track": "16 Vox", "device": 0, "parameter": "2 Q A"}
+
+        for value in ("1.00", {"raw": 1.0}, 1):
+            asyncio.run(mcp.call_tool("set_device_parameter", {**target, "value": value}))
+        asyncio.run(
+            mcp.call_tool(
+                "insert_device",
+                {"track": 0, "device_name": "EQ Eight", "parameters": {"2 Q A": {"raw": 0.5}}},
+            )
+        )
+
+        values = [params.get("value") for _method, params in bridge.requests[:3]]
+        self.assertEqual(values, ["1.00", {"raw": 1.0}, 1])
+        self.assertIsInstance(values[0], str)
+        self.assertEqual(bridge.requests[3][1]["parameters"], {"2 Q A": {"raw": 0.5}})
+
     def test_track_accepts_index_or_name(self) -> None:
         bridge = PassthroughBridge()
         mcp = build_mcp(AbletonianConfig(), bridge=bridge)
@@ -200,6 +221,144 @@ class LiveControlToolTests(unittest.TestCase):
 
         self.assertEqual(bridge.requests[0][1], {"track": 3, "routing_type": "Main"})
         self.assertEqual(bridge.requests[1][1], {"track": "Vox", "sends": {"A": "-12 dB"}})
+
+    def test_list_devices_is_compact_by_default(self) -> None:
+        """Issue #42: parameters only when asked for."""
+
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(mcp.call_tool("list_devices", {"track": "Kit"}))
+        asyncio.run(mcp.call_tool("list_devices", {"track": "Kit", "detail": "full"}))
+        asyncio.run(mcp.call_tool("list_devices", {"track": "Kit", "include_parameters": True}))
+        asyncio.run(mcp.call_tool("list_devices", {"max_depth": 0}))
+
+        self.assertEqual(
+            [params for _method, params in bridge.requests],
+            [
+                {"track": "Kit", "include_parameters": False},
+                {"track": "Kit", "include_parameters": True},
+                {"track": "Kit", "include_parameters": True},
+                {"include_parameters": False, "max_depth": 0},
+            ],
+        )
+
+    def test_list_devices_rejects_unknown_detail(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        result = asyncio.run(mcp.call_tool("list_devices", {"detail": "everything"}))
+
+        self.assertIn("detail must be", tool_text(result))
+        self.assertEqual(bridge.requests, [])
+
+    def test_rename_tools_send_track_target_and_name(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(
+            mcp.call_tool(
+                "set_device_properties", {"track": "Vox", "device": "#1", "name": "De-esser"}
+            )
+        )
+        asyncio.run(
+            mcp.call_tool(
+                "set_chain_properties",
+                {"track": "Vox", "chain": "Vocal Rack/returns/0", "name": "Room"},
+            )
+        )
+        asyncio.run(
+            mcp.call_tool(
+                "insert_device",
+                {"track": "Vox", "device_name": "Compressor", "name": "De-esser"},
+            )
+        )
+
+        self.assertEqual(
+            bridge.requests[:2],
+            [
+                (
+                    "ableton.set_device_properties",
+                    {"track": "Vox", "device": "#1", "name": "De-esser"},
+                ),
+                (
+                    "ableton.set_chain_properties",
+                    {"track": "Vox", "chain": "Vocal Rack/returns/0", "name": "Room"},
+                ),
+            ],
+        )
+        self.assertEqual(
+            bridge.requests[2],
+            (
+                "ableton.insert_device",
+                {"track": "Vox", "device_name": "Compressor", "name": "De-esser"},
+            ),
+        )
+
+    def test_rename_tools_change_the_set_but_are_repeatable(self) -> None:
+        mcp = build_mcp(AbletonianConfig(), bridge=PassthroughBridge())
+        tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+        for name in ("set_device_properties", "set_chain_properties"):
+            with self.subTest(tool=name):
+                self.assertFalse(tools[name].annotations.read_only_hint)
+                self.assertTrue(tools[name].annotations.idempotent_hint)
+
+    def test_create_track_drops_unset_arguments(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(mcp.call_tool("create_track", {"kind": "midi"}))
+        asyncio.run(
+            mcp.call_tool(
+                "create_track",
+                {"kind": "audio", "name": "Vox Double", "index": 0, "color": "#FF0000"},
+            )
+        )
+
+        self.assertEqual(
+            bridge.requests,
+            [
+                ("ableton.create_track", {"kind": "midi"}),
+                (
+                    "ableton.create_track",
+                    {"kind": "audio", "name": "Vox Double", "index": 0, "color": "#FF0000"},
+                ),
+            ],
+        )
+
+    def test_create_track_rejects_other_kinds_before_the_bridge(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        with self.assertRaisesRegex(Exception, "'midi' or 'audio'"):
+            asyncio.run(mcp.call_tool("create_track", {"kind": "group"}))
+        self.assertEqual(bridge.requests, [])
+
+    def test_get_device_sends_one_device_and_a_filter(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(
+            mcp.call_tool(
+                "get_device", {"track": 0, "device": "Kit/4/Guiro Short", "parameters": "Gain"}
+            )
+        )
+        asyncio.run(
+            mcp.call_tool("get_device", {"track": 0, "device": 1, "parameters": ["A", "B"]})
+        )
+        asyncio.run(mcp.call_tool("get_device", {"track": 0, "device": "Utility"}))
+
+        self.assertEqual(
+            bridge.requests,
+            [
+                (
+                    "ableton.get_device",
+                    {"track": 0, "device": "Kit/4/Guiro Short", "parameters": "Gain"},
+                ),
+                ("ableton.get_device", {"track": 0, "device": 1, "parameters": ["A", "B"]}),
+                ("ableton.get_device", {"track": 0, "device": "Utility"}),
+            ],
+        )
 
     def test_batch_passes_operations_through(self) -> None:
         bridge = PassthroughBridge()
@@ -225,7 +384,13 @@ class ToolAnnotationTests(unittest.TestCase):
                 self.assertIsNotNone(tool.annotations.read_only_hint)
 
     def test_reads_are_read_only(self) -> None:
-        reads = ("list_tracks", "list_devices", "generate_macro_cockpit", "check_bridge_health")
+        reads = (
+            "list_tracks",
+            "list_devices",
+            "get_device",
+            "generate_macro_cockpit",
+            "check_bridge_health",
+        )
         for name in reads:
             with self.subTest(tool=name):
                 self.assertTrue(self.tools[name].annotations.read_only_hint)
@@ -298,3 +463,82 @@ class UndoToolTests(unittest.TestCase):
 
         self.assertIn("confirm=true", text)
         self.assertEqual(bridge.requests, [])
+
+
+class SidechainToolTests(unittest.TestCase):
+    def test_set_device_sidechain_reaches_the_bridge(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+
+        asyncio.run(
+            mcp.call_tool(
+                "set_device_sidechain",
+                {"track": "Bass", "device": "Compressor", "from_track": "1-Kick"},
+            )
+        )
+
+        self.assertEqual(
+            bridge.requests,
+            [
+                (
+                    "ableton.set_device_sidechain",
+                    {"track": "Bass", "device": "Compressor", "from_track": "1-Kick"},
+                )
+            ],
+        )
+
+    def test_set_device_sidechain_is_a_change_and_can_be_batched(self) -> None:
+        bridge = PassthroughBridge()
+        mcp = build_mcp(AbletonianConfig(), bridge=bridge)
+        tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+        self.assertFalse(tools["set_device_sidechain"].annotations.read_only_hint)
+
+        operations = [
+            {
+                "method": "ableton.set_device_sidechain",
+                "params": {"track": 1, "device": 0, "from_track": "Kick"},
+            }
+        ]
+        asyncio.run(mcp.call_tool("apply_batch", {"operations": operations}))
+        self.assertEqual(bridge.requests, [("ableton.batch", {"operations": operations})])
+
+
+class ClipToolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.bridge = PassthroughBridge()
+        self.mcp = build_mcp(AbletonianConfig(), bridge=self.bridge)
+
+    def test_list_clips_is_read_only_and_reaches_the_bridge(self) -> None:
+        tools = {tool.name: tool for tool in asyncio.run(self.mcp.list_tools())}
+        self.assertTrue(tools["list_clips"].annotations.read_only_hint)
+        self.assertFalse(tools["set_clip_gain"].annotations.read_only_hint)
+
+        asyncio.run(self.mcp.call_tool("list_clips", {"track": "Bass"}))
+
+        self.assertEqual(self.bridge.requests, [("ableton.list_clips", {"track": "Bass"})])
+
+    def test_set_clip_gain_accepts_a_number_or_text(self) -> None:
+        asyncio.run(self.mcp.call_tool("set_clip_gain", {"track": 1, "clip": 0, "gain_db": -3}))
+        asyncio.run(
+            self.mcp.call_tool(
+                "set_clip_gain", {"track": "Bass", "clip": "Intro", "gain_db": "-inf dB"}
+            )
+        )
+
+        self.assertEqual(
+            self.bridge.requests,
+            [
+                ("ableton.set_clip_gain", {"track": 1, "clip": 0, "gain_db": -3}),
+                (
+                    "ableton.set_clip_gain",
+                    {"track": "Bass", "clip": "Intro", "gain_db": "-inf dB"},
+                ),
+            ],
+        )
+
+    def test_set_clip_gain_can_be_batched(self) -> None:
+        operations = [
+            {"method": "ableton.set_clip_gain", "params": {"track": 1, "clip": 0, "gain_db": -3}}
+        ]
+        asyncio.run(self.mcp.call_tool("apply_batch", {"operations": operations}))
+        self.assertEqual(self.bridge.requests, [("ableton.batch", {"operations": operations})])

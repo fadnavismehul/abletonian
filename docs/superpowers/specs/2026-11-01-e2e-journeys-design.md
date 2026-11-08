@@ -193,13 +193,14 @@ expectation is never ground truth until a person has reviewed it.
 | J11 | Drum Rack extraction: plan, then execute | plan_drum_rack_extraction, execute_drum_rack_extraction | |
 | J12 | Macro Cockpit: generate, save, reopen, show | cockpit tools | |
 | J13 | Ask the manual (needs the local manual fetched) | search_ableton_manual, lookup_ableton_manual | |
-| J14 | Ask for something unsupported: group tracks, create a track | draft_action_plan, check_bridge_health | |
+| J14 | Ask for something unsupported: group tracks, reorder tracks | draft_action_plan, check_bridge_health | |
 
 - J11 to J14 are judged mainly with `expect.output`, because snapshots do
   not include clip contents, files or manual text. J11 also checks the new
   track names in the snapshot.
 - Not in v1: plugins (#16, #22), a large set and group tracks. These need a
-  new fixture made by hand in Live, since the API cannot create tracks.
+  new fixture made by hand in Live, since the API cannot create groups or
+  load plugins (it can create plain MIDI and audio tracks since #47).
 
 ## Running and reports
 

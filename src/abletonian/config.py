@@ -14,7 +14,8 @@ DEFAULT_AGENT_NAME = "abletonian"
 DEFAULT_BRIDGE_HOST = "127.0.0.1"
 # Must match PORT in remote_scripts/Abletonian/bridge_server.py (RFC 0004).
 DEFAULT_BRIDGE_PORT = 39877
-# Longer than the Remote Script start + run limits (5 s + 25 s).
+# Longer than the Remote Script start + run limits (5 s + 25 s), and than the
+# longest read_levels window plus its overhead (10 s + 12 s).
 DEFAULT_BRIDGE_TIMEOUT = 35.0
 
 

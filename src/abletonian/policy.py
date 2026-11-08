@@ -61,13 +61,17 @@ class Operation:
     refuse_without_confirm: Callable[[Any], str | None] = _no_confirm_needed
     # A request that changes nothing (a delete preview) logs as read-only.
     is_preview: Callable[[Any], bool] = lambda request: False
+    # False for a realtime read (read_levels): it takes time and depends on
+    # playback, but changes neither the Set nor the transport.
+    changes_state: bool = True
 
     def annotations(self) -> ToolAnnotations:
-        read_only = self.safety_class is SafetyClass.READ_ONLY
+        read_only = self.safety_class is SafetyClass.READ_ONLY or not self.changes_state
         return ToolAnnotations(
             read_only_hint=read_only,
             # MCP's destructiveHint covers overwriting values as well as deleting.
-            destructive_hint=self.safety_class
+            destructive_hint=self.changes_state
+            and self.safety_class
             in (SafetyClass.TRANSFORMATIVE, SafetyClass.DESTRUCTIVE, SafetyClass.REALTIME),
             idempotent_hint=read_only or self.repeatable,
             open_world_hint=False,
@@ -104,8 +108,12 @@ def _batch_confirm(batch: Batch) -> str | None:
 _OPERATIONS = (
     Operation("list_tracks", SafetyClass.READ_ONLY, "list_tracks"),
     Operation("list_devices", SafetyClass.READ_ONLY, "list_devices"),
+    Operation("get_device", SafetyClass.READ_ONLY, "get_device"),
+    Operation("list_clips", SafetyClass.READ_ONLY, "list_clips"),
     Operation("get_selected_rack_macros", SafetyClass.READ_ONLY, "read_rack_macros"),
     Operation("plan_drum_rack_extraction", SafetyClass.READ_ONLY, "plan_drum_rack_extraction"),
+    # The first realtime read: samples meters over seconds of playback.
+    Operation("read_levels", SafetyClass.REALTIME, "read_levels", changes_state=False),
     Operation(
         "set_device_parameter", SafetyClass.TRANSFORMATIVE, "set_device_parameter", repeatable=True
     ),
@@ -118,9 +126,26 @@ _OPERATIONS = (
     Operation(
         "set_track_properties", SafetyClass.TRANSFORMATIVE, "set_track_properties", repeatable=True
     ),
+    Operation(
+        "set_device_properties",
+        SafetyClass.TRANSFORMATIVE,
+        "set_device_properties",
+        repeatable=True,
+    ),
+    Operation(
+        "set_chain_properties",
+        SafetyClass.TRANSFORMATIVE,
+        "set_chain_properties",
+        repeatable=True,
+    ),
     Operation("set_mixer", SafetyClass.TRANSFORMATIVE, "set_mixer", repeatable=True),
+    Operation(
+        "set_device_sidechain", SafetyClass.TRANSFORMATIVE, "set_device_sidechain", repeatable=True
+    ),
+    Operation("set_clip_gain", SafetyClass.TRANSFORMATIVE, "set_clip_gain", repeatable=True),
     Operation("insert_device", SafetyClass.ADDITIVE, "insert_device"),
     Operation("create_return_track", SafetyClass.ADDITIVE, "create_return_track"),
+    Operation("create_track", SafetyClass.ADDITIVE, "create_track"),
     # Without confirm, delete_device is a preview: Live reports what would go.
     Operation(
         "delete_device",

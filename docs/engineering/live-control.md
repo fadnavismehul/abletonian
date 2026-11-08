@@ -23,6 +23,8 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
   reaches Live (RFC 0004).
 - Every request, reads included, runs on Live's main thread through
   `schedule_message`. The socket thread never touches the Live API.
+  `read_levels` runs as a chain of callbacks, one per Live tick, and answers
+  when its window is over ([Reading levels](#reading-levels)).
 - Live-side operations live in `remote_scripts/Abletonian/live_ops.py`. They
   take the `song` object and plain JSON, so they are unit-tested with fakes in
   `tests/test_live_ops.py`.
@@ -32,18 +34,26 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | MCP tool | Bridge method | What it does |
 | --- | --- | --- |
 | `list_tracks` | `ableton.list_tracks` | Names, group parent, colour, output routing, volume, pan, sends, mute/solo, device names. Covers regular, return, and main tracks. The tool defaults to `detail="compact"` (levels as display text, no routing options), about a quarter of the size, so large sets fit; `detail="full"` adds raw values and the output routing choices. `name` keeps tracks whose name contains it. |
-| `list_devices` | `ableton.list_devices` | Devices per track (or all tracks), rack chains, and every parameter with raw value, range, display text, and options. |
+| `list_devices` | `ableton.list_devices` | Devices per track (or all tracks) with name, path, class and on/off, and rack chains with index, name and device count. Devices whose sidechain input Live exposes (Compressor) also show `sidechain: {"on", "from", "channel"}`; see [Sidechain](#sidechain). The tool defaults to `detail="compact"` (no parameters; issue #42, a full dump of one Drum Rack track reached 2.5 MB). `detail="full"` or `include_parameters=true` adds every parameter with raw value, range, display text, and options. `max_depth` (0-4, default 4) limits how many rack levels have their chains expanded; `max_depth=0` lists a Drum Rack's chains by name and device count only (`"truncated": true`). Without `detail` or `include_parameters` the bridge keeps its old default (full for one track, compact for all tracks); the tool always sends `include_parameters`. Read-only. |
+| `get_device` | `ableton.get_device` | One device, by the same index, name or path the write tools take, with its parameters (raw value, display text, min/max, options, original name). `parameters` keeps only those whose name or original name contains it (case-insensitive; Utility's `Gain` alias works), or any of a list. A rack's chains are listed by name and device count only. Use it to read one value instead of a whole `list_devices` dump. Read-only. |
+| `list_clips` | `ableton.list_clips` | A track's Arrangement View clips (`Track.arrangement_clips`, Live 11+): index, name, start/end/length in beats, start/end as `bar.beat.sixteenth` from the song's time signature, audio or MIDI, muted, and for audio clips `gain` (0..1) and `gain_display`. Read-only. Session View clips are not listed. Checked in Live 12.4.16 on 2026-11-08 (issue #50). |
+| `read_levels` | `ableton.read_levels` | Realtime read (issue #45): sample track output meters for `seconds` (0.5 to 10, default 4) while Live plays, for up to 16 tracks (`tracks`, default every regular track; `include_returns`, `include_main`). Per track: `peak`, `rms_of_samples`, `hold_peak`, left/right peaks, `sample_count`. Meter positions 0..1, not dBFS. Never starts or stops the transport; refuses with `transport_stopped` when Live is not playing. See [Reading levels](#reading-levels). |
 | `generate_macro_cockpit` | `ableton.get_selected_rack_macros` | Read the selected Rack's macros (read-only) and return a grouped Macro Cockpit spec plus a text summary. See [RFC 0002](../rfcs/0002-selected-rack-macro-cockpit.md). |
 | `save_macro_cockpit` | none | Save a cockpit generated in this session as a JSON file, so it can be reopened. Cockpits are temporary until saved. |
 | `list_saved_macro_cockpits` | none | List saved cockpits. |
 | `open_macro_cockpit` | `ableton.get_selected_rack_macros` | Open a saved cockpit and compare it with the selected Rack; warns when the rack or its macros changed. |
 | `show_macro_cockpit` | none | Write a cockpit (generated this session, or saved) as a self-contained HTML page under the cockpit folder's `views/`, and open it in the browser. Display only. |
-| `set_device_parameter` | `ableton.set_device_parameter` | Set by raw value or by display text (`"-3 dB"`, `"2.5 kHz"`, `"Off"`). |
+| `set_device_parameter` | `ableton.set_device_parameter` | Set by display text (`"-3 dB"`, `"2.5 kHz"`, `"1.00"`), option or step name (`"Off"`, `"Auto"`, `"1/8"`), or raw value (`{"raw": 0.5}`). A bare number is raw unless that is ambiguous; see "How a value is read" below. The result says how the value was read (`read_as`) and may carry a `note`. |
 | `set_track_output_routing` | `ableton.set_track_output_routing` | Set Audio To / MIDI To by display name, such as `Main` or a group name. |
+| `set_device_sidechain` | `ableton.set_device_sidechain` | Point a Compressor's sidechain input at a source by display name (`from_track`, such as `"2-32 Pad Kit Jazz"` or just `"32 Pad Kit Jazz"` when unique) and an optional `channel` (`"Post FX"`). Transformative, one undo step, batchable. Only the routing: "S/C On" is set with `set_device_parameter`. Checked in Live 12.4.16 on 2026-11-08 (issue #49); there only Compressor exposes a sidechain, not Glue Compressor or Gate. |
+| `set_clip_gain` | `ableton.set_clip_gain` | Set an arrangement audio clip's Gain in dB (`-3`, `"-3 dB"`, `"-inf dB"`). `clip` is the `list_clips` index (`0` or `"#0"`) or a unique clip name. Transformative, one undo step, batchable. See [Clips](#clips). Checked in Live 12.4.16 on 2026-11-08 (issue #50). |
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). Live shows a return's letter in front of its name, so a leading `A-` is dropped when renaming return A. |
-| `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. |
-| `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, and set its parameters right away. |
+| `set_device_properties` | `ableton.set_device_properties` | Rename a device (`Device.name`), at the top of a track or inside racks by its path. Transformative. Returns the name and printed path before and after; renaming can change the device's own path and a same-named sibling's (issue #46). |
+| `set_chain_properties` | `ableton.set_chain_properties` | Rename a rack chain (`Chain.name`). `chain` is the rack's path plus the chain's name or index: `"Vocal Rack/Main"`, `"Drum Rack/returns/0"`. Transformative. Returns the name and path before and after. |
+| `set_mixer` | `ableton.set_mixer` | Volume, pan, sends (by return name, letter, or index), mute, solo. Values are read like `set_device_parameter` values; each changed value carries `read_as` and may carry a `note`. |
+| `insert_device` | `ableton.insert_device` | Insert a native device with `Track.insert_device` (Live 12.3+) at a chain position, optionally `name` it, and set its parameters right away, read as in `set_device_parameter`. Value shapes are checked before inserting; names and display text after, and a failure removes the device again. |
 | `create_return_track` | `ableton.create_return_track` | Add a return track at the end (`Song.create_return_track`), with an optional name and colour. Additive. |
+| `create_track` | `ableton.create_track` | Add an empty MIDI or audio track (`Song.create_midi_track(index)` / `Song.create_audio_track(index)`; index -1 or omitted appends). Optional `name`, `color` and `color_index`; if they cannot be set, the new track is deleted again (`Song.delete_track`). Returns the track as compact `list_tracks` shows it, and a note when later tracks moved down one index. Additive. Groups are not created. |
 | `delete_device` | `ableton.delete_device` | Delete a device (`Track.delete_device`). Destructive: without `confirm=true` it only returns the device and its current settings. The tool accepts only a real boolean, so `"true"` or `1` is refused. In `apply_batch`, every delete needs `"confirm": true` or the whole batch is refused before anything runs, and delete targets refer to the set as it was before the batch, so deleting index 0 does not shift a later index 1. |
 | `apply_batch` | `ableton.batch` | Run many changes as one Live undo step (two when it mixes parameter changes with other changes), or one step per operation with `atomic=false`. Stops at the first failure. |
 | `undo_last_change` | `ableton.undo` | Live Undo, `count` times (default 1, at most 20; more than 1 needs `confirm=true`). |
@@ -83,7 +93,87 @@ that would be misread also get the index: names that are only digits, a
 chain named "returns", names with leading or trailing spaces, and names
 containing `/`. For the top-level device, `#N` always means index N, even
 if a device is named `#N`; it is printed instead of `N` when another device
-is literally named `N`. Not yet run in Live.
+is literally named `N`. In Live 12.4.16 (2026-11-08) all 43 paths
+`list_devices` printed for First Light, including `C78 Core Kit/4/Guiro Short`,
+resolved through `get_device` to the same device.
+
+### Sidechain
+
+Since Live 11 a Compressor is a `Live.CompressorDevice.CompressorDevice` with
+`available_input_routing_types`, `available_input_routing_channels`,
+`input_routing_type` and `input_routing_channel` (Cycling '74 LOM docs). The
+script detects these by attribute, not by class name, so any device that has
+them gets a `sidechain` entry in `list_devices` and can be set with
+`set_device_sidechain`. Checked in Live 12.4.16 on 2026-11-08 (issue #49):
+
+- Glue Compressor and Gate do not expose these properties, so they have no
+  `sidechain` entry and `set_device_sidechain` refuses them with
+  `not_supported`. Their sidechain can only be set in Live's UI.
+- A source's `display_name` reads with the track number in front
+  (`"1-C78 Core Kit"`), and the bare name (`"C78 Core Kit"`) also matched.
+  The choices were the other audio tracks, the returns, Main and "No Input";
+  the MIDI track without an instrument was not offered.
+- The sidechain switch is a parameter named `S/C On`; it is the "External"
+  button in Live's Compressor.
+- Each call is one undo step. Setting the source it already has added none.
+
+Still a guess: what `input_routing_type` reads when the source track was
+deleted.
+
+A channel that does not exist for the new source puts the old source back,
+as with output routing. A wrong source or channel lists every choice Live
+offers in the error itself; `list_devices` shows only the current source.
+
+`daw.health` lists `read_device_sidechain` although no tool needs it as a
+capability: it tells a client that `list_devices` reports `sidechain`, so a
+device without that entry from this script has no sidechain input Live
+exposes, rather than coming from an older script that never looked.
+
+### Clips
+
+`list_clips` reads `Track.arrangement_clips` (Live 11+) and, per clip,
+`name`, `start_time`, `end_time`, `is_audio_clip`, `muted`, `gain` and
+`gain_display_string` (Cycling '74 LOM docs). Times are in beats (quarter
+notes). `start_bar` and `end_bar` use `Song.signature_numerator` and
+`signature_denominator`, so they are off after a time signature change in
+the arrangement. Return, main and group tracks list no clips. Splitting a
+clip is not possible: the LOM has no call for it.
+
+`Clip.gain` is normalized 0..1, not dB, and Live offers no conversion:
+`gain_display_string` only shows the current gain. So `set_clip_gain` uses
+the same display-text search as parameters, except that each probe writes
+`Clip.gain` and reads `gain_display_string` back (about 130 writes for one
+call, all inside the call's undo step). On a clip that is playing, those
+writes may be audible as a brief jump in its level; set the gain while the
+clip is not playing if that matters. Before searching it writes 0, 1, 1, 0
+and refuses unless both writes of the same end show the same text and the
+two ends differ, so a display that lags one write behind is caught whatever
+the starting gain. On any failure the original gain is put back; if putting
+it back fails too, the error says so. Text a little past either end (such as
+`"25 dB"` when the top shows `24.0 dB`) is set to that end with a `note`.
+Checked in Live 12.4.16 on 2026-11-08:
+
+- `gain_display_string` changes at once after a write: `-3`, `"-6 dB"`,
+  `"-inf dB"`, `"+3"` and `0` each landed on that display (`-3.00 dB` and so
+  on), and `"25 dB"` was set to the top, `24.0 dB`, with a note.
+- Each call is one undo step; the probe writes leave no extra ones.
+- A refused value (`-200`) puts the gain back, but its probe writes still
+  leave one undo step that changes nothing.
+- `arrangement_clips` is an empty list on tracks without clips. A clip at
+  beat 8 in 4/4 starts at `3.1.1`, so bar 1 starts at beat 0.
+- `gain_db` accepts only a number with an optional `dB`, or `-inf`. Before
+  this run, `"#0"` (meant as a clip reference) was read as 0 dB.
+Renaming a device or chain (`set_device_properties`, `set_chain_properties`,
+`insert_device` with `name`) works out the printed path again after the
+rename and returns it. `Device.name` and `Chain.name` are read/write in the
+Cycling '74 LOM docs. Checked in Live 12.4.16 on 2026-11-08: Live shows and
+reads back the written name; renaming the chain `C78 Core Kit/4` to
+"Guiro A" made the other "Guiro Short" chain's path `C78 Core Kit/Guiro Short`;
+a Drum Rack chain's pad shows the new chain name. Renaming the Instrument
+Rack inside a Drum Rack chain ("Snare" to "Snare X") also renamed that chain
+and its pad. The returned path already shows this
+(`C78 Core Kit/Snare X/Snare X`), so use the path from the result, not the
+old chain name. Each rename is one undo step.
 
 ### Values by display text
 
@@ -104,8 +194,77 @@ plugin's display does not change across the range, or the text is an option
 name the parameter does not list (Mode "Andromeda"), the call is refused with
 the display at both ends and the raw range. Use raw values for plugins.
 
+#### How a value is read (issues #43, #44)
+
+All of this reads `str_for_value` and never writes the parameter, so a
+refused value changes nothing. `DeviceParameter.str_for_value(value)`,
+`is_quantized` and `value_items` ("only valid for quantized parameters") are
+from the Cycling '74 LOM docs.
+
+- **`{"raw": n}`** sets raw `n`, range-checked. This is how a caller asks
+  for a raw value without any interpretation.
+- **A string** is display text or an option name.
+- **A bare number** (JSON number) is the raw value, except:
+  - if Live shows that raw value as the same number (a 0..127 parameter
+    showing `64` at raw 64), raw and display agree and it is simply set;
+  - if the parameter shows plain numbers with no unit (EQ Eight Q, raw 0..1
+    showing `0.10` to `18.00`) or is stepped with numbered steps (Glue
+    Compressor Attack), and the number is also a display value at another
+    raw value, the call is refused as ambiguous. The error names both
+    readings ("1 is ambiguous for '2 Q A': as a raw value it shows as
+    '18.00', but '1.00' is raw 0.443403") and the hint says to send `"1"` for the
+    display value or `{"raw": 1}` for the raw one;
+  - for those same parameters, a number outside the raw range is read as
+    display text (Q `3` sets Q 3.00), and the result's `note` says so;
+  - a parameter that shows units or option names keeps the raw reading
+    (Track Volume `0.85`, Device On `0`). When Live shows something other
+    than the number, the result's `note` says what it shows. A number out of
+    range is refused, and the hint names the display reading.
+
+  Issue #43 was EQ Eight Q set to raw 1.0 (showing 18.0) when the musician
+  meant Q 1.00. Reading bare numbers as display text everywhere was not
+  chosen: it would change what Track Volume `0.85` means for existing
+  callers. Refusing only where both readings are plausible keeps those
+  callers working and makes the dangerous case ask.
+
+**Stepped parameters.** A parameter is stepped when Live marks it
+`is_quantized`, or (a guess, issue #44) when it has an integer raw range of
+2 to 64 whose half step shows the text of a neighbouring step. Each step `i`
+is raw `min + i`. Its options are `value_items` when Live gives them, else
+the `str_for_value` text of each step (up to 128 steps), and `list_devices`
+lists them under `options`. Text matches a step by name (either list, case
+ignored), then by number at the display's resolution (`"0.1"` matches
+`.1`, `"1"` matches `1.00`, `"1 s"` matches `1000 ms`), then as the
+start of exactly one step's text (`"Sp"` matches `Sparse`). Live's
+abbreviations are read only through a fixed alias list: `"Auto"` matches a
+step shown as `A` (Glue Compressor Release), but `"Attack"` or `"Au"` do
+not. `"1/8"` is matched as text, never as the number 1.
+
+In Live 12.4.16 Glue Compressor Release refused `"Auto"` with "does not show
+numeric values (it shows '.1' to 'A')", and Attack and Ratio behaved the
+same, so Live gave no `value_items` for them (or does not mark them
+quantized). Either way they now resolve through their step texts. Not yet
+checked in Live.
+
+**Other parameters.** When both ends show distinct numbers, a bisection
+finds the raw value (as before). Text a little past either end (within 5%,
+such as `"36 dB"` on a knob that stops at 35 dB) is set to that end rather
+than refused, and the result's `note` says so and quotes what Live shows
+there; text further out is refused. Otherwise the script samples every integer
+step of the raw range (up to 256) plus 33 evenly spaced points, matches the
+text against the distinct display texts it saw, and lists them when nothing
+matches. If every sample shows the same text, as Echo "L Synced" did
+(`'1/64'` for every value, Live 12.4.16), the error says so: `str_for_value`
+may only format the current value, or the display may depend on another
+parameter such as Echo's sync mode. Which of the two applies to Echo is not
+known; check in Live by reading `str_for_value` for each step with L Sync on
+and off.
+
 Some API names differ from the device UI. Utility's gain knob is `Output` in
-the API; `Gain` is accepted as an alias. `list_devices` shows the API names.
+the API; `Gain` is accepted as an alias. `list_devices` with `detail="full"`
+and `get_device` show the API names; `get_device` also shows each
+parameter's `original_name` (`DeviceParameter.original_name`, Cycling '74
+LOM docs).
 
 ### Undo
 
@@ -158,6 +317,87 @@ Action" or `Change "<parameter>"`; the Live API gives no way to name it.
 
 If setting `parameters` on a newly inserted device fails, `insert_device`
 deletes that device again, so a failed call leaves the track unchanged.
+Value shapes (a number, a string, or `{"raw": n}`) are checked before
+inserting, so a malformed value changes nothing. Parameter names, options and
+display text only exist on the inserted device, so they are checked after:
+all names are resolved before any value is written, and values are then
+resolved and set in the order given (one parameter's display can depend on
+another). The error keeps its code and its hint suggests inserting without
+parameters and reading `list_devices` first.
+
+The insert-and-delete still leaves one "Custom Action" step that changes
+nothing. The LOM's `Song` offers `begin_undo_step`, `end_undo_step` and
+`undo`, but nothing to discard or rename a step (Cycling '74 LOM docs).
+Calling `undo` would move the step to the redo list and, since Live merges
+steps made close together (issue #3, #26), could revert the musician's own
+edit. So the empty step is left and the error says so.
+
+### Reading levels
+
+`read_levels` (issue #45, checked in Live 12.4.16 on 2026-11-08) is the first realtime read:
+it takes wall-clock time and its answer depends on what is playing, but it
+changes neither the Set nor the transport and adds nothing to Undo History.
+
+How it runs, all on Live's main thread:
+
+1. One `schedule_message` callback checks the request, resolves the tracks
+   and checks `Song.is_playing`. A stopped transport is refused with
+   `transport_stopped`, so a read never returns a window of zeros as if the
+   tracks were silent.
+2. A sampling callback reads each track's meters, then schedules itself
+   again one Live tick later (`LEVEL_SAMPLE_TICK_DELAY`). It ends when the
+   window's time is up, after 400 samples, or when the transport stops
+   (the result then says `stopped_early` and warns). If the transport
+   stopped before the first sample, the read is refused with
+   `transport_stopped` instead of answering with empty readings. If five
+   ticks in a row run with the clock moving less than 10 ms (callbacks run
+   in the same pass, not on Live's timer; a guess at a failure not seen in
+   Live), or Live will not schedule the next tick, the read ends with an
+   error.
+3. The socket thread only waits for the last callback, up to the window plus
+   5 s (`LEVEL_READ_GRACE_SECONDS`), then sends the answer. If Live is too
+   busy it answers `timeout`; the next tick ends the chain, and since nothing
+   was changed nothing needs putting back. If the bridge stops during the
+   read (the Control Surface is reloaded or disconnected), it answers at once
+   that nothing was changed, and the next tick ends the chain.
+
+Nothing sleeps or loops on the main thread. While a read runs, the bridge's
+single socket thread is busy, so other tool calls wait for it (at most about
+20 s). abletonian refuses a read before sending it if its bridge timeout
+(35 s by default) is shorter than the window plus 12 s.
+
+Per track the result gives `peak` (the highest momentary reading, the
+louder of left and right), `peak_left`, `peak_right`, `hold_peak` (the
+highest `output_meter_level`), `rms_of_samples` (the root mean square of the
+momentary readings: a rough loudness average at about the tick rate, not a
+true signal RMS), and `sample_count`. Warnings name tracks that read 0.0 for
+the whole window, tracks where only `hold_peak` caught a level, tracks that
+could not be read, and MIDI tracks, and say so when fewer than 2 samples per
+second were taken (stalled or skipped ticks). In Live 12.4.16 a one-shot clap
+fell between samples: `peak` was 0.0 while `hold_peak` was 0.40, so short
+sounds are better judged by `hold_peak`.
+If abletonian's bridge client times out waiting for a read, its error says
+that nothing was changed.
+
+Live Object Model assumptions, from the Cycling '74 LOM docs (Track, Song)
+as recalled. In Live 12.4.16 (2026-11-08) the meters read sensibly (the
+playing drum track about 0.84, silent tracks 0.0), a stopped transport was
+refused, and stopping it during a read gave `stopped_early`:
+
+- `Track.output_meter_left` / `output_meter_right`: momentary peak per
+  channel, 0.0 to 1.0, for tracks with audio output.
+- `Track.output_meter_level`: hold peak of the meter, 0.0 to 1.0; for MIDI
+  tracks a MIDI meter. A track with `has_audio_output` false is reported with
+  `"meter": "midi"`.
+- `Song.is_playing`: whether the transport runs.
+- The values are meter positions, not dBFS. Live does not document the
+  mapping to dB, so none is reported. That 1.0 is near 0 dBFS is a guess.
+- Live's timer runs about 10 ticks a second (community knowledge, not in the
+  LOM docs; in Live 12.4.16 a 4 s window took 39 samples), so a 4 s window
+  gives about 40 samples. The result
+  reports the real sample count and elapsed time.
+- Gain reduction per device (compressors, limiters) is out of scope. It is
+  probably not exposed to Remote Scripts (a guess; not checked).
 
 ### Errors
 
@@ -168,15 +408,18 @@ names the object and lists the choices; the hint says what to do.
 | Code | When | Hint, in short |
 | --- | --- | --- |
 | `not_found` | No such track, device, chain, parameter, return, routing or selection | Which list to check: `list_tracks`, or `list_devices` on that track |
-| `invalid_value` | A value is out of range, not an option, or badly formed | See the parameter's range and display text, or send a raw number |
+| `invalid_value` | A value is out of range, not an option, ambiguous, or badly formed | See the parameter's range, display text and options, or send `{"raw": n}`; an ambiguous bare number names both readings |
 | `not_supported` | Live or this Remote Script cannot do it | What to do instead, such as reinstalling an older Remote Script |
 | `confirmation_required` | A delete or multi-step undo without `confirm=true` | Ask the user first |
 | `timeout` | Live did not start, or did not finish, in time | Whether the change may still happen, and to check before retrying |
+| `transport_stopped` | `read_levels` while Live's transport is not playing | Start playback (the tool never does), then read again |
 | `unauthorized` | Wrong or missing bridge key (RFC 0004) | Same user for Live and abletonian; switch the slot |
 | `adapter_error` | Anything else | None, rather than a wrong one |
 
 A failed operation in `apply_batch` reports its `code` and `hint` under
-`failed`.
+`failed`. `read_levels` can also be refused by abletonian itself, before
+anything is sent, with `bridge_timeout_too_short` when the configured
+bridge timeout is shorter than the window plus 12 s.
 
 Checked in Live 12.4.16 on 2026-11-03 (PR #40, validation log below).
 
@@ -236,6 +479,44 @@ Checked in Live 12.4.16 on 2026-11-03 (PR #40, validation log below).
   macros. The page has no running scripts and loads nothing from the network.
 
 ## Validation log
+
+### 2026-11-08 (PR #61), Live 12.4.16 Suite, macOS 27.2
+
+Remote Script 0.7.1 from the PR branch, installed and reloaded by switching
+the Control Surface slot to None and back. Run by an agent on the Mac with
+the `drive-live-on-mac` skill. Set: `First Light 061 check.als`, a Save As
+copy of First Light, not saved after the run; every change was undone and
+Live's Edit menu showed "Nothing to Undo" at the end.
+
+- `daw.health`: adapter 0.7.1 with the new capabilities.
+- `list_devices` with `max_depth` 0 listed the 16 Drum Rack chains as
+  truncated. All 43 printed paths resolved through `get_device` (#24, #42).
+- EQ Eight `1 Q A` (#43): bare `1` refused as ambiguous naming both
+  readings, `"1"` set 1.00, `{"raw": 1}` set 18.0, bare `3` set 3.00 with a
+  note. Nothing changed on the refusal.
+- Glue Compressor (#44): options listed as Live shows them (Release `.1` to
+  `A`). `"Auto"` set Release to A; `"Attack"` and `"Au"` were refused;
+  `"0.4"`, Attack `"1"` and `"0.1"`, Ratio `"4"` and `10` all set.
+- `insert_device` with a name (#46): one undo step for insert and name.
+  Chain and device renames showed in Live and moved paths as expected;
+  renaming the rack inside a Drum Rack chain also renamed the chain.
+- `set_device_sidechain` (#49): Compressor set to C78 Core Kit Post FX, then
+  A-Reverb; Live's Compressor showed External, A-Reverb, Post FX. Glue
+  Compressor and Gate refused with `not_supported`.
+- `create_track` (#47): MIDI at index 1 and audio at the end, each one undo
+  step; group kind, index 99 and a bad colour refused with nothing created.
+- `list_clips` and `set_clip_gain` (#50), on a clap sample dragged into
+  Arrangement View: all values landed; one undo step each.
+- `read_levels` (#45): refused while stopped; 39 samples in 4 s while a
+  Session clip played; returns and Main included on request; stopping the
+  transport after 2.5 s of a 6 s read gave `stopped_early`.
+- Found and fixed: `gain_db` `"#0"` was read as 0 dB, the out-of-range clip
+  gain error told the caller to send a raw value, and `read_levels` called a
+  track silent when only `hold_peak` had caught its short hit. The first two
+  fixes were rerun in Live; the `read_levels` warning change is unit tested
+  only. These fixes are adapter 0.7.2.
+- Not checked: `create_track` inside a group, the fail-closed delete, and a
+  sidechain source that was deleted.
 
 ### 2026-11-03 (MEH-25, PR #40), Live 12.4.16 Suite, macOS 27.2
 
@@ -450,7 +731,17 @@ Live's Python API has no call to create a group from tracks, and none to
 reorder tracks. Creating group buses therefore still needs Live's UI
 (select tracks, Cmd+G). Once the groups exist, these tools can colour and
 name them, route tracks into them, and insert a Glue Compressor on them.
-Creating tracks and saving the set are also not exposed.
+Saving the set is also not exposed.
+
+`create_track` (issue #47) was checked in Live 12.4.16 on 2026-11-08: a MIDI
+track created at index 1 landed there, an audio track without an index went
+to the end, and each create with its name and colour was one undo step. A
+bad colour or index is refused before anything is created. Live picked the
+palette colour `#5480E4` for `"#3366FF"`, and the next track created without
+a colour showed the same colour, so whether the colour was applied or is
+Live's default is not settled. Not checked: an index inside a folded or
+unfolded group (a guess: Live may put the track into the group), and the
+fail-closed `Song.delete_track`.
 
 ## Prior art
 

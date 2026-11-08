@@ -5,6 +5,7 @@ from abletonian.adapters.base import (
     AdapterRefused,
     AdapterResponseError,
     Batch,
+    ClipGainChange,
     DawAdapter,
     DeviceDelete,
     DeviceInsert,
@@ -79,6 +80,15 @@ class UndoRequestTests(unittest.TestCase):
 
     def test_valid_counts(self) -> None:
         self.assertEqual(UndoRequest(count=20, confirm=True).count, 20)
+
+
+class ClipGainChangeTests(unittest.TestCase):
+    def test_gain_is_a_number_or_text_only(self) -> None:
+        for bad in ({"raw": 0.7}, True, None, [-3]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ClipGainChange(track=1, clip=0, gain_db=bad)  # type: ignore[arg-type]
+        self.assertEqual(ClipGainChange(track=1, clip=0, gain_db=-3).gain_db, -3)
+        self.assertEqual(ClipGainChange(track=1, clip=0, gain_db="-3 dB").gain_db, "-3 dB")
 
 
 class HealthTests(unittest.TestCase):

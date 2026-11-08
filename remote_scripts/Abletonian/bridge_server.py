@@ -43,7 +43,7 @@ HOST = "127.0.0.1"
 # (RFC 0004). Must match DEFAULT_BRIDGE_PORT in src/abletonian/config.py.
 PORT = 39877
 PROTOCOL_VERSION = "abletonian.bridge.v2"
-ADAPTER_VERSION = "0.6.1"
+ADAPTER_VERSION = "0.7.2"
 # The per-install key every request must carry (RFC 0004). Same path as
 # DEFAULT_BRIDGE_KEY_PATH in src/abletonian/bridge/client.py.
 KEY_PATH = os.path.join(os.path.expanduser("~"), ".abletonian", "bridge_key")
@@ -61,6 +61,23 @@ REQUEST_RUN_TIMEOUT_SECONDS = 25.0
 # A per-operation batch runs each operation this many Live ticks after the
 # previous one, so Live does not merge their undo steps.
 BATCH_OPERATION_TICK_DELAY = 1
+# ableton.read_levels takes one meter sample every this many Live ticks.
+LEVEL_SAMPLE_TICK_DELAY = 1
+# How much longer than its window a level read may take (slow or skipped
+# ticks) before the socket thread gives up on it. With the start timeout of
+# the setup call, a read ends within seconds + 10 s; the MCP server's client
+# timeout must be longer (LEVEL_READ_OVERHEAD_SECONDS in
+# src/abletonian/adapters/remote_script.py).
+LEVEL_READ_GRACE_SECONDS = 5.0
+LEVEL_READ_METHOD = "ableton.read_levels"
+# A level tick whose clock moved less than this since the previous tick did
+# not wait for Live's timer; after LEVEL_STALLED_TICK_LIMIT of those in a row
+# the read ends with an error rather than spinning in one main-thread pass
+# (a guess at how a re-entrant schedule_message would look; not seen in Live).
+LEVEL_MIN_TICK_SECONDS = 0.01
+LEVEL_STALLED_TICK_LIMIT = 5
+# How often the waiting socket thread checks whether the bridge is stopping.
+LEVEL_STOP_POLL_SECONDS = 0.1
 # Live Undo presses per track the Drum Rack workflow creates (Live 12.4.16).
 UNDO_STEPS_PER_CREATED_TRACK = 2
 UNFILTERED_SCAFFOLD_WARNING = (
@@ -99,6 +116,12 @@ class AbletonianBridgeControlSurface(ControlSurface):
             return self._scaffold_drum_rack_extraction(params)
         if method == "workflow.execute_drum_rack_extraction":
             return self._execute_drum_rack_extraction(params)
+        if method == LEVEL_READ_METHOD:
+            # Reached only without Live's timer: _call_surface runs level
+            # reads through _run_level_read when schedule_message exists.
+            raise live_ops.NotSupported(
+                "read_levels samples meters on Live's timer, which this host does not have"
+            )
         result = live_ops.handle(_live_object(self, "song"), method, params)
         if result is not None:
             return result
@@ -132,22 +155,32 @@ class AbletonianBridgeControlSurface(ControlSurface):
                 "execute_drum_rack_extraction",
                 "list_tracks",
                 "list_devices",
+                "get_device",
                 "read_rack_macros",
                 "set_device_parameter",
                 "set_track_output_routing",
                 "set_track_properties",
+                "set_device_properties",
+                "set_chain_properties",
                 "set_mixer",
                 "insert_device",
                 "create_return_track",
+                "create_track",
                 "delete_device",
+                # No Operation needs it: it says list_devices reports
+                # "sidechain", so its absence on a device means no sidechain.
+                "read_device_sidechain",
+                "set_device_sidechain",
+                "list_clips",
+                "set_clip_gain",
                 "batch",
                 "undo",
                 "undo_count",
                 "batch_per_operation_undo",
                 "single_call_undo_steps",
+                "read_levels",
             ],
             "unsupported_capabilities": [
-                "create_track",
                 "group_tracks",
                 "reorder_tracks",
                 "write_midi_notes",
@@ -548,6 +581,7 @@ def _dispatch_frame(surface, frame):
 # Timeouts raised by _call_on_main_thread, matched by their message.
 _NOT_STARTED = "did not start the request"
 _NOT_FINISHED = "did not finish it in time"
+_LEVELS_NOT_FINISHED = "did not finish sampling meters in time"
 
 
 def _error_code_and_hint(exc, request_id):
@@ -570,11 +604,19 @@ def _error_code_and_hint(exc, request_id):
                 "Live may still apply this change. Check the Set with list_tracks or "
                 "list_devices before trying again.",
             )
+        if _LEVELS_NOT_FINISHED in str(exc):
+            return (
+                "timeout",
+                "Live was too busy to sample the whole window; nothing was changed. Try "
+                "again, or read fewer seconds or tracks.",
+            )
         return "timeout", None
     return "adapter_error", None
 
 
 def _call_surface(surface, method, params):
+    if method == LEVEL_READ_METHOD and callable(getattr(surface, "schedule_message", None)):
+        return _run_level_read(surface, params)
     if _is_per_operation_batch(method, params) and callable(
         getattr(surface, "schedule_message", None)
     ):
@@ -621,6 +663,102 @@ def _run_batch_per_operation(surface, params):
         except Exception as exc:
             return live_ops.batch_failure(plan, results, position, exc)
     return live_ops.batch_success(plan, results)
+
+
+def _level_clock():
+    """Seconds on a monotonic clock, for level windows. Tests replace it."""
+
+    return time.monotonic()
+
+
+def _run_level_read(surface, params):
+    """Sample track meters over several Live ticks, then answer (issue #45).
+
+    Runs on the socket thread, which only waits; every Live read happens on
+    the main thread. The setup call checks the request and the transport and
+    pins the tracks. Then one callback samples the meters and schedules
+    itself again LEVEL_SAMPLE_TICK_DELAY ticks later, until the window says
+    it is over. Nothing sleeps or loops on the main thread, and the
+    transport is never touched. If the window does not finish in time the
+    socket thread stops waiting and the next tick ends the chain; the read
+    changed nothing, so there is nothing to put back.
+    """
+
+    schedule_message = surface.schedule_message
+
+    def song():
+        return _live_object(surface, "song")
+
+    window = _call_on_main_thread(
+        surface,
+        lambda: live_ops.LevelWindow(live_ops.prepare_level_read(song(), params), _level_clock()),
+    )
+    finished = threading.Event()
+    state = {"abandoned": False, "last": None, "stalled": 0}
+
+    def tick():
+        if state["abandoned"]:
+            return
+        now = _level_clock()
+        if state["last"] is not None and now - state["last"] < LEVEL_MIN_TICK_SECONDS:
+            state["stalled"] += 1
+        else:
+            state["stalled"] = 0
+        state["last"] = now
+        if state["stalled"] >= LEVEL_STALLED_TICK_LIMIT:
+            state["error"] = live_ops.LiveOpsError(
+                "Live ran the level read's ticks without its timer moving on, so the "
+                "window could not be timed; nothing was changed",
+                "Try again. If it keeps happening, reload the Abletonian Control Surface.",
+            )
+            finished.set()
+            return
+        try:
+            done = window.sample(song(), now)
+        except Exception as exc:
+            state["error"] = exc
+            done = True
+        if done:
+            finished.set()
+            return
+        try:
+            schedule_message(LEVEL_SAMPLE_TICK_DELAY, tick)
+        except Exception as exc:
+            state["error"] = live_ops.LiveOpsError(
+                f"Live would not schedule the next meter sample ({exc}); nothing was changed"
+            )
+            finished.set()
+
+    schedule_message(0, tick)
+    stop = _stop_event(surface)
+    deadline = time.monotonic() + window.seconds + LEVEL_READ_GRACE_SECONDS
+    while not finished.wait(LEVEL_STOP_POLL_SECONDS):
+        if stop.is_set():
+            state["abandoned"] = True
+            raise live_ops.LiveOpsError(
+                "the Abletonian bridge stopped during the level read (the Control Surface "
+                "was reloaded or Live disconnected it); nothing was changed",
+                "Check that Abletonian is enabled in Live's Control Surface settings, then "
+                "read levels again.",
+            )
+        if time.monotonic() >= deadline:
+            state["abandoned"] = True
+            raise TimeoutError(f"Live {_LEVELS_NOT_FINISHED}; nothing was changed")
+    if "error" in state:
+        raise state["error"]
+    if window.stopped_early and window.samples == 0:
+        raise live_ops.TransportStopped(
+            "Live's transport stopped before the first meter sample, so nothing was "
+            "read; nothing was changed"
+        )
+    return window.result(tick_delay=LEVEL_SAMPLE_TICK_DELAY)
+
+
+def _stop_event(surface):
+    """The bridge server's stop event, or one that is never set (tests)."""
+
+    event = getattr(getattr(surface, "_server", None), "_stop_event", None)
+    return event if event is not None else threading.Event()
 
 
 def _call_on_main_thread(surface, action, delay=0):

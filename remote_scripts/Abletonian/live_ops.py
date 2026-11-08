@@ -24,16 +24,22 @@ PARAMETER_ALIASES = {
 # Live 12 racks have up to 16 macros.
 MAX_RACK_MACROS = 16
 # Racks inside racks are listed this deep; deeper chains are marked truncated.
+# list_devices' max_depth can lower it (issue #42).
 MAX_RACK_DEPTH = 4
 
 BATCHABLE_METHODS = (
     "ableton.set_device_parameter",
     "ableton.set_track_output_routing",
     "ableton.set_track_properties",
+    "ableton.set_device_properties",
+    "ableton.set_chain_properties",
     "ableton.set_mixer",
     "ableton.insert_device",
     "ableton.create_return_track",
+    "ableton.create_track",
     "ableton.delete_device",
+    "ableton.set_device_sidechain",
+    "ableton.set_clip_gain",
 )
 
 
@@ -79,8 +85,9 @@ TRACK_HINT = "Use list_tracks to see track names and indexes."
 DEVICE_HINT = "Use list_devices on that track to see its devices, paths and parameters."
 VALUE_HINT = (
     "Use list_devices on that track to see this parameter's range, display text "
-    "and options, or send a raw number in its range."
+    "and options, or send {\"raw\": <number>} within its range."
 )
+CLIP_HINT = "Use list_clips on that track to see its arrangement clips and their indexes."
 SELECTION_HINT = "Select the track (and Rack) in Live, or name the track and device in the call."
 
 
@@ -162,11 +169,40 @@ def list_tracks(song, params):
 
 
 def list_devices(song, params):
+    """List devices on one track, or on every track. Never changes the Live Set.
+
+    ``detail`` is "compact" (no parameters) or "full" (every parameter of
+    every listed device). ``include_parameters`` is the older switch and wins
+    when given: true is "full", false is "compact". With neither, the bridge
+    keeps its old default: "full" for one track, "compact" for the whole set
+    (the MCP tool always sends one, defaulting to compact).
+    ``max_depth`` is how many rack levels have their chains expanded
+    (0..MAX_RACK_DEPTH, default MAX_RACK_DEPTH); chains below it are listed by
+    index, name and device count only, marked ``truncated`` (issue #42).
+    """
+
     track_ref = params.get("track")
+    detail = params.get("detail")
+    if detail not in (None, "full", "compact"):
+        raise InvalidValue(f"detail must be 'full' or 'compact', got '{detail}'")
     include_parameters = params.get("include_parameters")
     if include_parameters is None:
         # Every parameter of every device can exceed the bridge frame limit.
-        include_parameters = track_ref is not None
+        include_parameters = detail == "full" if detail else track_ref is not None
+    elif not isinstance(include_parameters, bool):
+        raise InvalidValue("include_parameters must be true or false")
+    detail = "full" if include_parameters else "compact"
+    max_depth = params.get("max_depth")
+    if max_depth is None:
+        max_depth = MAX_RACK_DEPTH
+    elif (
+        isinstance(max_depth, bool)
+        or not isinstance(max_depth, int)
+        or not 0 <= max_depth <= MAX_RACK_DEPTH
+    ):
+        raise InvalidValue(
+            f"max_depth must be a whole number from 0 to {MAX_RACK_DEPTH}, got {max_depth!r}"
+        )
     if track_ref is None:
         targets = _all_tracks(song)
     else:
@@ -177,14 +213,90 @@ def list_devices(song, params):
                 "track": _track_ref_payload(kind, index, track),
                 "devices": [
                     _device_payload(
-                        device, device_index, include_parameters, track, device_index
+                        device,
+                        device_index,
+                        include_parameters,
+                        track,
+                        device_index,
+                        max_depth=max_depth,
                     )
                     for device_index, device in enumerate(_tuple(track.devices))
                 ],
             }
             for kind, index, track in targets
-        ]
+        ],
+        "detail": detail,
+        "max_depth": max_depth,
     }
+
+
+def get_device(song, params):
+    """Read one device and its parameters. Never changes the Live Set.
+
+    ``device`` takes the same index, name or rack path as
+    set_device_parameter. ``parameters`` optionally keeps only parameters
+    whose name (or original name, or a known alias such as Utility's "Gain")
+    contains it, case-insensitively; a list keeps parameters matching any
+    entry. Rack chains are listed by index, name and device count only.
+    Reads Device.parameters, DeviceParameter.name/original_name/value/min/
+    max/is_quantized/value_items and RackDevice.chains/return_chains with
+    Chain.devices (Cycling '74 LOM docs; all already used by list_devices
+    and get_selected_rack_macros). Not yet run in Live.
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    path, device_index, device, _owner = resolve_device_path(track, _required(params, "device"))
+    wanted = _parameter_filter(params.get("parameters"))
+    parameters = _tuple(device.parameters)
+    selected = [
+        (i, parameter)
+        for i, parameter in enumerate(parameters)
+        if wanted is None or _parameter_matches(device, parameter, wanted)
+    ]
+    if wanted is not None and not selected:
+        names = ", ".join(_str(p.name) for p in parameters) or "(none)"
+        raise NotFound(
+            f"no parameter matching {', '.join(repr(w) for w in wanted)} on "
+            f"'{_str(device.name)}'. Parameters: {names}",
+            DEVICE_HINT,
+        )
+    payload = _device_summary(device, device_index, path)
+    if bool(_get(device, "can_have_chains", False)):
+        payload["chains"] = _chain_summaries(_get(device, "chains", ()))
+        return_chains = _tuple(_get(device, "return_chains", ()))
+        if return_chains:
+            payload["return_chains"] = _chain_summaries(return_chains)
+    payload["parameter_count"] = len(parameters)
+    payload["parameters"] = [
+        {"index": i, **_param_payload(parameter, original_name=True)} for i, parameter in selected
+    ]
+    return {"track": _track_ref_payload(kind, index, track), "device": payload}
+
+
+def _parameter_filter(value):
+    if value is None:
+        return None
+    items = [value] if isinstance(value, str) else value
+    if (
+        not isinstance(items, (list, tuple))
+        or not items
+        or not all(isinstance(item, str) and item.strip() for item in items)
+    ):
+        raise InvalidValue("parameters must be a name, or a list of names, to look for")
+    return [item.strip().lower() for item in items]
+
+
+def _parameter_matches(device, parameter, wanted):
+    aliases = PARAMETER_ALIASES.get(_str(_get(device, "class_name", "")), {})
+    names = [
+        _str(parameter.name).lower(),
+        _str(_get(parameter, "original_name", "")).lower(),
+    ]
+    for text in wanted:
+        targets = (text, aliases.get(text, text).lower())
+        if any(target in name for target in targets for name in names if name):
+            return True
+    return False
 
 
 def get_selected_rack_macros(song, params):
@@ -264,13 +376,17 @@ def set_device_parameter(song, params):
     path, device_index, device, _owner = resolve_device_path(track, _required(params, "device"))
     parameter = resolve_parameter(device, _required(params, "parameter"))
     before = _param_payload(parameter)
-    set_parameter_value(parameter, _required(params, "value"))
-    return {
+    reading = set_parameter_value(parameter, _required(params, "value"))
+    result = {
         "track": _track_ref_payload(kind, index, track),
         "device": {"index": device_index, "name": _str(device.name), "path": path},
         "before": before,
         "after": _param_payload(parameter),
+        "read_as": reading["read_as"],
     }
+    if reading["note"]:
+        result["note"] = reading["note"]
+    return result
 
 
 def set_track_output_routing(song, params):
@@ -278,29 +394,193 @@ def set_track_output_routing(song, params):
     routing_type = _required(params, "routing_type")
     routing_channel = params.get("routing_channel")
     before = _routing_payload(track)
-    previous_type = track.output_routing_type
-    track.output_routing_type = _match_routing(
-        track.available_output_routing_types, routing_type, "output routing type"
+    _apply_routing(
+        track,
+        "output",
+        routing_type,
+        routing_channel,
+        ("output routing type", "output routing channel", "output type"),
     )
-    if routing_channel is not None:
-        # Channel options depend on the type, so match after setting it and
-        # put the old type back if the channel does not exist.
-        try:
-            channel = _match_routing(
-                track.available_output_routing_channels, routing_channel, "output routing channel"
-            )
-        except LiveOpsError as exc:
-            track.output_routing_type = previous_type
-            raise LiveOpsError(
-                f"{exc}. The output type was put back; Live may still list this as an "
-                "undo step that changes nothing."
-            ) from exc
-        track.output_routing_channel = channel
     return {
         "track": _track_ref_payload(kind, index, track),
         "before": before,
         "after": _routing_payload(track),
     }
+
+
+def set_device_sidechain(song, params):
+    """Point a device's sidechain input at a source by display name. Transformative.
+
+    ``from_track`` and ``channel`` are matched against the device's
+    ``available_input_routing_types`` and ``available_input_routing_channels``
+    the same way ``set_track_output_routing`` matches output names. Only the
+    routing changes; "S/C On" is a normal parameter (set_device_parameter).
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    path, device_index, device, _owner = resolve_device_path(track, _required(params, "device"))
+    before = _sidechain_payload(device)
+    if before is None:
+        raise NotSupported(
+            f"device '{_str(device.name)}' on '{_str(track.name)}' has no sidechain input "
+            "that Live's API exposes",
+            "In Live 11 and later Compressor exposes its sidechain input. Use list_devices: "
+            "devices with a 'sidechain' entry can be set.",
+        )
+    _apply_routing(
+        device,
+        "input",
+        _required(params, "from_track"),
+        params.get("channel"),
+        ("sidechain source", "sidechain channel", "sidechain source"),
+    )
+    return {
+        "track": _track_ref_payload(kind, index, track),
+        "device": {"index": device_index, "name": _str(device.name), "path": path},
+        "before": before,
+        "after": _sidechain_payload(device),
+    }
+
+
+def list_clips(song, params):
+    """List a track's Arrangement View clips. Read-only: never changes the Live Set.
+
+    Uses ``Track.arrangement_clips`` (Live 11+), ``Clip.start_time``,
+    ``end_time``, ``is_audio_clip``, ``muted``, and for audio clips ``gain``
+    and ``gain_display_string`` (Cycling '74 LOM docs). Times are in beats
+    (quarter notes); ``start_bar``/``end_bar`` are Live's bar.beat.sixteenth
+    positions from the song's current time signature. Session View clips are
+    not listed.
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    signature = _time_signature(song)
+    return {
+        "track": _track_ref_payload(kind, index, track),
+        "time_signature": f"{signature[0]}/{signature[1]}" if signature else None,
+        "clips": [
+            _clip_payload(clip_index, clip, signature)
+            for clip_index, clip in enumerate(_arrangement_clips(track, kind))
+        ],
+    }
+
+
+def set_clip_gain(song, params):
+    """Set an arrangement audio clip's gain in dB. Transformative.
+
+    ``Clip.gain`` is normalized 0..1, not dB, and Live gives no function from
+    one to the other: ``gain_display_string`` only shows the current gain.
+    So the gain is found the way display text is matched for parameters
+    (``_search_display``), except that each probe writes ``Clip.gain`` and
+    reads ``gain_display_string`` back. All probes run inside this call's
+    undo step; on any failure the original gain is put back.
+    Guess, not checked in Live: that ``gain_display_string`` follows a write
+    at once, within the same main-thread callback. ``_check_probe`` refuses
+    if it does not.
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    clip_index, clip = resolve_clip(track, kind, _required(params, "clip"))
+    if not bool(_get(clip, "is_audio_clip", False)):
+        raise InvalidValue(
+            f"clip '{_str(clip.name)}' on '{_str(track.name)}' is a MIDI clip; only audio "
+            "clips have a gain",
+            "Pick an audio clip from list_clips, or change the track volume instead.",
+        )
+    if _get(clip, "gain") is None:
+        raise NotSupported(
+            "this version of Live does not expose Clip.gain to scripts",
+            "Set the clip gain in Live yourself.",
+        )
+
+    target, text = _gain_db_target(_required(params, "gain_db"))
+
+    before = _clip_gain_payload(clip)
+    original = float(clip.gain)
+    probe = _ClipGainProbe(clip, track)
+    try:
+        _check_probe(probe)
+        try:
+            raw = _search_display(probe, probe.read, 0.0, 1.0, target, text)
+        except InvalidValue as exc:
+            # The parameter wording offers a raw value, which gain_db does not
+            # take, so name the range in dB instead.
+            raise InvalidValue(
+                f"no gain of clip '{_str(clip.name)}' on '{_str(track.name)}' shows "
+                f"'{text}'; it runs from '{probe.read(probe, 0.0)}' to "
+                f"'{probe.read(probe, 1.0)}'",
+                "Send a dB value inside that range, or '-inf dB' for silence.",
+            ) from exc
+        note = _clamp_note(f"the {probe.name}", text, probe.read(probe, raw), raw, 0.0, 1.0)
+    except Exception as exc:
+        try:
+            clip.gain = original
+        except Exception as restore_exc:
+            raise LiveOpsError(
+                f"{exc}. Putting the clip gain back then failed too ({restore_exc}), so "
+                f"the gain of clip '{_str(clip.name)}' on '{_str(track.name)}' could NOT "
+                f"be put back; it was '{before['gain_display']}' (raw {original}).",
+                "Set the clip gain in Live yourself, or press Undo.",
+            ) from exc
+        if isinstance(exc, LiveOpsError):
+            raise type(exc)(f"{exc}. The clip gain was put back.", exc.hint) from exc
+        raise
+    return {
+        "track": _track_ref_payload(kind, index, track),
+        "clip": {"index": clip_index, "name": _str(clip.name)},
+        "before": before,
+        "after": _clip_gain_payload(clip),
+        **({"note": note} if note else {}),
+    }
+
+
+_GAIN_DB = re.compile(r"^\s*(-inf|[-+]?(?:\d+\.?\d*|\.\d+))\s*(?:db)?\s*$", re.IGNORECASE)
+
+
+def _gain_db_target(value):
+    """``(dB number, text)`` for ``set_clip_gain``'s ``gain_db``. Needs no Live object.
+
+    Only a number or a string is accepted: ``{"raw": 0.7}`` is refused rather
+    than having a number read out of its text.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise InvalidValue(
+            f"gain_db {value!r} must be a number of dB or text such as '-3 dB'"
+        )
+    if isinstance(value, str):
+        # Only a number with an optional "dB": parse_display_number would also
+        # read "#0" (a clip reference) as 0 dB (Live 12.4.16, 2026-11-08).
+        match = _GAIN_DB.match(value)
+        if not match:
+            raise InvalidValue(
+                f"could not read a dB value from '{value}'",
+                "Send a number of dB such as -3 or '-3 dB', or '-inf dB' for silence.",
+            )
+        number = match.group(1).lower()
+        target = -math.inf if number == "-inf" else float(number)
+        return target, value
+    if not math.isfinite(value):
+        raise InvalidValue(f"gain_db {value!r} must be a finite number, or the text '-inf dB'")
+    return float(value), f"{value} dB"
+
+
+def _check_mixer_values(params):
+    """Shape-check ``set_mixer``'s values without a Live object."""
+
+    for key in ("volume", "panning"):
+        if params.get(key) is not None:
+            check_value_shape(params[key], key)
+    sends = params.get("sends")
+    if sends is None:
+        return
+    if not isinstance(sends, dict):
+        raise InvalidValue(
+            "set_mixer 'sends' must be an object of return name to value, such as "
+            '{"A-Reverb": "-12 dB"}'
+        )
+    for ref, value in sends.items():
+        check_value_shape(value, f"send {ref}")
 
 
 def set_track_properties(song, params):
@@ -326,6 +606,74 @@ def set_track_properties(song, params):
     }
 
 
+def set_device_properties(song, params):
+    """Rename a device, at the top of a track or inside a rack. Transformative.
+
+    ``Device.name`` is read/write in the Live Object Model (Cycling '74 LOM
+    docs, Device). Renaming can change this device's printed path and its
+    siblings' (a now-unique name replaces an index), so the new path is
+    worked out again after the rename.
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    name = _new_name(params, "device")
+    path, device_index, device, _owner = resolve_device_path(track, _required(params, "device"))
+    before = {"name": _str(device.name), "path": path}
+    device.name = name
+    after_path = _device_path_of(track, device)
+    return {
+        "track": _track_ref_payload(kind, index, track),
+        "device": {
+            "index": device_index,
+            "name": _str(device.name),
+            "path": after_path,
+            "class_name": _str(_get(device, "class_name", "")),
+        },
+        "before": before,
+        "after": {"name": _str(device.name), "path": after_path},
+    }
+
+
+def set_chain_properties(song, params):
+    """Rename a rack chain. Transformative.
+
+    ``chain`` is a path to a rack followed by a chain, as list_devices prints
+    them: ``"Instrument Rack/Piano"``, ``"Drum Rack/returns/0"`` for a Drum
+    Rack return chain, or ``"Rack/Chain/Inner Rack/Deep"`` for nested racks.
+    ``Chain.name`` is read/write in the Live Object Model (Cycling '74 LOM
+    docs, Chain).
+    """
+
+    kind, index, track = resolve_track(song, _required(params, "track"))
+    name = _new_name(params, "chain")
+    rack_path, rack, chains, chain_index, chain, returns = resolve_chain_path(
+        track, _required(params, "chain")
+    )
+    before_path = _chain_path(rack_path, returns, chains, chain_index)
+    before = {"name": _str(chain.name), "path": before_path}
+    chain.name = name
+    after_path = _chain_path(rack_path, returns, chains, chain_index)
+    return {
+        "track": _track_ref_payload(kind, index, track),
+        "rack": {"name": _str(rack.name), "path": rack_path},
+        "chain": {
+            "index": chain_index,
+            "name": _str(chain.name),
+            "path": after_path,
+            "is_return_chain": returns,
+        },
+        "before": before,
+        "after": {"name": _str(chain.name), "path": after_path},
+    }
+
+
+def _new_name(params, label):
+    name = _required(params, "name")
+    if not isinstance(name, str) or not name.strip():
+        raise InvalidValue(f"the new {label} name must be non-empty text")
+    return name
+
+
 def set_mixer(song, params):
     kind, index, track = resolve_track(song, _required(params, "track"))
     mixer = track.mixer_device
@@ -334,15 +682,17 @@ def set_mixer(song, params):
 
     # Work out every change before applying any, so a bad argument leaves the
     # track untouched.
+    _check_mixer_values(params)
     planned = []
     for key in ("volume", "panning"):
         if params.get(key) is not None:
             parameter = getattr(mixer, key)
-            planned.append((key, None, parameter, _raw_value(parameter, params[key])))
+            planned.append((key, None, parameter, resolve_value(parameter, params[key])))
     for send_ref, value in (params.get("sends") or {}).items():
         send_index = _resolve_send(send_ref, return_names, len(send_params))
         parameter = send_params[send_index]
-        planned.append(("sends", return_names[send_index], parameter, _raw_value(parameter, value)))
+        reading = resolve_value(parameter, value)
+        planned.append(("sends", return_names[send_index], parameter, reading))
     switches = []
     for key in ("mute", "solo"):
         if params.get(key) is not None:
@@ -353,12 +703,16 @@ def set_mixer(song, params):
         raise LiveOpsError("set_mixer needs at least one of volume, panning, sends, mute, solo")
 
     changed = {}
-    for key, send_name, parameter, raw in planned:
-        parameter.value = raw
+    for key, send_name, parameter, reading in planned:
+        parameter.value = reading["raw"]
+        payload = _param_payload(parameter)
+        payload["read_as"] = reading["read_as"]
+        if reading["note"]:
+            payload["note"] = reading["note"]
         if key == "sends":
-            changed.setdefault("sends", {})[send_name] = _param_payload(parameter)
+            changed.setdefault("sends", {})[send_name] = payload
         else:
-            changed[key] = _param_payload(parameter)
+            changed[key] = payload
     for key, value in switches:
         setattr(track, key, value)
         changed[key] = bool(getattr(track, key))
@@ -368,6 +722,10 @@ def set_mixer(song, params):
 def insert_device(song, params):
     kind, index, track = resolve_track(song, _required(params, "track"))
     device_name = str(_required(params, "device_name"))
+    new_name = _new_name(params, "device") if params.get("name") is not None else None
+    # Check what can be checked without the device before inserting it, so a
+    # malformed value changes nothing at all (issue #44).
+    requested = _check_parameter_settings(params.get("parameters"))
     position = params.get("index")
     insert = getattr(track, "insert_device", None)
     if not callable(insert):
@@ -409,25 +767,78 @@ def insert_device(song, params):
     device = devices[position]
     changed = []
     try:
-        for parameter_ref, value in (params.get("parameters") or {}).items():
-            parameter = resolve_parameter(device, parameter_ref)
-            set_parameter_value(parameter, value)
-            changed.append(_param_payload(parameter))
+        # Parameter names only exist on the inserted device. Resolve them all
+        # before writing any value, so a wrong name fails before a parameter
+        # changes. Values are resolved and set in the order given, since one
+        # parameter's display can depend on another (a sync switch).
+        targets = [(resolve_parameter(device, ref), value) for ref, value in requested]
+        if new_name is not None:
+            # Device.name is read/write (Cycling '74 LOM docs, Device).
+            device.name = new_name
+        for parameter, value in targets:
+            reading = set_parameter_value(parameter, value)
+            payload = _param_payload(parameter)
+            payload["read_as"] = reading["read_as"]
+            if reading["note"]:
+                payload["note"] = reading["note"]
+            changed.append(payload)
     except Exception as exc:
         # Leave the track as it was rather than with a half-configured device.
+        # The Live API cannot drop an undo step (Song has begin_undo_step,
+        # end_undo_step and undo, Cycling '74 LOM docs), and pressing undo
+        # here could reach the musician's own edits, so the insert-and-delete
+        # stays in Undo History as a step that changes nothing.
         delete = getattr(track, "delete_device", None)
         if callable(delete):
-            delete(position)
-            raise LiveOpsError(
+            try:
+                delete(position)
+            except Exception as delete_exc:
+                raise LiveOpsError(
+                    f"{exc}. Removing the new '{device_name}' then failed too "
+                    f"({delete_exc}), so it was NOT removed: it is still on "
+                    f"'{_str(track.name)}' at position {position}, possibly half set up.",
+                    "Check the device in Live, and delete it or press Undo yourself.",
+                ) from exc
+            message = (
                 f"{exc}. The new '{device_name}' was removed again; Live may still list "
                 "this as an undo step that changes nothing."
-            ) from exc
+            )
+            if isinstance(exc, LiveOpsError):
+                raise type(exc)(message, _insert_hint(exc)) from exc
+            raise LiveOpsError(message) from exc
         raise
     return {
         "track": _track_ref_payload(kind, index, track),
         "device": _device_payload(device, position, False, track, position),
         "parameters_set": changed,
     }
+
+
+def _check_parameter_settings(settings):
+    """Check ``insert_device``'s ``parameters`` without a device; return its items."""
+
+    if settings is None:
+        return []
+    if not isinstance(settings, dict):
+        raise InvalidValue(
+            "insert_device 'parameters' must be an object of parameter name to value, "
+            'such as {"Gain": "-3 dB"}'
+        )
+    for ref, value in settings.items():
+        if not isinstance(ref, (str, int)) or isinstance(ref, bool) or not str(ref).strip():
+            raise InvalidValue(f"parameter name {ref!r} in 'parameters' is not a name or index")
+        check_value_shape(value, str(ref))
+    return list(settings.items())
+
+
+def _insert_hint(exc):
+    hint = getattr(exc, "hint", None)
+    extra = (
+        "Parameter names, options and display text can only be checked once the device "
+        "is in the Set: insert it without parameters, read them with list_devices, then "
+        "use set_device_parameter."
+    )
+    return f"{hint} {extra}" if hint else extra
 
 
 def create_return_track(song, params):
@@ -456,6 +867,90 @@ def create_return_track(song, params):
         "color": _hex_color(_get(track, "color")),
         "note": "Every track now has a send to this return; check send levels before playing.",
     }
+
+
+TRACK_KINDS = {"midi": "create_midi_track", "audio": "create_audio_track"}
+
+
+def create_track(song, params):
+    """Add a MIDI or audio track. Additive.
+
+    Uses ``Song.create_midi_track(index)`` / ``Song.create_audio_track(index)``
+    (Cycling '74 LOM docs, Song: the index must be 0..len(song.tracks), and -1
+    adds the track at the end). Group tracks are out of scope. If naming or
+    colouring the new track fails, it is deleted again with
+    ``Song.delete_track`` so the Set is left as it was.
+    """
+
+    kind = str(_required(params, "kind")).strip().lower()
+    if kind not in TRACK_KINDS:
+        raise InvalidValue(f"track kind must be 'midi' or 'audio', got '{params['kind']}'")
+    name = _new_name(params, "track") if params.get("name") is not None else None
+    color = _parse_color(params["color"]) if params.get("color") is not None else None
+    color_index = params.get("color_index")
+    if color_index is not None and (
+        isinstance(color_index, bool) or not isinstance(color_index, int)
+    ):
+        raise InvalidValue(f"color_index must be a whole number, got '{color_index}'")
+    create = getattr(song, TRACK_KINDS[kind], None)
+    if not callable(create):
+        raise NotSupported(
+            f"this version of Live cannot create {kind} tracks from a script",
+            "Add the track in Live yourself (Create > Insert MIDI Track or Insert Audio Track).",
+        )
+    tracks_before = _tuple(song.tracks)
+    count_before = len(tracks_before)
+    index = params.get("index")
+    index = -1 if index is None else index
+    if isinstance(index, bool) or not isinstance(index, int) or not -1 <= index <= count_before:
+        raise InvalidValue(
+            f"track index {index} is out of range (0..{count_before}, or -1 for the end)",
+            "Leave index out to add the track after the last one.",
+        )
+    try:
+        create(index)
+    except Exception as exc:
+        raise LiveOpsError(f"Live could not create a new {kind} track: {exc}") from exc
+    tracks = _tuple(song.tracks)
+    if len(tracks) != count_before + 1:
+        raise LiveOpsError(f"Live did not report a new track after creating one ({kind})")
+    # Find the new track by Live identity rather than trusting the index.
+    new_positions = [
+        i for i, track in enumerate(tracks) if not any(_same(track, old) for old in tracks_before)
+    ]
+    if len(new_positions) == 1:
+        position = new_positions[0]
+    else:
+        position = count_before if index == -1 else index
+    track = tracks[position]
+    try:
+        if name is not None:
+            track.name = name
+        if color_index is not None:
+            track.color_index = color_index
+        if color is not None:
+            track.color = color
+    except Exception as exc:
+        # Leave the Set as it was rather than with a half-set-up track.
+        delete = getattr(song, "delete_track", None)
+        if callable(delete):
+            delete(position)
+            raise LiveOpsError(
+                f"could not set up the new {kind} track: {exc}. It was removed again; Live "
+                "may still list this as an undo step that changes nothing."
+            ) from exc
+        raise
+    return_names = [_str(t.name) for t in _tuple(song.return_tracks)]
+    result = {
+        "track": _compact_track_payload(track, "track", position, return_names),
+        "track_type": kind,
+    }
+    if position < len(tracks) - 1:
+        result["note"] = (
+            f"Tracks from index {position + 1} on moved down by one; use list_tracks "
+            "before referring to them by index."
+        )
+    return result
 
 
 def delete_device(song, params, target=None):
@@ -568,6 +1063,27 @@ def prepare_batch(song, params):
                 f"allowed: {', '.join(BATCHABLE_METHODS)}"
             )
 
+    # Value shapes need no Live object, so a malformed value rejects the whole
+    # batch before anything changes.
+    for position, operation in enumerate(operations):
+        operation_params = operation.get("params", {})
+        try:
+            if not isinstance(operation_params, dict):
+                continue
+            if operation["method"] == "ableton.set_device_parameter":
+                if "value" in operation_params:
+                    label = str(operation_params.get("parameter"))
+                    check_value_shape(operation_params["value"], label)
+            elif operation["method"] == "ableton.insert_device":
+                _check_parameter_settings(operation_params.get("parameters"))
+            elif operation["method"] == "ableton.set_mixer":
+                _check_mixer_values(operation_params)
+            elif operation["method"] == "ableton.set_clip_gain":
+                if "gain_db" in operation_params:
+                    _gain_db_target(operation_params["gain_db"])
+        except LiveOpsError as exc:
+            raise type(exc)(f"operation {position}: {exc}; nothing was changed", exc.hint) from exc
+
     # Deletes are checked and resolved before anything runs: an unconfirmed
     # delete rejects the whole batch (rather than "completing" as a preview),
     # and each target is pinned to the device the caller saw, so deleting
@@ -678,6 +1194,265 @@ def undo(song, params):
     if undone < count:
         result["note"] = f"Live had only {undone} step(s) to undo."
     return result
+
+
+# Meters (issue #45) ---------------------------------------------------------
+#
+# ableton.read_levels samples track output meters over a window of seconds.
+# It is the first realtime read: it takes wall-clock time and its answer
+# depends on what is playing, but it never changes the Set or the transport.
+# The bridge (bridge_server._run_level_read) calls prepare_level_read once,
+# then LevelWindow.sample on each of Live's timer ticks, all on the main
+# thread. Nothing here sleeps or loops over time.
+#
+# Live Object Model properties used (Cycling '74 LOM docs, Track and Song;
+# wording recalled from the docs, not re-checked against them for this change,
+# and not yet run in Live):
+# - Track.output_meter_left / output_meter_right: momentary peak of each
+#   output channel, 0.0..1.0. Audio output only.
+# - Track.output_meter_level: hold peak of the output meter, 0.0..1.0; for
+#   audio, the louder channel. Also set for MIDI tracks (a MIDI meter).
+# - Track.has_audio_output: whether the track outputs audio.
+# - Song.is_playing: whether the transport runs.
+# These are meter positions, not dBFS. How Live maps a position to dB is not
+# documented, so no dB value is reported.
+
+LEVEL_MIN_SECONDS = 0.5
+LEVEL_MAX_SECONDS = 10.0
+LEVEL_DEFAULT_SECONDS = 4.0
+MAX_LEVEL_TRACKS = 16
+# Upper bound on samples per window whatever Live's tick rate, so a read
+# always ends. At the ~10 ticks a second Live is said to run (a guess: it is
+# community knowledge, not in the LOM docs) a 10 s window takes ~100.
+MAX_LEVEL_SAMPLES = 400
+LEVEL_SCALE = "live_meter_position_0_to_1"
+LEVEL_SCALE_NOTE = (
+    "Values are Live meter positions from 0.0 (silence) to 1.0, read from "
+    "Track.output_meter_left/right/level. They are not dBFS and the mapping to dB is "
+    "not documented, so compare tracks with each other rather than reading them as dB."
+)
+
+
+class TransportStopped(LiveOpsError):
+    code = "transport_stopped"
+    hint = (
+        "Start playback in Live (or ask the musician to), then read levels again. "
+        "read_levels never starts or stops the transport."
+    )
+
+
+def prepare_level_read(song, params):
+    """Check a read_levels request and pin its tracks. Changes nothing.
+
+    Raises ``TransportStopped`` when the transport is not playing, so a read
+    never returns a window of zeros as if the tracks were silent.
+    """
+
+    seconds = _level_seconds(params.get("seconds", LEVEL_DEFAULT_SECONDS))
+    targets = _level_targets(song, params)
+    if not bool(_get(song, "is_playing", False)):
+        raise TransportStopped(
+            "Live's transport is not playing, so the meters show no playback level; "
+            "nothing was read"
+        )
+    return {"seconds": seconds, "targets": targets}
+
+
+def _level_seconds(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise InvalidValue(f"seconds must be a number, got '{value}'")
+    if not LEVEL_MIN_SECONDS <= value <= LEVEL_MAX_SECONDS:
+        raise InvalidValue(
+            f"seconds must be from {LEVEL_MIN_SECONDS} to {LEVEL_MAX_SECONDS}, got {value}"
+        )
+    return float(value)
+
+
+def _flag(params, key):
+    value = params.get(key, False)
+    if not isinstance(value, bool):
+        raise InvalidValue(f"'{key}' must be true or false")
+    return value
+
+
+def _level_targets(song, params):
+    refs = params.get("tracks")
+    if refs is None:
+        targets = [("track", i, t) for i, t in enumerate(_tuple(song.tracks))]
+    elif isinstance(refs, list):
+        targets = [resolve_track(song, ref) for ref in refs]
+    else:
+        raise InvalidValue("tracks must be a list of track names or indexes")
+    if _flag(params, "include_returns"):
+        targets.extend(("return", i, t) for i, t in enumerate(_tuple(song.return_tracks)))
+    if _flag(params, "include_main"):
+        targets.append(("master", 0, song.master_track))
+    unique = []
+    seen = set()
+    for kind, index, track in targets:
+        if (kind, index) not in seen:
+            seen.add((kind, index))
+            unique.append((kind, index, track))
+    if not unique:
+        raise InvalidValue("no tracks to read", TRACK_HINT)
+    if len(unique) > MAX_LEVEL_TRACKS:
+        raise InvalidValue(
+            f"read_levels reads at most {MAX_LEVEL_TRACKS} tracks at once, got {len(unique)}",
+            "Name the tracks to read in 'tracks', or read them in groups.",
+        )
+    return unique
+
+
+def _meter_value(track, name):
+    value = _get(track, name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value >= 0.0 else None
+
+
+class _MeterStats:
+    def __init__(self, kind, index, track):
+        self.track = track
+        self.ref = _track_ref_payload(kind, index, track)
+        # Main and return tracks always output audio; MIDI tracks without an
+        # instrument report has_audio_output False (LOM, recalled).
+        self.audio = kind != "track" or bool(_get(track, "has_audio_output", True))
+        self.samples = 0
+        self.missing = 0
+        self.peak = 0.0
+        self.peak_left = None
+        self.peak_right = None
+        self.hold_peak = None
+        self.sum_squares = 0.0
+
+    def add(self):
+        track = self.track
+        left = _meter_value(track, "output_meter_left") if self.audio else None
+        right = _meter_value(track, "output_meter_right") if self.audio else None
+        level = _meter_value(track, "output_meter_level")
+        channels = [value for value in (left, right) if value is not None]
+        momentary = max(channels) if channels else level
+        if momentary is None:
+            # A track deleted mid-window, or a meter this Live does not have.
+            self.missing += 1
+            return
+        self.samples += 1
+        self.peak = max(self.peak, momentary)
+        self.sum_squares += momentary * momentary
+        if left is not None:
+            self.peak_left = max(self.peak_left or 0.0, left)
+        if right is not None:
+            self.peak_right = max(self.peak_right or 0.0, right)
+        if level is not None:
+            self.hold_peak = max(self.hold_peak or 0.0, level)
+
+    def payload(self):
+        rms = math.sqrt(self.sum_squares / self.samples) if self.samples else None
+        payload = {
+            **self.ref,
+            "meter": "audio" if self.audio else "midi",
+            "peak": _round(self.peak) if self.samples else None,
+            "rms_of_samples": _round(rms),
+            "sample_count": self.samples,
+        }
+        if self.audio:
+            payload["peak_left"] = _round(self.peak_left)
+            payload["peak_right"] = _round(self.peak_right)
+        payload["hold_peak"] = _round(self.hold_peak)
+        if self.missing:
+            payload["missing_samples"] = self.missing
+        return payload
+
+
+def _round(value):
+    return None if value is None else round(value, 4)
+
+
+class LevelWindow:
+    """One read_levels window: meter samples taken on Live's timer ticks.
+
+    ``sample`` runs on Live's main thread, once per tick, and returns True
+    when the window is over: its time is up, the sample cap is reached, or
+    the transport stopped. ``now`` is a monotonic clock reading in seconds.
+    """
+
+    def __init__(self, plan, now):
+        self.seconds = plan["seconds"]
+        self.started = now
+        self.elapsed = 0.0
+        self.samples = 0
+        self.stopped_early = False
+        self._stats = [_MeterStats(*target) for target in plan["targets"]]
+
+    def sample(self, song, now):
+        self.elapsed = max(0.0, now - self.started)
+        if not bool(_get(song, "is_playing", False)):
+            self.stopped_early = True
+            return True
+        for stats in self._stats:
+            stats.add()
+        self.samples += 1
+        return self.elapsed >= self.seconds or self.samples >= MAX_LEVEL_SAMPLES
+
+    def result(self, tick_delay=None):
+        tracks = [stats.payload() for stats in self._stats]
+        warnings = []
+        if self.stopped_early:
+            warnings.append(
+                f"The transport stopped after {self.elapsed:.1f} s of the "
+                f"{self.seconds:g} s window; values cover only the part that played."
+            )
+        elif self.samples < 2 * self.seconds:
+            # Live's timer normally ticks several times a second; far fewer
+            # samples means ticks stalled or were skipped (Live was busy).
+            warnings.append(
+                f"Only {self.samples} meter samples were taken in the {self.seconds:g} s "
+                "window, so Live skipped ticks and short peaks may be missing. Read again "
+                "if the values look low."
+            )
+        audio = [t for t in tracks if t["sample_count"] and t["meter"] != "midi"]
+        silent = [t["name"] for t in tracks if t["sample_count"] and t["peak"] == 0.0
+                  and t["hold_peak"] == 0.0]
+        if silent:
+            warnings.append(
+                "Meters read 0.0 for the whole window on: " + ", ".join(silent)
+                + ". They may be muted, have no clip playing here, or be routed elsewhere."
+            )
+        # A short hit can fall between ticks and show only in the hold meter
+        # (a one-shot clap in Live 12.4.16, 2026-11-08).
+        held_only = [t["name"] for t in audio if t["peak"] == 0.0 and t["hold_peak"] > 0.0]
+        if held_only:
+            warnings.append(
+                "Only the hold meter (hold_peak) caught a level on: " + ", ".join(held_only)
+                + ". Short sounds there fell between samples, so peak and rms_of_samples "
+                "read 0.0; use hold_peak for them."
+            )
+        unreadable = [t["name"] for t in tracks if t["sample_count"] == 0]
+        if unreadable:
+            warnings.append("No meter values could be read for: " + ", ".join(unreadable))
+        midi = [t["name"] for t in tracks if t["meter"] == "midi"]
+        if midi:
+            warnings.append(
+                "These tracks have no audio output, so their meter shows MIDI activity, "
+                "not audio level: " + ", ".join(midi)
+            )
+        window = {
+            "requested_seconds": self.seconds,
+            "elapsed_seconds": round(self.elapsed, 3),
+            "samples": self.samples,
+            "stopped_early": self.stopped_early,
+        }
+        if tick_delay is not None:
+            window["tick_delay"] = tick_delay
+        return {
+            "scale": LEVEL_SCALE,
+            "scale_note": LEVEL_SCALE_NOTE,
+            "transport_playing": not self.stopped_early,
+            "window": window,
+            "tracks": tracks,
+            "warnings": warnings,
+        }
 
 
 # Lookup -------------------------------------------------------------------
@@ -890,6 +1665,81 @@ def _has_device_named(track, name):
     return any(_str(d.name).lower() == name.lower() for d in _tuple(track.devices))
 
 
+def resolve_chain_path(track, ref):
+    """Resolve a rack chain on a track from ``<rack path>/<chain>``.
+
+    ``<rack path>`` is anything ``resolve_device_path`` accepts for the rack;
+    ``<rack path>/returns/<chain>`` picks a Drum Rack return chain. The chain
+    is a name or an index. Returns ``(rack_path, rack, chains, chain_index,
+    chain, is_return_chain)``, where ``rack_path`` is the rack's printed path
+    (None if none resolves back to it).
+
+    "returns" before the last part is always the return-chain marker: chains
+    and devices named "returns" are printed by index (``_path_segment``).
+    """
+
+    text = str(ref)
+    if "/" not in text:
+        raise InvalidValue(
+            f"chain path '{ref}' needs a rack and a chain, such as 'Instrument Rack/Piano'",
+            DEVICE_HINT,
+        )
+    head, chain_ref = text.rsplit("/", 1)
+    returns = False
+    if "/" in head and head.rsplit("/", 1)[1].strip().lower() == "returns":
+        head = head.rsplit("/", 1)[0]
+        returns = True
+    if not head.strip() or not chain_ref.strip():
+        raise InvalidValue(f"chain path '{ref}' has an empty part", DEVICE_HINT)
+    rack_path, _index, rack, _owner = resolve_device_path(track, head)
+    where = rack_path or _str(rack.name)
+    if not bool(_get(rack, "can_have_chains", False)):
+        raise NotFound(f"'{where}' is not a Rack, so it has no chains", DEVICE_HINT)
+    chains = _tuple(_get(rack, "return_chains" if returns else "chains", ()))
+    label = "return chain" if returns else "chain"
+    chain_index, chain = _pick(chains, chain_ref, label, where)
+    return rack_path, rack, chains, chain_index, chain, returns
+
+
+def _chain_path(rack_path, returns, chains, chain_index):
+    """How list_devices prints a chain's place: the rack's path plus the chain."""
+
+    if rack_path is None:
+        return None
+    middle = "/returns" if returns else ""
+    return f"{rack_path}{middle}/{_path_segment(chains, chain_index)}"
+
+
+def _device_path_of(track, target):
+    """The printed path of ``target`` on ``track`` as it is now, or None."""
+
+    for top_index, device in enumerate(_tuple(track.devices)):
+        if _same(device, target):
+            return _printable_path(track, top_index, [], device)
+        found, path = _find_in_chains(track, top_index, device, [], target)
+        if found:
+            return path
+    return None
+
+
+def _find_in_chains(track, top_index, rack, tail, target):
+    if not bool(_get(rack, "can_have_chains", False)):
+        return False, None
+    for marker, attribute in (((), "chains"), (("returns",), "return_chains")):
+        chains = _tuple(_get(rack, attribute, ()))
+        for chain_index, chain in enumerate(chains):
+            chain_tail = [*tail, *marker, _path_segment(chains, chain_index)]
+            devices = _tuple(_get(chain, "devices", ()))
+            for device_index, device in enumerate(devices):
+                device_tail = [*chain_tail, _path_segment(devices, device_index)]
+                if _same(device, target):
+                    return True, _printable_path(track, top_index, device_tail, device)
+                found, path = _find_in_chains(track, top_index, device, device_tail, target)
+                if found:
+                    return True, path
+    return False, None
+
+
 def _pick(items, ref, label, where):
     """Pick from a Live list by index or name (exact, then case-insensitive)."""
 
@@ -909,6 +1759,39 @@ def _pick(items, ref, label, where):
             )
     names = ", ".join(f"{i}:{_str(item.name)}" for i, item in enumerate(items)) or "(none)"
     raise NotFound(f"no {label} '{text}' in '{where}'. Choices: {names}", DEVICE_HINT)
+
+
+def resolve_clip(track, kind, ref):
+    """Return ``(index, clip)`` for an arrangement clip on ``track``.
+
+    ``ref`` is an index into list_clips (``3`` or ``"#3"``) or a clip name,
+    exact first and then case-insensitive, which must be unique.
+    """
+
+    clips = _arrangement_clips(track, kind)
+    where = _str(track.name)
+    text = str(ref).strip()
+    if re.fullmatch(r"#\d+", text):
+        text = text[1:]
+    if (isinstance(ref, int) and not isinstance(ref, bool)) or text.isdigit():
+        position = int(text)
+        if 0 <= position < len(clips):
+            return position, clips[position]
+        raise NotFound(
+            f"clip index {position} is out of range on '{where}' ({len(clips)} clips)", CLIP_HINT
+        )
+    for matcher in (lambda n: n == text, lambda n: n.lower() == text.lower()):
+        matches = [(i, clip) for i, clip in enumerate(clips) if matcher(_str(clip.name))]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise LiveOpsError(
+                f"clip name '{text}' is ambiguous on '{where}'; use an index: "
+                + ", ".join(str(i) for i, _ in matches),
+                CLIP_HINT,
+            )
+    names = ", ".join(f"{i}:{_str(clip.name)}" for i, clip in enumerate(clips)) or "(none)"
+    raise NotFound(f"no arrangement clip '{text}' on '{where}'. Clips: {names}", CLIP_HINT)
 
 
 def resolve_parameter(device, ref):
@@ -935,80 +1818,428 @@ def resolve_parameter(device, ref):
 
 
 # Parameter values ---------------------------------------------------------
+#
+# What Live tells us about a parameter (Cycling '74 LOM docs, DeviceParameter):
+# ``min``/``max``/``value`` are raw numbers, ``is_quantized`` marks stepped
+# parameters, ``value_items`` lists their option names ("Only valid for
+# quantized parameters"), and ``str_for_value(value)`` returns the display
+# text for a raw value without setting it. Nothing in this section writes
+# ``parameter.value``: a failed lookup changes nothing and leaves no undo step.
+#
+# Live 12.4.16 runs showed two gaps: some plugins' ``str_for_value`` returns
+# the current value's text whatever it is given (issue #16), and some
+# stepped native parameters (Glue Compressor Attack/Release/Ratio, Echo
+# "L Synced") gave no options and failed display lookups (issue #44). Whether
+# those report ``is_quantized`` and ``value_items`` is not known; the code
+# below works either way, which is a guess until checked in Live.
+
+# A quantized parameter without value_items lists the display text of each
+# step as its options when it has at most this many steps.
+MAX_LISTED_STEPS = 128
+# A parameter that is not marked quantized but has a small integer raw range
+# whose half steps show no new text is treated as stepped (a guess, issue #44).
+MAX_GUESSED_STEPS = 64
+# When looking for display text, every integer step of a range up to this
+# size is sampled, along with EVEN_SAMPLES evenly spaced points.
+MAX_SAMPLED_STEPS = 256
+EVEN_SAMPLES = 33
+# Lists of display texts in error messages are cut to this many entries.
+MAX_LISTED_TEXTS = 24
+
+RAW_VALUE_HINT = 'Send {"raw": <number>} to set a raw value exactly.'
 
 
 def set_parameter_value(parameter, value):
-    """Set a raw number, or a display string such as ``"-6 dB"`` or ``"25L"``."""
+    """Set ``value`` as ``resolve_value`` reads it and return that reading."""
 
-    parameter.value = _raw_value(parameter, value)
+    reading = resolve_value(parameter, value)
+    parameter.value = reading["raw"]
+    return reading
 
 
-def _raw_value(parameter, value):
-    """Validate ``value`` for ``parameter`` and return the raw value to set."""
+def check_value_shape(value, label):
+    """Refuse a value that is not a number, a string or ``{"raw": number}``.
 
+    Needs no Live object, so callers can check before changing anything.
+    """
+
+    if isinstance(value, dict):
+        raw = value.get("raw")
+        if (
+            set(value) == {"raw"}
+            and isinstance(raw, (int, float))
+            and not isinstance(raw, bool)
+            and math.isfinite(raw)
+        ):
+            return
+        raise InvalidValue(
+            f"value {value!r} for '{label}' is not understood; an object value must be "
+            '{"raw": <number>}',
+            RAW_VALUE_HINT,
+        )
+    if isinstance(value, bool) or isinstance(value, str):
+        return
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return
+    raise InvalidValue(
+        f"value {value!r} for '{label}' must be a number, display text, or "
+        '{"raw": <number>}',
+        VALUE_HINT,
+    )
+
+
+def resolve_value(parameter, value):
+    """Work out the raw value that ``value`` means for ``parameter``.
+
+    - ``{"raw": n}`` is the raw value ``n``.
+    - A string is display text or an option name: ``"-6 dB"``, ``"1.00"``,
+      ``"Auto"``, ``"1/8"``.
+    - A bare number is read by ``_resolve_number`` (issue #43).
+
+    Returns ``{"raw": float, "read_as": "raw" | "display", "note": str | None}``.
+    Never writes the parameter.
+    """
+
+    name = _str(parameter.name)
     if not bool(_get(parameter, "is_enabled", True)):
         raise LiveOpsError(
-            f"parameter '{_str(parameter.name)}' is not editable right now "
+            f"parameter '{name}' is not editable right now "
             "(it may be controlled by a macro or modulation)"
         )
+    check_value_shape(value, name)
+    low, high = float(parameter.min), float(parameter.max)
+    if isinstance(value, dict):
+        raw = float(value["raw"])
+        _check_range(parameter, raw, low, high)
+        return {"raw": raw, "read_as": "raw", "note": None}
     if isinstance(value, bool):
         value = float(value)
     if isinstance(value, (int, float)):
-        raw = float(value)
-    else:
-        raw = value_for_display(parameter, str(value))
-    low, high = float(parameter.min), float(parameter.max)
+        return _resolve_number(parameter, float(value), low, high)
+    text = str(value)
+    raw = value_for_display(parameter, text)
+    _check_range(parameter, raw, low, high)
+    note = _clamp_note(f"'{name}'", text, _display(parameter, raw), raw, low, high)
+    return {"raw": raw, "read_as": "display", "note": note}
+
+
+def _check_range(parameter, raw, low, high, hint=VALUE_HINT):
     if raw < low or raw > high:
         raise InvalidValue(
-            f"value {raw} is outside '{_str(parameter.name)}' range {low}..{high}", VALUE_HINT
+            f"value {raw} is outside '{_str(parameter.name)}' range {low}..{high}", hint
         )
-    return raw
+
+
+def _resolve_number(parameter, number, low, high):
+    """Read a bare JSON number (issue #43).
+
+    A bare number is the raw value, except where that would surprise:
+
+    - If Live shows the raw value as that same number (a 0..127 parameter
+      showing "64" at raw 64), raw and display agree and it is set.
+    - If the parameter shows plain numbers with no unit (EQ Eight Q), or is
+      stepped with numeric steps (Glue Compressor Attack), and the number is
+      also a display value at a different raw value, it is refused as
+      ambiguous; the error names both readings.
+    - Outside the raw range, such a parameter reads it as display text.
+    - A parameter that shows units ("dB", "Hz") or option names keeps the
+      documented raw reading (Track Volume 0.85); the result's note says what
+      Live shows for it.
+    """
+
+    name = _str(parameter.name)
+    text = _format_number(number)
+    in_range = low <= number <= high
+    shown = _display(parameter, number) if in_range else None
+    if shown is not None and _number_agrees(shown, number):
+        return {"raw": number, "read_as": "raw", "note": None}
+
+    steps = _steps(parameter)
+    unitless = steps is None and _shows_plain_numbers(parameter, low, high)
+    display_raw = None
+    if steps is not None:
+        index = _match_step_number(text, steps)
+        if index is not None:
+            display_raw = low + index
+    elif unitless:
+        display_raw = _display_lookup(parameter, text)
+
+    if in_range:
+        if display_raw is not None and _display(parameter, display_raw) != shown:
+            raise InvalidValue(
+                f"{text} is ambiguous for '{name}': as a raw value it shows as '{shown}', "
+                f"but '{_display(parameter, display_raw)}' is raw {_format_number(display_raw)}",
+                f'Send the text "{text}" (a string) to set what Live shows, or '
+                f'{{"raw": {text}}} to set the raw value.',
+            )
+        if steps is not None and _plain_number(shown) is None:
+            # An option name ("On", "Bell"): the step number is the usual reading.
+            return {"raw": number, "read_as": "raw", "note": None}
+        return {
+            "raw": number,
+            "read_as": "raw",
+            "note": (
+                f"{text} was read as a raw value, which Live shows as '{shown}'. To set "
+                "what Live shows, send display text as a string, written the way Live "
+                f'shows it (for example "{shown}"), or {{"raw": {text}}} to keep this '
+                "reading."
+            ),
+        }
+    if display_raw is not None:
+        return {
+            "raw": display_raw,
+            "read_as": "display",
+            "note": (
+                f"{text} is outside the raw range {low}..{high}, so it was read as display "
+                f"text; Live shows '{_display(parameter, display_raw)}' at raw "
+                f"{_format_number(display_raw)}."
+            ),
+        }
+    hint = VALUE_HINT
+    if steps is None and not unitless:
+        # Name the display reading too, so the caller can see what they meant.
+        candidate = _display_lookup(parameter, text)
+        if candidate is not None:
+            hint = (
+                f"{VALUE_HINT} Live shows '{_display(parameter, candidate)}' at raw "
+                f"{_format_number(candidate)}; to set that, send the display text as a "
+                f'string, such as "{text}" with its unit.'
+            )
+    raise InvalidValue(f"value {number} is outside '{name}' range {low}..{high}", hint)
+
+
+def _display_lookup(parameter, text):
+    try:
+        return value_for_display(parameter, text)
+    except LiveOpsError:
+        return None
+
+
+def _format_number(number):
+    return f"{number:g}"
 
 
 def value_for_display(parameter, text):
-    """Find the raw value whose display matches ``text``."""
+    """Find the raw value whose display matches ``text``. Never writes."""
 
-    items = [str(item) for item in _tuple(_get(parameter, "value_items", ()))]
-    quantized = bool(_get(parameter, "is_quantized", False))
-    if quantized and items:
-        for item_index, item in enumerate(items):
-            if item.lower() == text.strip().lower():
-                return float(parameter.min) + item_index
+    name = _str(parameter.name)
+    low, high = float(parameter.min), float(parameter.max)
+    steps = _steps(parameter)
+    if steps is not None:
+        index = _match_step(text, steps)
+        if index is not None:
+            return low + index
         raise InvalidValue(
-            f"'{text}' is not an option for '{_str(parameter.name)}'. Options: {', '.join(items)}",
-            "Use one of the options listed, spelled as shown.",
+            f"'{text}' is not an option for '{name}'. "
+            f"Options: {_list_texts(_option_names(steps))}",
+            "Use one of the options listed, spelled as shown, or "
+            '{"raw": <step>} with the step number (the first option is '
+            f"{_format_number(low)}).",
         )
 
     target = parse_display_number(text)
-    if target is None:
-        low, high = float(parameter.min), float(parameter.max)
-        raise InvalidValue(
-            f"could not read a number from '{text}' for '{_str(parameter.name)}' "
-            f"(it shows '{_display(parameter, low)}' to '{_display(parameter, high)}'). "
-            f"Use a raw value between {low} and {high} instead."
+    if target is not None:
+        low_number = parse_display_number(_display(parameter, low))
+        high_number = parse_display_number(_display(parameter, high))
+        if None not in (low_number, high_number) and low_number != high_number:
+            return _search_display(parameter, _display, low, high, target, text)
+
+    # The ends do not show distinct numbers: the display is text ("1/8"), or
+    # Live gives the same text for every value. Look at what Live shows
+    # across the range and match the text against that.
+    samples = _sample_displays(parameter, low, high)
+    index = _match_step(text, [(None, shown) for _raw, shown in samples])
+    if index is not None:
+        return samples[index][0]
+    raise _no_display_match(parameter, text, target, samples, low, high)
+
+
+def _no_display_match(parameter, text, target, samples, low, high):
+    name = _str(parameter.name)
+    seen = [shown for _raw, shown in samples]
+    lead = "" if target is not None else f"could not read a number from '{text}' for '{name}'. "
+    if len(seen) == 1:
+        return InvalidValue(
+            f"{lead}'{name}' shows '{seen[0]}' for every value Live was asked about "
+            f"(raw {low} to {high}), so display text cannot be matched. Live's "
+            "str_for_value may only format the current value (as some plugins do), or "
+            "the display may depend on another parameter such as a sync or mode switch. "
+            f"Use a raw value between {low} and {high} instead.",
+            RAW_VALUE_HINT,
         )
+    return InvalidValue(
+        f"{lead}no value of '{name}' shows '{text}'. Across raw {low} to {high} it shows: "
+        f"{_list_texts(seen)}. Send one of those, or a raw value between {low} and {high}.",
+        RAW_VALUE_HINT,
+    )
+
+
+def _steps(parameter):
+    """``(option name, display text)`` per step of a stepped parameter, or None.
+
+    Step ``i`` is raw ``min + i``. Option names come from ``value_items``
+    when Live gives them; display text from ``str_for_value``. Returns None
+    when the steps cannot be named, for example when ``str_for_value`` shows
+    the same text for every step.
+    """
+
     low, high = float(parameter.min), float(parameter.max)
-    # Only str_for_value is read here; the parameter is never written while
-    # searching, so a failed match changes nothing and leaves no undo step.
-    return _search_display(parameter, _display, low, high, target, text, quantized)
+    items = [str(item) for item in _tuple(_get(parameter, "value_items", ()))]
+    quantized = bool(_get(parameter, "is_quantized", False))
+    if quantized and items:
+        return [(item, _display(parameter, low + i)) for i, item in enumerate(items)]
+    if not (low.is_integer() and high.is_integer() and high > low):
+        return None
+    span = int(high - low)
+    if quantized:
+        if span > MAX_LISTED_STEPS:
+            return None
+    else:
+        # A guess (issue #44): a small integer range whose half step shows the
+        # text of a neighbouring step behaves like a chooser.
+        if span < 2 or span > MAX_GUESSED_STEPS:
+            return None
+        half = _display(parameter, low + 0.5)
+        if half not in (_display(parameter, low), _display(parameter, low + 1)):
+            return None
+    shown = [_display(parameter, low + i) for i in range(span + 1)]
+    if len(set(shown)) < 2:
+        return None
+    return [(None, text) for text in shown]
 
 
-def _search_display(parameter, reader, low, high, target, text, quantized):
+def _option_names(steps):
+    return [item if item is not None else shown for item, shown in steps]
+
+
+# Words for the abbreviations Live shows on stepped parameters, lowercased:
+# Glue Compressor Release shows its Auto setting as "A" (Live 12.4.16, issue
+# #44). Only these whole words are read as the abbreviation; "Attack" or
+# "Au" are not.
+STEP_ALIASES = {"auto": "a"}
+
+
+def _match_step(text, steps):
+    """Index of the step ``text`` names: exact text, then a listed alias
+    (``STEP_ALIASES``), then number, then a unique prefix."""
+
+    wanted = text.strip().lower()
+    if not wanted:
+        return None
+    for candidate in (wanted, STEP_ALIASES.get(wanted)):
+        if candidate is None:
+            continue
+        for index, names in enumerate(steps):
+            if any(name is not None and name.strip().lower() == candidate for name in names):
+                return index
+    if _plain_number(text) is not None:
+        return _match_step_number(text, steps)
+    # "Sp" for "Sparse": only a prefix of a step's text, and only when exactly
+    # one step fits.
+    found = {
+        index
+        for index, names in enumerate(steps)
+        for name in names
+        if name is not None and name.strip() and name.strip().lower().startswith(wanted)
+    }
+    return found.pop() if len(found) == 1 else None
+
+
+def _match_step_number(text, steps):
+    wanted = _plain_number(text)
+    if wanted is None:
+        return None
+    for index, names in enumerate(steps):
+        for name in names:
+            shown = _plain_number(name) if name is not None else None
+            if shown is not None and _numbers_match(wanted, shown):
+                return index
+    return None
+
+
+_PLAIN = re.compile(r"^\s*([-+]?(?:\d+\.?\d*|\.\d+))\s*([a-z%]*)\s*$", re.IGNORECASE)
+
+
+def _plain_number(text):
+    """``(number, decimals, unit)`` when ``text`` is one number with an optional
+    unit ("1.00", ".1", "10 ms", "50 %"), else None. "1/8" is not one."""
+
+    match = _PLAIN.match(str(text))
+    if not match:
+        return None
+    digits = match.group(1)
+    decimals = len(digits.split(".")[1]) if "." in digits else 0
+    return float(digits), decimals, match.group(2).lower()
+
+
+def _numbers_match(wanted, shown):
+    """Whether a typed number names a displayed one, at the display's resolution."""
+
+    number, _decimals, unit = wanted
+    shown_number, decimals, shown_unit = shown
+    tolerance = 0.5 * 10 ** -decimals + 1e-9
+    if unit and shown_unit and unit != shown_unit:
+        if unit not in _UNIT_SCALE or shown_unit not in _UNIT_SCALE:
+            return False
+        scale = _UNIT_SCALE[shown_unit]
+        return abs(number * _UNIT_SCALE[unit] - shown_number * scale) <= tolerance * scale
+    return abs(number - shown_number) <= tolerance
+
+
+def _number_agrees(shown, number):
+    """Whether Live's text for raw ``number`` reads as that same number."""
+
+    plain = _plain_number(shown)
+    return plain is not None and _numbers_match((number, 0, ""), plain)
+
+
+def _shows_plain_numbers(parameter, low, high):
+    """Whether the display is a bare number with no unit at both ends."""
+
+    for raw in (low, high):
+        plain = _plain_number(_display(parameter, raw))
+        if plain is None or plain[2]:
+            return False
+    return True
+
+
+def _sample_displays(parameter, low, high):
+    """Distinct display texts across the range, as ``(raw, text)`` in raw order.
+
+    Samples every integer step when the range is integer and at most
+    MAX_SAMPLED_STEPS wide, plus EVEN_SAMPLES evenly spaced points. Reads
+    ``str_for_value`` only.
+    """
+
+    points = {low, high}
+    if low.is_integer() and high.is_integer() and 0 < high - low <= MAX_SAMPLED_STEPS:
+        points.update(low + i for i in range(int(high - low) + 1))
+    if high > low:
+        points.update(low + (high - low) * i / (EVEN_SAMPLES - 1) for i in range(EVEN_SAMPLES))
+    seen = {}
+    for raw in sorted(points):
+        seen.setdefault(_display(parameter, raw), raw)
+    return [(raw, text) for text, raw in seen.items()]
+
+
+def _list_texts(texts):
+    texts = list(texts)
+    if len(texts) <= MAX_LISTED_TEXTS:
+        return ", ".join(texts)
+    head = ", ".join(texts[: MAX_LISTED_TEXTS - 1])
+    return f"{head}, ... {texts[-1]} ({len(texts)} in all)"
+
+
+def _search_display(parameter, reader, low, high, target, text):
+    """Bisect for the raw value whose number display is ``target``.
+
+    The caller has checked that both ends show distinct numbers.
+    """
+
     def number(value):
         return parse_display_number(reader(parameter, value))
 
     low_number, high_number = number(low), number(high)
-    if low_number is None or high_number is None:
-        raise InvalidValue(
-            f"'{_str(parameter.name)}' does not show numeric values "
-            f"(it shows '{reader(parameter, low)}' to '{reader(parameter, high)}')"
-        )
-    if low_number == high_number:
-        raise InvalidValue(
-            f"'{_str(parameter.name)}' shows '{reader(parameter, low)}' for every value, so "
-            "display text cannot be matched. Use a raw value between "
-            f"{low} and {high} instead."
-        )
     rising = high_number >= low_number
     bottom, top = (low_number, high_number) if rising else (high_number, low_number)
     if target <= bottom or target >= top:
@@ -1023,7 +2254,7 @@ def _search_display(parameter, reader, low, high, target, text, quantized):
         result = (start + stop) / 2.0
     else:
         result = start
-    if quantized:
+    if bool(_get(parameter, "is_quantized", False)):
         result = float(round(result))
     _check_display_match(parameter, reader, result, target, text, low, high)
     return result
@@ -1042,6 +2273,38 @@ def _check_display_match(parameter, reader, raw, target, text, low, high):
             f"closest was '{reader(parameter, raw)}' (range '{reader(parameter, low)}' to "
             f"'{reader(parameter, high)}'). Use a raw value between {low} and {high} instead."
         )
+
+
+def _clamp_note(what, text, shown_text, raw, low, high):
+    """A note when ``text`` was past an end of the range and set to that end.
+
+    ``_search_display`` sets a target just beyond either end to the end
+    itself (within ``_check_display_match``'s tolerance), so "36 dB" on a
+    knob that stops at 35 dB sets 35 dB. Returns None when nothing was
+    clamped.
+    """
+
+    target = parse_display_number(text)
+    shown = parse_display_number(shown_text)
+    if raw not in (low, high) or target is None or shown is None or shown == target:
+        return None
+    if not (math.isinf(shown) or math.isinf(target)):
+        if abs(shown - target) <= _display_resolution(shown_text):
+            return None
+    return (
+        f"'{text}' is past the end of the range of {what}, so it was set to the "
+        f"nearest end, which Live shows as '{shown_text}'."
+    )
+
+
+def _display_resolution(text):
+    """Half the last digit of the number in ``text``, in base units."""
+
+    digits = re.search(r"\d*\.\d+|\d+", text)
+    decimals = len(digits.group(0).split(".")[1]) if digits and "." in digits.group(0) else 0
+    unit = _NUMBER.search(text.strip())
+    scale = _UNIT_SCALE.get((unit.group(2) or "").lower(), 1.0) if unit else 1.0
+    return 0.5 * 10**-decimals * scale + 1e-9
 
 
 def _first_raw_where(number, low, high, rising, predicate, steps=60):
@@ -1179,26 +2442,26 @@ def _routing_payload(track):
     return payload
 
 
-def _device_payload(device, index, include_parameters, track, top_index, tail=(), depth=0):
+def _device_payload(
+    device, index, include_parameters, track, top_index, tail=(), depth=0, max_depth=MAX_RACK_DEPTH
+):
     """``track``/``top_index``/``tail`` locate the device so its printed
     ``path`` can be checked to resolve back to it (None if it cannot)."""
 
-    payload = {
-        "index": index,
-        "name": _str(device.name),
-        "path": _printable_path(track, top_index, list(tail), device),
-        "class_name": _str(_get(device, "class_name", "")),
-        "class_display_name": _str(_get(device, "class_display_name", "")),
-        "is_active": bool(_get(device, "is_active", True)),
-    }
+    payload = _device_summary(
+        device, index, _printable_path(track, top_index, list(tail), device)
+    )
     if bool(_get(device, "can_have_chains", False)):
-        context = (include_parameters, track, top_index, depth)
+        context = (include_parameters, track, top_index, depth, max_depth)
         payload["chains"] = _chains_payload(_get(device, "chains", ()), tail, *context)
         return_chains = _tuple(_get(device, "return_chains", ()))
         if return_chains:
             payload["return_chains"] = _chains_payload(
                 return_chains, (*tail, "returns"), *context
             )
+    sidechain = _sidechain_payload(device)
+    if sidechain is not None:
+        payload["sidechain"] = sidechain
     if include_parameters:
         payload["parameters"] = [
             {"index": i, **_param_payload(parameter)}
@@ -1207,17 +2470,78 @@ def _device_payload(device, index, include_parameters, track, top_index, tail=()
     return payload
 
 
-def _chains_payload(chains, tail, include_parameters, track, top_index, depth):
+# Compressor's sidechain switch. A DeviceParameter name seen in Max for Live
+# parameter listings of Compressor; not yet checked in a dated Live run.
+SIDECHAIN_ON_PARAMETER = "s/c on"
+
+
+def _sidechain_payload(device):
+    """The device's sidechain input, or None if Live's API does not expose one.
+
+    Live 11 added ``Live.CompressorDevice.CompressorDevice`` with
+    ``available_input_routing_types``, ``available_input_routing_channels``,
+    ``input_routing_type`` and ``input_routing_channel`` (Cycling '74 LOM
+    docs). Detected by attribute, not class name. Guess, not checked in
+    Live: Glue Compressor and Gate may or may not expose the same
+    properties; this shows whatever the device has. ``on`` is the "S/C On"
+    parameter, or None when the device has no parameter by that name.
+    """
+
+    if _get(device, "available_input_routing_types") is None:
+        return None
+    payload = {"on": None}
+    for parameter in _tuple(_get(device, "parameters", ())):
+        names = (_str(_get(parameter, "name", "")), _str(_get(parameter, "original_name", "")))
+        if SIDECHAIN_ON_PARAMETER in (name.lower() for name in names):
+            try:
+                payload["on"] = float(parameter.value) > float(parameter.min)
+            except (TypeError, ValueError):
+                payload["on"] = None
+            break
+    for key, attribute in (("from", "input_routing_type"), ("channel", "input_routing_channel")):
+        value = _get(device, attribute)
+        payload[key] = _str(_get(value, "display_name", "")) if value is not None else None
+    return payload
+
+
+def _device_summary(device, index, path):
+    return {
+        "index": index,
+        "name": _str(device.name),
+        "path": path,
+        "class_name": _str(_get(device, "class_name", "")),
+        "class_display_name": _str(_get(device, "class_display_name", "")),
+        "is_active": bool(_get(device, "is_active", True)),
+    }
+
+
+def _chain_summaries(chains):
+    """Chains by index, name and device count, without their devices."""
+
+    return [
+        {
+            "index": i,
+            "name": _str(chain.name),
+            "device_count": len(_tuple(_get(chain, "devices", ()))),
+            "truncated": True,
+        }
+        for i, chain in enumerate(_tuple(chains))
+    ]
+
+
+def _chains_payload(chains, tail, include_parameters, track, top_index, depth, max_depth):
     chains = _tuple(chains)
-    if depth >= MAX_RACK_DEPTH:
-        return [{"name": _str(chain.name), "truncated": True} for chain in chains]
+    if depth >= max_depth:
+        return _chain_summaries(chains)
     result = []
     for chain_index, chain in enumerate(chains):
         chain_tail = (*tail, _path_segment(chains, chain_index))
         devices = _tuple(chain.devices)
         result.append(
             {
+                "index": chain_index,
                 "name": _str(chain.name),
+                "device_count": len(devices),
                 "devices": [
                     _device_payload(
                         device,
@@ -1227,6 +2551,7 @@ def _chains_payload(chains, tail, include_parameters, track, top_index, depth):
                         top_index,
                         (*chain_tail, _path_segment(devices, i)),
                         depth + 1,
+                        max_depth,
                     )
                     for i, device in enumerate(devices)
                 ],
@@ -1235,17 +2560,129 @@ def _chains_payload(chains, tail, include_parameters, track, top_index, depth):
     return result
 
 
-def _param_payload(parameter, compact=False):
+def _param_payload(parameter, compact=False, original_name=False):
     value = float(parameter.value)
     payload = {"value": value, "display": _display(parameter, value)}
     if compact:
         return payload
     payload = {"name": _str(parameter.name), **payload}
+    if original_name:
+        payload["original_name"] = _str(_get(parameter, "original_name", parameter.name))
     payload["min"] = float(parameter.min)
     payload["max"] = float(parameter.max)
-    if bool(_get(parameter, "is_quantized", False)):
+    steps = _steps(parameter)
+    if steps is not None:
+        # Option names, or each step's display text when Live lists none
+        # (Glue Compressor Release, issue #44).
+        payload["options"] = _option_names(steps)
+    elif bool(_get(parameter, "is_quantized", False)):
         payload["options"] = [str(item) for item in _tuple(_get(parameter, "value_items", ()))]
     return payload
+
+
+def _arrangement_clips(track, kind):
+    clips = _get(track, "arrangement_clips")
+    if clips is None:
+        # Return, main and group tracks hold no clips; reading the property
+        # there may fail (guess), so they list none instead of an error.
+        if kind == "track" and not bool(_get(track, "is_foldable", False)):
+            raise NotSupported(
+                f"Live does not list arrangement clips for '{_str(track.name)}'; "
+                "Track.arrangement_clips needs Live 11 or later",
+                "Update Live to 11 or later.",
+            )
+        return ()
+    return _tuple(clips)
+
+
+def _clip_payload(index, clip, signature):
+    start = float(clip.start_time)
+    end = float(clip.end_time)
+    payload = {
+        "index": index,
+        "name": _str(clip.name),
+        "start_beats": start,
+        "end_beats": end,
+        "length_beats": end - start,
+        "start_bar": _bar_position(start, signature),
+        "end_bar": _bar_position(end, signature),
+        "is_audio": bool(_get(clip, "is_audio_clip", False)),
+    }
+    if bool(_get(clip, "muted", False)):
+        payload["muted"] = True
+    if payload["is_audio"]:
+        payload.update(_clip_gain_payload(clip))
+    return payload
+
+
+def _clip_gain_payload(clip):
+    gain = _get(clip, "gain")
+    display = _get(clip, "gain_display_string")
+    return {
+        "gain": None if gain is None else float(gain),
+        "gain_display": None if display is None else _str(display),
+    }
+
+
+def _time_signature(song):
+    numerator = _get(song, "signature_numerator")
+    denominator = _get(song, "signature_denominator")
+    try:
+        numerator, denominator = int(numerator), int(denominator)
+    except (TypeError, ValueError):
+        return None
+    if numerator < 1 or denominator < 1:
+        return None
+    return numerator, denominator
+
+
+def _bar_position(beats, signature):
+    """``beats`` (quarter notes from the start) as Live's "bar.beat.sixteenth".
+
+    Uses one time signature for the whole song, so it is off after a time
+    signature change in the arrangement. Returns None without a signature.
+    """
+
+    if signature is None or beats < 0:
+        return None
+    numerator, denominator = signature
+    beat_length = 4.0 / denominator
+    bar_length = numerator * beat_length
+    beats = round(beats, 6)
+    bar = int(beats // bar_length)
+    rest = round(beats - bar * bar_length, 6)
+    beat = int(rest // beat_length)
+    sixteenth = int(round(rest - beat * beat_length, 6) // 0.25)
+    return f"{bar + 1}.{beat + 1}.{sixteenth + 1}"
+
+
+class _ClipGainProbe:
+    """Lets ``_search_display`` treat a clip's gain like a parameter.
+
+    ``read`` writes ``Clip.gain`` and returns ``gain_display_string``.
+    """
+
+    def __init__(self, clip, track):
+        self.clip = clip
+        self.name = f"gain of clip '{_str(clip.name)}' on '{_str(track.name)}'"
+
+    def read(self, _probe, value):
+        self.clip.gain = value
+        return _str(_get(self.clip, "gain_display_string", ""))
+
+
+def _check_probe(probe):
+    # If the display lags a write, or never changes, bisection would find a
+    # wrong gain. Write 0, 1, 1, 0: a display that lags by one write shows a
+    # different text for the two writes of 1 (or the two of 0), whatever the
+    # original gain was. 0, 1, 0, 1 would pass a lag when the gain was 1.
+    shown = [probe.read(probe, value) for value in (0.0, 1.0, 1.0, 0.0)]
+    if shown[1] != shown[2] or shown[0] != shown[3] or shown[0] == shown[1]:
+        raise LiveOpsError(
+            f"Live's gain display for the {probe.name} did not follow the value, so a dB "
+            f"value cannot be matched (read {', '.join(repr(text) for text in shown)})",
+            "Set the clip gain in Live yourself.",
+        )
 
 
 # Helpers ------------------------------------------------------------------
@@ -1308,17 +2745,70 @@ def _all_tracks(song):
     return items
 
 
-def _match_routing(available, wanted, label):
+def _apply_routing(target, direction, wanted_type, wanted_channel, labels):
+    """Set ``target.<direction>_routing_type`` (and channel) by display name.
+
+    ``direction`` is "output" (a track) or "input" (a sidechain). ``labels``
+    is (type label, channel label, what to call the type when it is put back).
+    """
+
+    type_label, channel_label, type_noun = labels
+    if direction == "input":
+        # list_devices shows only the current sidechain source, not the choices.
+        hint = (
+            "Use one of the names listed: they are every source Live offers this device "
+            "right now."
+        )
+    else:
+        hint = "Use one of the names listed, or list_tracks with detail 'full' for every choice."
+    previous_type = getattr(target, f"{direction}_routing_type")
+    setattr(
+        target,
+        f"{direction}_routing_type",
+        _match_routing(
+            getattr(target, f"available_{direction}_routing_types"),
+            wanted_type,
+            type_label,
+            hint,
+        ),
+    )
+    if wanted_channel is not None:
+        # Channel options depend on the type, so match after setting it and
+        # put the old type back if the channel does not exist.
+        try:
+            channel = _match_routing(
+                getattr(target, f"available_{direction}_routing_channels"),
+                wanted_channel,
+                channel_label,
+                hint,
+            )
+        except LiveOpsError as exc:
+            setattr(target, f"{direction}_routing_type", previous_type)
+            raise LiveOpsError(
+                f"{exc}. The {type_noun} was put back; Live may still list this as an "
+                "undo step that changes nothing.",
+                exc.hint,
+            ) from exc
+        setattr(target, f"{direction}_routing_channel", channel)
+
+
+def _match_routing(available, wanted, label, hint):
     options = _tuple(available)
     wanted_text = str(wanted).strip().lower()
     for option in options:
         if _str(_get(option, "display_name", "")).lower() == wanted_text:
             return option
+    # Sidechain sources show a track number in front ("2-32 Pad Kit Jazz"),
+    # so a bare track name also matches when exactly one option has it.
+    numbered = [
+        option
+        for option in options
+        if re.sub(r"^\d+-", "", _str(_get(option, "display_name", ""))).lower() == wanted_text
+    ]
+    if len(numbered) == 1:
+        return numbered[0]
     names = ", ".join(_str(_get(option, "display_name", "")) for option in options)
-    raise NotFound(
-        f"no {label} '{wanted}'. Available: {names}",
-        "Use one of the names listed, or list_tracks with detail 'full' for every choice.",
-    )
+    raise NotFound(f"no {label} '{wanted}'. Available: {names}", hint)
 
 
 def _resolve_send(ref, return_names, send_count):
@@ -1409,14 +2899,21 @@ def _tuple(value):
 _HANDLERS = {
     "ableton.list_tracks": list_tracks,
     "ableton.list_devices": list_devices,
+    "ableton.get_device": get_device,
     "ableton.get_selected_rack_macros": get_selected_rack_macros,
     "ableton.set_device_parameter": set_device_parameter,
     "ableton.set_track_output_routing": set_track_output_routing,
     "ableton.set_track_properties": set_track_properties,
+    "ableton.set_device_properties": set_device_properties,
+    "ableton.set_chain_properties": set_chain_properties,
     "ableton.set_mixer": set_mixer,
     "ableton.insert_device": insert_device,
     "ableton.create_return_track": create_return_track,
+    "ableton.create_track": create_track,
     "ableton.delete_device": delete_device,
+    "ableton.set_device_sidechain": set_device_sidechain,
+    "ableton.list_clips": list_clips,
+    "ableton.set_clip_gain": set_clip_gain,
     "ableton.batch": batch,
     "ableton.undo": undo,
 }

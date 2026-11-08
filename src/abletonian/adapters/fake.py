@@ -11,14 +11,22 @@ from abletonian.adapters.base import (
     AdapterHealth,
     AdapterRefused,
     Batch,
+    ChainPropertiesChange,
+    ClipGainChange,
+    ClipQuery,
     DeviceDelete,
     DeviceInsert,
+    DevicePropertiesChange,
     DeviceQuery,
+    DeviceRead,
+    LevelRead,
     MixerChange,
     ParameterChange,
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -255,6 +263,13 @@ class FakeAbletonAdapter:
     def list_devices(self, query: DeviceQuery) -> dict[str, Any]:
         raise UnsupportedOperation(DeviceQuery.OPERATION)
 
+    def get_device(self, request: DeviceRead) -> dict[str, Any]:
+        raise UnsupportedOperation(DeviceRead.OPERATION)
+
+    def read_levels(self, request: LevelRead) -> dict[str, Any]:
+        # The fake has no audio or transport to meter.
+        raise UnsupportedOperation(LevelRead.OPERATION)
+
     def set_device_parameter(self, change: ParameterChange) -> dict[str, Any]:
         raise UnsupportedOperation(ParameterChange.OPERATION)
 
@@ -263,6 +278,12 @@ class FakeAbletonAdapter:
 
     def set_track_properties(self, change: TrackPropertiesChange) -> dict[str, Any]:
         raise UnsupportedOperation(TrackPropertiesChange.OPERATION)
+
+    def set_device_properties(self, change: DevicePropertiesChange) -> dict[str, Any]:
+        raise UnsupportedOperation(DevicePropertiesChange.OPERATION)
+
+    def set_chain_properties(self, change: ChainPropertiesChange) -> dict[str, Any]:
+        raise UnsupportedOperation(ChainPropertiesChange.OPERATION)
 
     def set_mixer(self, change: MixerChange) -> dict[str, Any]:
         raise UnsupportedOperation(MixerChange.OPERATION)
@@ -273,8 +294,20 @@ class FakeAbletonAdapter:
     def create_return_track(self, change: ReturnTrackCreate) -> dict[str, Any]:
         raise UnsupportedOperation(ReturnTrackCreate.OPERATION)
 
+    def create_track(self, change: TrackCreate) -> dict[str, Any]:
+        raise UnsupportedOperation(TrackCreate.OPERATION)
+
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]:
         raise UnsupportedOperation(DeviceDelete.OPERATION)
+
+    def set_device_sidechain(self, change: SidechainChange) -> dict[str, Any]:
+        raise UnsupportedOperation(SidechainChange.OPERATION)
+
+    def list_clips(self, query: ClipQuery) -> dict[str, Any]:
+        raise UnsupportedOperation(ClipQuery.OPERATION)
+
+    def set_clip_gain(self, change: ClipGainChange) -> dict[str, Any]:
+        raise UnsupportedOperation(ClipGainChange.OPERATION)
 
     def apply_batch(self, batch: Batch) -> dict[str, Any]:
         raise UnsupportedOperation(Batch.OPERATION)

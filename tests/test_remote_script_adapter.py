@@ -6,21 +6,29 @@ from abletonian.adapters.base import (
     AdapterResponseError,
     AdapterUnavailable,
     Batch,
+    ChainPropertiesChange,
+    ClipGainChange,
+    ClipQuery,
     DawAdapter,
     DeviceDelete,
     DeviceInsert,
+    DevicePropertiesChange,
     DeviceQuery,
+    DeviceRead,
     MixerChange,
     ParameterChange,
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
 )
 from abletonian.adapters.remote_script import (
     OLD_SCRIPT_BATCH_WARNING,
+    OLD_SCRIPT_INSERT_NAME_WARNING,
     OLD_SCRIPT_UNDO_WARNING,
     RemoteScriptAdapter,
 )
@@ -82,6 +90,28 @@ class WireShapeTests(unittest.TestCase):
                 ("ableton.list_devices", {"track": 2, "include_parameters": True}),
             ),
             (
+                lambda: self.adapter.list_devices(
+                    DeviceQuery(track=2, include_parameters=False, max_depth=0)
+                ),
+                (
+                    "ableton.list_devices",
+                    {"track": 2, "include_parameters": False, "max_depth": 0},
+                ),
+            ),
+            (
+                lambda: self.adapter.get_device(
+                    DeviceRead(track="Kit", device="Kit/4/Guiro Short", parameters=("Gain", "Pan"))
+                ),
+                (
+                    "ableton.get_device",
+                    {"track": "Kit", "device": "Kit/4/Guiro Short", "parameters": ["Gain", "Pan"]},
+                ),
+            ),
+            (
+                lambda: self.adapter.get_device(DeviceRead(track=0, device=1)),
+                ("ableton.get_device", {"track": 0, "device": 1}),
+            ),
+            (
                 lambda: self.adapter.get_selected_rack_macros(RackRef()),
                 ("ableton.get_selected_rack_macros", {}),
             ),
@@ -127,6 +157,43 @@ class WireShapeTests(unittest.TestCase):
                     "ableton.insert_device",
                     {"track": 1, "device_name": "Utility", "parameters": {"Gain": "-3 dB"}},
                 ),
+            ),
+            (
+                DevicePropertiesChange(track="Vox", device="#1", name="De-esser"),
+                self.adapter.set_device_properties,
+                (
+                    "ableton.set_device_properties",
+                    {"track": "Vox", "device": "#1", "name": "De-esser"},
+                ),
+            ),
+            (
+                ChainPropertiesChange(track="Vox", chain="Vocal Rack/Main", name="Body"),
+                self.adapter.set_chain_properties,
+                (
+                    "ableton.set_chain_properties",
+                    {"track": "Vox", "chain": "Vocal Rack/Main", "name": "Body"},
+                ),
+            ),
+            (
+                DeviceInsert(track=1, device_name="Compressor", name="De-esser"),
+                self.adapter.insert_device,
+                (
+                    "ableton.insert_device",
+                    {"track": 1, "device_name": "Compressor", "name": "De-esser"},
+                ),
+            ),
+            (
+                TrackCreate(kind="audio", name="Vox Double", index=2, color_index=5),
+                self.adapter.create_track,
+                (
+                    "ableton.create_track",
+                    {"kind": "audio", "name": "Vox Double", "index": 2, "color_index": 5},
+                ),
+            ),
+            (
+                TrackCreate(kind="midi"),
+                self.adapter.create_track,
+                ("ableton.create_track", {"kind": "midi"}),
             ),
             (
                 ReturnTrackCreate(name="Room"),
@@ -198,6 +265,36 @@ class BatchTests(unittest.TestCase):
             Batch(operations=(MixerChange(track=0, mute=True),), atomic=False)
         )
         self.assertEqual(result["warning"], OLD_SCRIPT_BATCH_WARNING)
+
+
+class InsertNameTests(unittest.TestCase):
+    def test_name_that_reached_live_has_no_warning(self) -> None:
+        bridge = RecordingBridge({"ableton.insert_device": {"device": {"name": "De-esser"}}})
+        result = RemoteScriptAdapter(bridge).insert_device(
+            DeviceInsert(track=0, device_name="Compressor", name="De-esser")
+        )
+        self.assertNotIn("warning", result)
+
+    def test_name_live_stripped_of_spaces_has_no_warning(self) -> None:
+        bridge = RecordingBridge({"ableton.insert_device": {"device": {"name": "De-esser"}}})
+        result = RemoteScriptAdapter(bridge).insert_device(
+            DeviceInsert(track=0, device_name="Compressor", name="  De-esser ")
+        )
+        self.assertNotIn("warning", result)
+
+    def test_old_script_that_ignored_the_name_warns(self) -> None:
+        bridge = RecordingBridge({"ableton.insert_device": {"device": {"name": "Compressor"}}})
+        result = RemoteScriptAdapter(bridge).insert_device(
+            DeviceInsert(track=0, device_name="Compressor", name="De-esser")
+        )
+        self.assertEqual(result["warning"], OLD_SCRIPT_INSERT_NAME_WARNING)
+
+    def test_no_name_no_warning(self) -> None:
+        bridge = RecordingBridge({"ableton.insert_device": {"device": {"name": "Compressor"}}})
+        result = RemoteScriptAdapter(bridge).insert_device(
+            DeviceInsert(track=0, device_name="Compressor")
+        )
+        self.assertNotIn("warning", result)
 
 
 class UndoTests(unittest.TestCase):
@@ -299,6 +396,55 @@ class ErrorTests(unittest.TestCase):
         with self.assertRaises(AdapterUnavailable) as caught:
             RemoteScriptAdapter(bridge).list_tracks(TrackQuery())
         self.assertEqual(str(caught.exception), "could not connect to 127.0.0.1:39877")
+
+
+class SidechainWireTests(unittest.TestCase):
+    def test_set_device_sidechain_sends_names_and_drops_unset_channel(self) -> None:
+        bridge = RecordingBridge()
+        adapter = RemoteScriptAdapter(bridge)
+
+        adapter.set_device_sidechain(SidechainChange(track="Bass", device=1, from_track="1-Kick"))
+        adapter.set_device_sidechain(
+            SidechainChange(track=1, device="Compressor", from_track="Kick", channel="Post FX")
+        )
+
+        self.assertEqual(
+            bridge.calls,
+            [
+                (
+                    "ableton.set_device_sidechain",
+                    {"track": "Bass", "device": 1, "from_track": "1-Kick"},
+                ),
+                (
+                    "ableton.set_device_sidechain",
+                    {
+                        "track": 1,
+                        "device": "Compressor",
+                        "from_track": "Kick",
+                        "channel": "Post FX",
+                    },
+                ),
+            ],
+        )
+
+
+class ClipWireTests(unittest.TestCase):
+    def test_list_clips_and_set_clip_gain(self) -> None:
+        bridge = RecordingBridge()
+        adapter = RemoteScriptAdapter(bridge)
+
+        adapter.list_clips(ClipQuery(track="Bass"))
+        adapter.set_clip_gain(ClipGainChange(track=1, clip=0, gain_db="-3 dB"))
+        adapter.set_clip_gain(ClipGainChange(track="Bass", clip="Intro", gain_db=-6.0))
+
+        self.assertEqual(
+            bridge.calls,
+            [
+                ("ableton.list_clips", {"track": "Bass"}),
+                ("ableton.set_clip_gain", {"track": 1, "clip": 0, "gain_db": "-3 dB"}),
+                ("ableton.set_clip_gain", {"track": "Bass", "clip": "Intro", "gain_db": -6.0}),
+            ],
+        )
 
 
 if __name__ == "__main__":

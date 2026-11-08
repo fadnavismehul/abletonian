@@ -19,7 +19,9 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 
 TrackRef = int | str
 DeviceRef = int | str
-ParameterValue = float | str
+# A raw number, display text ("-3 dB", "Auto"), or {"raw": number} for an
+# explicit raw value. The Remote Script decides how a bare number is read.
+ParameterValue = float | str | Mapping[str, float]
 
 
 class AdapterError(RuntimeError):
@@ -102,7 +104,25 @@ class DeviceQuery(_Request):
     OPERATION: ClassVar[str] = "list_devices"
 
     track: TrackRef | None = None
+    # True lists every parameter ("full"); the MCP tool sends False by default.
     include_parameters: bool = True
+    max_depth: int | None = None
+
+
+@dataclass(frozen=True)
+class DeviceRead(_Request):
+    OPERATION: ClassVar[str] = "get_device"
+
+    track: TrackRef
+    device: DeviceRef
+    # A name or substring, or a list of them; None returns every parameter.
+    parameters: str | tuple[str, ...] | None = None
+
+    def params(self) -> dict[str, Any]:
+        out = super().params()
+        if isinstance(self.parameters, tuple):
+            out["parameters"] = list(self.parameters)
+        return out
 
 
 @dataclass(frozen=True)
@@ -111,6 +131,62 @@ class RackRef(_Request):
 
     track: TrackRef | None = None
     device: DeviceRef | None = None
+
+
+@dataclass(frozen=True)
+class ClipQuery(_Request):
+    """A track's Arrangement View clips."""
+
+    OPERATION: ClassVar[str] = "list_clips"
+
+    track: TrackRef
+
+
+# Realtime reads: they take wall-clock time and depend on playback, but do
+# not change the Set or the transport.
+
+
+@dataclass(frozen=True)
+class LevelRead(_Request):
+    """Sample track output meters for ``seconds`` while Live plays (issue #45).
+
+    Values are Live meter positions 0..1, not dBFS. Limits match
+    LEVEL_MIN_SECONDS, LEVEL_MAX_SECONDS and MAX_LEVEL_TRACKS in the Remote
+    Script's live_ops.py, which checks them again.
+    """
+
+    OPERATION: ClassVar[str] = "read_levels"
+    MIN_SECONDS: ClassVar[float] = 0.5
+    MAX_SECONDS: ClassVar[float] = 10.0
+    MAX_TRACKS: ClassVar[int] = 16
+
+    tracks: tuple[TrackRef, ...] | None = None
+    seconds: float = 4.0
+    include_returns: bool = False
+    include_main: bool = False
+
+    def __post_init__(self) -> None:
+        if self.tracks is not None:
+            object.__setattr__(self, "tracks", tuple(self.tracks))
+            if not self.tracks:
+                raise ValueError("tracks must name at least one track, or be left out")
+            if len(self.tracks) > self.MAX_TRACKS:
+                raise ValueError(
+                    f"read at most {self.MAX_TRACKS} tracks at once, got {len(self.tracks)}"
+                )
+        seconds = self.seconds
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            raise ValueError("seconds must be a number")
+        if not self.MIN_SECONDS <= seconds <= self.MAX_SECONDS:
+            raise ValueError(
+                f"seconds must be from {self.MIN_SECONDS} to {self.MAX_SECONDS}, got {seconds}"
+            )
+
+    def params(self) -> dict[str, Any]:
+        out = super().params()
+        if self.tracks is not None:
+            out["tracks"] = list(self.tracks)
+        return out
 
 
 # Requests that change the Set. These are the ones a Batch may hold.
@@ -136,6 +212,36 @@ class RoutingChange(_Request):
 
 
 @dataclass(frozen=True)
+class SidechainChange(_Request):
+    """Point a device's sidechain input at a source, by display name."""
+
+    OPERATION: ClassVar[str] = "set_device_sidechain"
+
+    track: TrackRef
+    device: DeviceRef
+    from_track: str
+    channel: str | None = None
+
+
+@dataclass(frozen=True)
+class ClipGainChange(_Request):
+    """Set an arrangement audio clip's gain, in dB ("-3 dB" or -3)."""
+
+    OPERATION: ClassVar[str] = "set_clip_gain"
+
+    track: TrackRef
+    clip: int | str
+    gain_db: float | str
+
+    def __post_init__(self) -> None:
+        # Not ParameterValue: a clip gain has no raw form, and {"raw": 0.7}
+        # would otherwise be read as text and set 0.7 dB.
+        value = self.gain_db
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError("gain_db must be a number of dB or text such as '-3 dB'")
+
+
+@dataclass(frozen=True)
 class TrackPropertiesChange(_Request):
     OPERATION: ClassVar[str] = "set_track_properties"
 
@@ -143,6 +249,28 @@ class TrackPropertiesChange(_Request):
     name: str | None = None
     color: str | None = None
     color_index: int | None = None
+
+
+@dataclass(frozen=True)
+class DevicePropertiesChange(_Request):
+    """Rename a device; ``device`` may be a path inside racks."""
+
+    OPERATION: ClassVar[str] = "set_device_properties"
+
+    track: TrackRef
+    device: DeviceRef
+    name: str
+
+
+@dataclass(frozen=True)
+class ChainPropertiesChange(_Request):
+    """Rename a rack chain; ``chain`` is a rack path plus a chain, "Rack/Piano"."""
+
+    OPERATION: ClassVar[str] = "set_chain_properties"
+
+    track: TrackRef
+    chain: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -165,6 +293,7 @@ class DeviceInsert(_Request):
     device_name: str
     index: int | None = None
     parameters: Mapping[str, ParameterValue] | None = None
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +301,19 @@ class ReturnTrackCreate(_Request):
     OPERATION: ClassVar[str] = "create_return_track"
 
     name: str | None = None
+    color: str | None = None
+
+
+@dataclass(frozen=True)
+class TrackCreate(_Request):
+    """Add a MIDI or audio track. index None (or -1) appends after the last track."""
+
+    OPERATION: ClassVar[str] = "create_track"
+
+    kind: str
+    name: str | None = None
+    index: int | None = None
+    color_index: int | None = None
     color: str | None = None
 
 
@@ -195,20 +337,30 @@ Change = (
     ParameterChange
     | RoutingChange
     | TrackPropertiesChange
+    | DevicePropertiesChange
+    | ChainPropertiesChange
     | MixerChange
     | DeviceInsert
     | ReturnTrackCreate
+    | TrackCreate
     | DeviceDelete
+    | SidechainChange
+    | ClipGainChange
 )
 
 CHANGE_TYPES: tuple[type[_Request], ...] = (
     ParameterChange,
     RoutingChange,
     TrackPropertiesChange,
+    DevicePropertiesChange,
+    ChainPropertiesChange,
     MixerChange,
     DeviceInsert,
     ReturnTrackCreate,
+    TrackCreate,
     DeviceDelete,
+    SidechainChange,
+    ClipGainChange,
 )
 
 
@@ -316,9 +468,16 @@ class DawAdapter(Protocol):
 
     def list_devices(self, query: DeviceQuery) -> dict[str, Any]: ...
 
+    def get_device(self, request: DeviceRead) -> dict[str, Any]: ...
+
     def get_selected_rack_macros(self, ref: RackRef) -> dict[str, Any]: ...
 
+    def list_clips(self, query: ClipQuery) -> dict[str, Any]: ...
+
     def plan_drum_rack_extraction(self) -> dict[str, Any]: ...
+
+    # Realtime read: samples meters over time; must not change the Set or transport.
+    def read_levels(self, request: LevelRead) -> dict[str, Any]: ...
 
     # Change the Set (DeviceDelete without confirm is a read-only preview).
     def set_device_parameter(self, change: ParameterChange) -> dict[str, Any]: ...
@@ -327,13 +486,23 @@ class DawAdapter(Protocol):
 
     def set_track_properties(self, change: TrackPropertiesChange) -> dict[str, Any]: ...
 
+    def set_device_properties(self, change: DevicePropertiesChange) -> dict[str, Any]: ...
+
+    def set_chain_properties(self, change: ChainPropertiesChange) -> dict[str, Any]: ...
+
     def set_mixer(self, change: MixerChange) -> dict[str, Any]: ...
 
     def insert_device(self, change: DeviceInsert) -> dict[str, Any]: ...
 
     def create_return_track(self, change: ReturnTrackCreate) -> dict[str, Any]: ...
 
+    def create_track(self, change: TrackCreate) -> dict[str, Any]: ...
+
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]: ...
+
+    def set_device_sidechain(self, change: SidechainChange) -> dict[str, Any]: ...
+
+    def set_clip_gain(self, change: ClipGainChange) -> dict[str, Any]: ...
 
     def apply_batch(self, batch: Batch) -> dict[str, Any]: ...
 

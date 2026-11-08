@@ -15,14 +15,22 @@ from abletonian.adapters.base import (
     AdapterRefused,
     AdapterUnavailable,
     Batch,
+    ChainPropertiesChange,
+    ClipGainChange,
+    ClipQuery,
     DeviceDelete,
     DeviceInsert,
+    DevicePropertiesChange,
     DeviceQuery,
+    DeviceRead,
+    LevelRead,
     MixerChange,
     ParameterChange,
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -35,10 +43,19 @@ OLD_SCRIPT_BATCH_WARNING = (
     "The Remote Script in Live is older and ran this batch as one undo "
     "step. Reinstall it to get one step per operation."
 )
+OLD_SCRIPT_INSERT_NAME_WARNING = (
+    "The device was inserted, but Live does not show the name asked for; the "
+    "Remote Script in Live may be older. Rename it with set_device_properties, "
+    "or reinstall the Remote Script."
+)
 OLD_SCRIPT_UNDO_WARNING = (
     "The Remote Script in Live is older and undid only one step. "
     "Reinstall it to undo several at once."
 )
+# A level read answers within its window plus this: up to 5 s for Live to
+# start the setup call (REQUEST_START_TIMEOUT_SECONDS) and a 5 s grace for
+# slow ticks (LEVEL_READ_GRACE_SECONDS) in the Remote Script, plus slack.
+LEVEL_READ_OVERHEAD_SECONDS = 12.0
 
 
 class BridgeLike(Protocol):
@@ -89,11 +106,44 @@ class RemoteScriptAdapter:
     def list_devices(self, query: DeviceQuery) -> dict[str, Any]:
         return self._send(query)
 
+    def get_device(self, request: DeviceRead) -> dict[str, Any]:
+        return self._send(request)
+
     def get_selected_rack_macros(self, ref: RackRef) -> dict[str, Any]:
         return self._send(ref)
 
+    def list_clips(self, query: ClipQuery) -> dict[str, Any]:
+        return self._send(query)
+
     def plan_drum_rack_extraction(self) -> dict[str, Any]:
         return self._call("workflow.plan_drum_rack_extraction", {"target_daw": self.target_daw})
+
+    # Realtime read.
+
+    def read_levels(self, request: LevelRead) -> dict[str, Any]:
+        # The bridge client must wait longer than the read takes, or it would
+        # give up on an answer that is still coming.
+        timeout = getattr(self.bridge, "timeout", None)
+        needed = request.seconds + LEVEL_READ_OVERHEAD_SECONDS
+        if isinstance(timeout, (int, float)) and timeout < needed:
+            raise AdapterRefused(
+                f"a {request.seconds:g} s level read needs a bridge timeout of at least "
+                f"{needed:g} s, but it is {timeout:g} s; nothing was sent",
+                code="bridge_timeout_too_short",
+                hint="Read fewer seconds, or raise ABLETONIAN_BRIDGE_TIMEOUT (--bridge-timeout).",
+            )
+        try:
+            return self._send(request)
+        except AdapterUnavailable as exc:
+            # The client's timeout text says Live may still apply a change;
+            # a level read changes nothing, so say that instead.
+            if not _timed_out(exc):
+                raise
+            raise AdapterUnavailable(
+                f"timed out waiting for Live to finish the {request.seconds:g} s level read; "
+                "read_levels only reads meters, so nothing was changed. Try again, or read "
+                "fewer seconds or tracks"
+            ) from exc
 
     # Changes to the Set.
 
@@ -106,16 +156,39 @@ class RemoteScriptAdapter:
     def set_track_properties(self, change: TrackPropertiesChange) -> dict[str, Any]:
         return self._send(change)
 
+    def set_device_properties(self, change: DevicePropertiesChange) -> dict[str, Any]:
+        return self._send(change)
+
+    def set_chain_properties(self, change: ChainPropertiesChange) -> dict[str, Any]:
+        return self._send(change)
+
     def set_mixer(self, change: MixerChange) -> dict[str, Any]:
         return self._send(change)
 
     def insert_device(self, change: DeviceInsert) -> dict[str, Any]:
-        return self._send(change)
+        result = self._send(change)
+        # An older script ignores name and keeps Live's default. Live may
+        # normalise the name it stores (strip spaces), so compare stripped.
+        if change.name is not None:
+            device = result.get("device")
+            shown = device.get("name") if isinstance(device, dict) else None
+            if not isinstance(shown, str) or shown.strip() != change.name.strip():
+                result = {**result, "warning": OLD_SCRIPT_INSERT_NAME_WARNING}
+        return result
 
     def create_return_track(self, change: ReturnTrackCreate) -> dict[str, Any]:
         return self._send(change)
 
+    def create_track(self, change: TrackCreate) -> dict[str, Any]:
+        return self._send(change)
+
     def delete_device(self, change: DeviceDelete) -> dict[str, Any]:
+        return self._send(change)
+
+    def set_device_sidechain(self, change: SidechainChange) -> dict[str, Any]:
+        return self._send(change)
+
+    def set_clip_gain(self, change: ClipGainChange) -> dict[str, Any]:
         return self._send(change)
 
     def apply_batch(self, batch: Batch) -> dict[str, Any]:
@@ -175,6 +248,17 @@ class RemoteScriptAdapter:
         except BridgeConnectionError as exc:
             self._health = None
             raise AdapterUnavailable(str(exc)) from exc
+
+
+def _timed_out(exc: BaseException) -> bool:
+    """Whether a bridge error was caused by a socket timeout."""
+
+    cause = exc.__cause__
+    while cause is not None:
+        if isinstance(cause, TimeoutError):
+            return True
+        cause = cause.__cause__
+    return False
 
 
 def _method(operation: str) -> str:

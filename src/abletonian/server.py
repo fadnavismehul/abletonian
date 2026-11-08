@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import webbrowser
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
@@ -14,15 +14,23 @@ from abletonian.adapters.base import (
     AdapterError,
     AdapterResponseError,
     Batch,
+    ChainPropertiesChange,
+    ClipGainChange,
+    ClipQuery,
     DawAdapter,
     DeviceDelete,
     DeviceInsert,
+    DevicePropertiesChange,
     DeviceQuery,
+    DeviceRead,
+    LevelRead,
     MixerChange,
     ParameterChange,
     RackRef,
     ReturnTrackCreate,
     RoutingChange,
+    SidechainChange,
+    TrackCreate,
     TrackPropertiesChange,
     TrackQuery,
     UndoRequest,
@@ -69,10 +77,15 @@ _BATCH_TYPES = {
         ParameterChange,
         RoutingChange,
         TrackPropertiesChange,
+        DevicePropertiesChange,
+        ChainPropertiesChange,
         MixerChange,
         DeviceInsert,
         ReturnTrackCreate,
+        TrackCreate,
         DeviceDelete,
+        SidechainChange,
+        ClipGainChange,
     )
 }
 
@@ -276,31 +289,160 @@ def build_mcp(
         )
 
     @mcp.tool(annotations=_op("list_devices"))
-    def list_devices(track: int | str | None = None, include_parameters: bool = True) -> str:
-        """List devices on one track (or every track when track is omitted), with
-        each parameter's raw value, range, display text, and options. Devices
-        inside racks are listed under their chains (and Drum Rack return
-        chains) with a "path" that set_device_parameter and delete_device
-        accept. Read-only."""
+    def list_devices(
+        track: int | str | None = None,
+        detail: str = "compact",
+        include_parameters: bool | None = None,
+        max_depth: int | None = None,
+    ) -> str:
+        """List devices on one track (or every track when track is omitted).
+        Read-only: never changes the Live Set.
 
+        detail "compact" (default) gives each device's name, path, class and
+        on/off state, and each rack chain's name and device count, with no
+        parameters. Devices inside racks are listed under their chains (and
+        Drum Rack return chains) with a "path" that get_device,
+        set_device_parameter and delete_device accept. Devices whose sidechain
+        input Live exposes (Compressor) show "sidechain": {"on", "from",
+        "channel"}. To read parameters, use
+        get_device on one path (optionally with a parameter name filter).
+
+        detail "full" (or include_parameters=true) adds every parameter of
+        every device with raw value, range, display text and options. That is
+        large: a track with a Drum Rack can reach megabytes (2.5 MB seen), so
+        start with compact.
+
+        max_depth (0-4, default 4) is how many rack levels have their chains
+        expanded. max_depth=0 lists a Drum Rack's chains by index, name and
+        device count only ("truncated": true), without their devices.
+        """
+
+        if detail not in ("compact", "full"):
+            return f"detail must be 'compact' or 'full', got '{detail}'. Nothing was read."
+        if include_parameters is None:
+            include_parameters = detail == "full"
         return send(
-            "list_devices", DeviceQuery(track=track, include_parameters=include_parameters)
+            "list_devices",
+            DeviceQuery(track=track, include_parameters=include_parameters, max_depth=max_depth),
         )
+
+    @mcp.tool(annotations=_op("get_device"))
+    def get_device(
+        track: int | str,
+        device: int | str,
+        parameters: str | list[str] | None = None,
+    ) -> str:
+        """Read one device's parameters: raw value, display text, min/max range,
+        and options for switches and menus. Read-only: never changes the Live
+        Set.
+
+        device is an index, a device name, or a path from list_devices, the
+        same as set_device_parameter takes (for example "Drum Rack/Kick/Simpler"
+        or "Drum Rack/4/Guiro Short"). parameters keeps only parameters whose
+        name contains it (case-insensitive), or any of a list of names; omit it
+        for all of them. Use this to check one value before or after setting
+        it. Rack chains are listed by name and device count only.
+        """
+
+        wanted = tuple(parameters) if isinstance(parameters, list) else parameters
+        return send("get_device", DeviceRead(track=track, device=device, parameters=wanted))
+
+    @mcp.tool(annotations=_op("list_clips"))
+    def list_clips(track: int | str) -> str:
+        """List a track's clips in Arrangement View: index, name, start and end
+        in beats and as Live's bar.beat.sixteenth position (from the song's
+        current time signature), whether each is an audio clip, and for audio
+        clips the gain with its display text ("-3.0 dB"). Session View clips
+        are not listed. Read-only: never changes the Live Set.
+
+        The index is what set_clip_gain takes as clip."""
+
+        return send("list_clips", ClipQuery(track=track))
+
+    @mcp.tool(annotations=_op("set_clip_gain"))
+    def set_clip_gain(track: int | str, clip: int | str, gain_db: float | str) -> str:
+        """Set an Arrangement View audio clip's gain (the clip's Gain, not the
+        track volume). Changes the Live Set; one Live undo step.
+
+        clip is the index from list_clips, or the clip's name if it is unique
+        on the track. gain_db is a number of dB (-3) or text ("-3 dB",
+        "-inf dB"). Live stores clip gain as 0..1, so the value that shows
+        gain_db is searched for; the result reports the display Live shows.
+        The search writes the gain about 130 times, which may be audible on a
+        clip that is playing.
+        MIDI clips have no gain. Splitting clips is not possible from here.
+        """
+
+        return send("set_clip_gain", ClipGainChange(track=track, clip=clip, gain_db=gain_db))
+
+    @mcp.tool(annotations=_op("read_levels"))
+    def read_levels(
+        tracks: list[int | str] | None = None,
+        seconds: float = 4.0,
+        include_returns: bool = False,
+        include_main: bool = False,
+    ) -> str:
+        """Watch track output meters for a few seconds of playback, to compare
+        levels between tracks or check gain staging. Does not change the Live
+        Set, and never starts or stops the transport: if Live is not playing
+        it refuses (ask the user to press play), and if playback stops during
+        the window it says so.
+
+        tracks takes up to 16 track names or indexes (default: every regular
+        track); include_returns and include_main add the return tracks and the
+        main track. seconds is the window, 0.5 to 10 (default 4); the call
+        takes that long. Pick a loud, representative part of the song.
+
+        Per track it returns peak (highest meter reading), rms_of_samples (the
+        root mean square of the readings, a rough loudness average, not a
+        true signal RMS), hold_peak (Live's held peak meter), left/right peaks,
+        and sample_count. Values are Live meter positions from 0.0 to 1.0, NOT
+        dBFS; Live does not document how they map to dB, so do not convert
+        them. Compare tracks with each other. A peak at or near 1.0 is a reason
+        to check Live's meters for clipping (a guess that the top of the meter
+        is near 0 dBFS; not confirmed). Device gain reduction is not read.
+        Other tool calls wait while a read runs.
+        """
+
+        try:
+            request = LevelRead(
+                tracks=tuple(tracks) if tracks is not None else None,
+                seconds=seconds,
+                include_returns=include_returns,
+                include_main=include_main,
+            )
+        except (TypeError, ValueError) as exc:
+            return f"{exc}. Nothing was read."
+        return send("read_levels", request)
 
     @mcp.tool(annotations=_op("set_device_parameter"))
     def set_device_parameter(
         track: int | str,
         device: int | str,
         parameter: int | str,
-        value: float | str,
+        value: float | str | dict[str, float],
     ) -> str:
         """Set a device parameter in the open Live Set.
 
         device is an index, a device name, or a path to a device inside racks
         from list_devices, such as "Instrument Rack/Piano/Reverb" or
-        "Drum Rack/returns/0/Limiter". value is either a raw number within the
-        parameter's min..max, or display text such as "-3 dB", "2.5 kHz",
-        "25L", or an option name like "Off".
+        "Drum Rack/returns/0/Limiter". value is one of:
+
+        - a string: what Live shows, such as "-3 dB", "2.5 kHz", "25L", "1.00",
+          or an option or step name from list_devices "options" ("Off",
+          "Auto", "1/8");
+        - {"raw": n}: the raw value n within the parameter's min..max, exactly;
+        - a bare number: the raw value, except where that is ambiguous. If
+          the parameter shows plain numbers with no unit (EQ Eight Q) or
+          numbered steps, and the number is also a display value at a
+          different raw value, the call is refused and names both readings;
+          send a string for the display value or {"raw": n} for the raw one.
+          Outside the raw range such a number is read as display text. When
+          raw and display agree (a 0..127 parameter showing "64") it is set.
+
+        The result says how the value was read ("read_as") and, when a bare
+        number was read as raw but Live shows something else, a "note" with
+        both readings.
         """
 
         return send(
@@ -322,6 +464,30 @@ def build_mcp(
             RoutingChange(track=track, routing_type=routing_type, routing_channel=routing_channel),
         )
 
+    @mcp.tool(annotations=_op("set_device_sidechain"))
+    def set_device_sidechain(
+        track: int | str,
+        device: int | str,
+        from_track: str,
+        channel: str | None = None,
+    ) -> str:
+        """Point a Compressor's sidechain input (Audio From) at a source, such as
+        a kick track. Changes the Live Set; one Live undo step.
+
+        from_track is the source's display name as Live shows it, for example
+        "2-32 Pad Kit Jazz" (a bare track name also works when it is unique);
+        channel is the tap point, such as "Post FX" or "Pre FX". list_devices
+        shows the current source under "sidechain"; a wrong name returns the
+        available choices. This only sets the routing: turn the sidechain on
+        with set_device_parameter ("S/C On" to "On") if it is off. Devices
+        without a "sidechain" entry in list_devices cannot be set.
+        """
+
+        return send(
+            "set_device_sidechain",
+            SidechainChange(track=track, device=device, from_track=from_track, channel=channel),
+        )
+
     @mcp.tool(annotations=_op("set_track_properties"))
     def set_track_properties(
         track: int | str,
@@ -337,18 +503,49 @@ def build_mcp(
             TrackPropertiesChange(track=track, name=name, color=color, color_index=color_index),
         )
 
+    @mcp.tool(annotations=_op("set_device_properties"))
+    def set_device_properties(track: int | str, device: int | str, name: str) -> str:
+        """Rename a device on a track, or inside a rack by its path from
+        list_devices (such as "Vocal Rack/Main/Compressor"). Changes the Live
+        Set; Live's Undo reverts it.
+
+        Use it to tell apart devices with the same name, for example two
+        Compressors where one is a de-esser. Returns the name and path before
+        and after: renaming can change the device's path (and a same-named
+        sibling's), so use the new path from here or list_devices afterwards."""
+
+        return send(
+            "set_device_properties",
+            DevicePropertiesChange(track=track, device=device, name=name),
+        )
+
+    @mcp.tool(annotations=_op("set_chain_properties"))
+    def set_chain_properties(track: int | str, chain: str, name: str) -> str:
+        """Rename a chain inside a rack. chain is the rack's path from
+        list_devices followed by the chain name or index: "Vocal Rack/Main",
+        "Drum Rack/returns/0" for a Drum Rack return chain, or
+        "Synth/Pad/Inner Rack/Deep" for a rack inside a rack. Changes the Live
+        Set; Live's Undo reverts it. Returns the name and path before and
+        after; paths of devices in this chain change with it."""
+
+        return send(
+            "set_chain_properties",
+            ChainPropertiesChange(track=track, chain=chain, name=name),
+        )
+
     @mcp.tool(annotations=_op("set_mixer"))
     def set_mixer(
         track: int | str,
-        volume: float | str | None = None,
-        panning: float | str | None = None,
-        sends: dict[str, float | str] | None = None,
+        volume: float | str | dict[str, float] | None = None,
+        panning: float | str | dict[str, float] | None = None,
+        sends: dict[str, float | str | dict[str, float]] | None = None,
         mute: bool | None = None,
         solo: bool | None = None,
     ) -> str:
         """Set a track's mixer: volume ("-6 dB" or raw 0..1), panning ("25L",
         "C", or raw -1..1), sends keyed by return name, letter, or index
-        ({"A": "-12 dB"}), mute, and solo."""
+        ({"A": "-12 dB"}), mute, and solo. A raw value can also be sent as
+        {"raw": n}."""
 
         return send(
             "set_mixer",
@@ -362,17 +559,29 @@ def build_mcp(
         track: int | str,
         device_name: str,
         index: int | None = None,
-        parameters: dict[str, float | str] | None = None,
+        parameters: dict[str, float | str | dict[str, float]] | None = None,
+        name: str | None = None,
     ) -> str:
         """Insert a native Live device (for example "Utility", "EQ Eight",
         "Glue Compressor") by its browser name, using Track.insert_device
         (Live 12.3+). index is the chain position; omit it to append at the end.
-        parameters are set on the new device right away, e.g. {"Gain": "-3 dB"}."""
+        parameters are set on the new device right away, in order, e.g.
+        {"Gain": "-3 dB"}; values are read as in set_device_parameter. name
+        renames the new device, e.g. "De-esser" for a second Compressor. If
+        the name, a parameter name or a value does not fit the new device, it
+        is removed again and the error says why (Live may keep an undo step
+        that changes nothing).
+        To be sure of names and options, insert first, read list_devices,
+        then use set_device_parameter."""
 
         return send(
             "insert_device",
             DeviceInsert(
-                track=track, device_name=device_name, index=index, parameters=parameters
+                track=track,
+                device_name=device_name,
+                index=index,
+                parameters=parameters,
+                name=name,
             ),
         )
 
@@ -384,6 +593,31 @@ def build_mcp(
         itself, so pass "Room" (or "E-Room") for "E-Room"."""
 
         return send("create_return_track", ReturnTrackCreate(name=name, color=color))
+
+    @mcp.tool(annotations=_op("create_track"))
+    def create_track(
+        kind: Literal["midi", "audio"],
+        name: str | None = None,
+        index: int | None = None,
+        color_index: int | None = None,
+        color: str | None = None,
+    ) -> str:
+        """Add a new, empty MIDI or audio track. Additive; one Live undo step.
+
+        index is where it goes among the regular tracks (0 is first); omit it
+        to add the track after the last one. Tracks after it move down one
+        index, so refresh indexes with list_tracks. name, color ("#RRGGBB",
+        snapped to Live's palette) and color_index (a palette slot) are
+        optional; if they cannot be set, the new track is removed again.
+        Returns the new track as list_tracks shows it. Group tracks cannot be
+        created this way."""
+
+        return send(
+            "create_track",
+            TrackCreate(
+                kind=kind, name=name, index=index, color_index=color_index, color=color
+            ),
+        )
 
     @mcp.tool(annotations=_op("delete_device"))
     def delete_device(track: int | str, device: int | str, confirm: StrictBool = False) -> str:
@@ -402,8 +636,10 @@ def build_mcp(
 
         Each operation is {"method": ..., "params": {...}}. Methods:
         ableton.set_device_parameter, ableton.set_track_output_routing,
-        ableton.set_track_properties, ableton.set_mixer, ableton.insert_device,
-        ableton.create_return_track, ableton.delete_device (needs "confirm": true).
+        ableton.set_track_properties, ableton.set_device_properties,
+        ableton.set_chain_properties, ableton.set_mixer, ableton.insert_device,
+        ableton.create_return_track, ableton.create_track, ableton.delete_device
+        (needs "confirm": true), ableton.set_device_sidechain, ableton.set_clip_gain.
         params use the same names as the matching tools. The batch stops at the
         first failure and reports what completed.
 

@@ -306,6 +306,37 @@ class LiveOpsTests(unittest.TestCase):
         self.assertEqual(result["changed"]["panning"]["display"], "25L")
         self.assertAlmostEqual(self.song.tracks[2].mixer_device.sends[0].value, 0.3)
         self.assertAlmostEqual(self.song.tracks[2].mixer_device.sends[1].value, 0.1, 3)
+        self.assertEqual(result["changed"]["volume"]["read_as"], "display")
+        self.assertEqual(result["changed"]["sends"]["A-Reverb"]["read_as"], "raw")
+
+    def test_batch_shape_checks_mixer_values_before_anything_runs(self):
+        for params in (
+            {"track": 1, "volume": [0.5]},
+            {"track": 1, "panning": {"value": 0}},
+            {"track": 1, "sends": {"A": [1]}},
+            {"track": 1, "sends": [0.5]},
+        ):
+            with self.subTest(params=params):
+                with self.assertRaisesRegex(LiveOpsError, "operation 1.*nothing was changed"):
+                    self.call(
+                        "ableton.batch",
+                        operations=[
+                            {"method": "ableton.set_mixer", "params": {"track": 0, "mute": True}},
+                            {"method": "ableton.set_mixer", "params": params},
+                        ],
+                    )
+        self.assertFalse(self.song.tracks[0].mute)
+        self.assertEqual(self.song.undo_steps, [])
+
+    def test_set_mixer_reports_how_each_value_was_read(self):
+        result = self.call("ableton.set_mixer", track="Vox", volume=0.95, panning="52R")
+
+        volume, panning = result["changed"]["volume"], result["changed"]["panning"]
+        self.assertEqual(volume["read_as"], "raw")
+        self.assertIn("'4.0 dB'", volume["note"])
+        self.assertEqual(panning["read_as"], "display")
+        self.assertIn("past the end", panning["note"])
+        self.assertIn("'50R'", panning["note"])
 
     def test_batch_groups_undo_and_stops_on_first_error(self):
         result = self.call(
@@ -442,6 +473,690 @@ class LiveOpsTests(unittest.TestCase):
         result = surface.handle_request("ableton.list_tracks", {"include_returns": False})
 
         self.assertEqual(len(result["tracks"]), 4)
+
+
+def named_device(name, class_name="Compressor2"):
+    return SimpleNamespace(
+        name=name,
+        class_name=class_name,
+        can_have_chains=False,
+        parameters=(Param("Device On", 1.0, items=("Off", "On")),),
+    )
+
+
+def chain(name, devices):
+    return SimpleNamespace(name=name, devices=list(devices))
+
+
+def rack(name, chains, return_chains=(), class_name="AudioEffectGroupDevice"):
+    return SimpleNamespace(
+        name=name,
+        class_name=class_name,
+        can_have_chains=True,
+        chains=tuple(chains),
+        return_chains=tuple(return_chains),
+        parameters=(Param("Device On", 1.0, items=("Off", "On")),),
+    )
+
+
+class RenameDeviceTests(unittest.TestCase):
+    """Issue #46: Device.name and Chain.name are read/write (Cycling '74 LOM docs)."""
+
+    def setUp(self):
+        self.song = Song()
+        self.track = self.song.tracks[2]
+        self.inner = rack("Inner", [chain("Deep", [named_device("Reverb", "Reverb")])])
+        self.vocal_rack = rack(
+            "Vocal Rack",
+            [chain("Main", [named_device("Compressor"), self.inner]), chain("Air", [])],
+        )
+        self.kit = rack(
+            "Kit",
+            [chain("Kick", [])],
+            return_chains=[chain("Room", [named_device("Limiter", "Limiter")])],
+            class_name="DrumGroupDevice",
+        )
+        self.track.devices = [
+            named_device("Compressor"),
+            named_device("Compressor"),
+            self.vocal_rack,
+            self.kit,
+        ]
+
+    def rename(self, device, name):
+        return live_ops.handle(
+            self.song,
+            "ableton.set_device_properties",
+            {"track": "Vox", "device": device, "name": name},
+        )
+
+    def rename_chain(self, path, name):
+        return live_ops.handle(
+            self.song,
+            "ableton.set_chain_properties",
+            {"track": "Vox", "chain": path, "name": name},
+        )
+
+    def test_renames_a_duplicate_top_level_device_and_reports_new_paths(self):
+        result = self.rename("#1", "De-esser")
+
+        self.assertEqual(self.track.devices[1].name, "De-esser")
+        self.assertEqual(result["before"], {"name": "Compressor", "path": "1"})
+        self.assertEqual(result["after"], {"name": "De-esser", "path": "De-esser"})
+        self.assertEqual(result["device"]["index"], 1)
+        # The other Compressor is unique now, so list_devices prints it by name.
+        listed = live_ops.handle(self.song, "ableton.list_devices", {"track": "Vox"})
+        paths = [d["path"] for d in listed["tracks"][0]["devices"]]
+        self.assertEqual(paths, ["Compressor", "De-esser", "Vocal Rack", "Kit"])
+        self.assertEqual(self.song.undo_steps, ["begin", "end"])
+
+    def test_renames_a_device_inside_nested_racks(self):
+        result = self.rename("Vocal Rack/Main/Inner/Deep/Reverb", "Plate")
+
+        self.assertEqual(self.inner.chains[0].devices[0].name, "Plate")
+        self.assertEqual(result["after"]["path"], "Vocal Rack/Main/Inner/Deep/Plate")
+        _path, _index, device, _owner = live_ops.resolve_device_path(
+            self.track, result["after"]["path"]
+        )
+        self.assertIs(device, self.inner.chains[0].devices[0])
+
+    def test_renaming_a_rack_changes_the_paths_below_it(self):
+        result = self.rename("Vocal Rack", "Vox Chain")
+
+        self.assertEqual(result["after"]["path"], "Vox Chain")
+        self.assertEqual(
+            live_ops.resolve_device_path(self.track, "Vox Chain/Main/Compressor")[2],
+            self.vocal_rack.chains[0].devices[0],
+        )
+
+    def test_rejects_empty_names_and_missing_devices_without_changing_anything(self):
+        for name in ("", "   ", 5):
+            with self.subTest(name=name), self.assertRaisesRegex(LiveOpsError, "non-empty"):
+                self.rename(0, name)
+        with self.assertRaisesRegex(LiveOpsError, "missing required parameter 'name'"):
+            live_ops.handle(
+                self.song, "ableton.set_device_properties", {"track": "Vox", "device": 0}
+            )
+        with self.assertRaisesRegex(LiveOpsError, "no device 'Gate'"):
+            self.rename("Vocal Rack/Main/Gate", "X")
+        self.assertEqual([d.name for d in self.track.devices][:2], ["Compressor", "Compressor"])
+
+    def test_renames_a_rack_chain(self):
+        result = self.rename_chain("Vocal Rack/Main", "Body")
+
+        self.assertEqual(self.vocal_rack.chains[0].name, "Body")
+        self.assertEqual(result["before"], {"name": "Main", "path": "Vocal Rack/Main"})
+        self.assertEqual(result["after"], {"name": "Body", "path": "Vocal Rack/Body"})
+        self.assertEqual(result["rack"], {"name": "Vocal Rack", "path": "Vocal Rack"})
+        self.assertFalse(result["chain"]["is_return_chain"])
+        self.assertEqual(
+            live_ops.resolve_device_path(self.track, "Vocal Rack/Body/Compressor")[2],
+            self.vocal_rack.chains[0].devices[0],
+        )
+
+    def test_renames_by_index_nested_and_return_chains(self):
+        self.assertEqual(self.rename_chain("2/1", "Shine")["after"]["path"], "Vocal Rack/Shine")
+        nested = self.rename_chain("Vocal Rack/Main/Inner/0", "Tail")
+        self.assertEqual(nested["after"]["path"], "Vocal Rack/Main/Inner/Tail")
+        returns = self.rename_chain("Kit/returns/Room", "Hall")
+        self.assertEqual(self.kit.return_chains[0].name, "Hall")
+        self.assertEqual(returns["after"]["path"], "Kit/returns/Hall")
+        self.assertTrue(returns["chain"]["is_return_chain"])
+
+    def test_a_chain_name_that_would_be_misread_is_printed_by_index(self):
+        result = self.rename_chain("Vocal Rack/Air", "returns")
+
+        self.assertEqual(result["after"]["path"], "Vocal Rack/1")
+
+    def test_chain_errors_name_the_rack_and_choices(self):
+        cases = {
+            "Vocal Rack": "needs a rack and a chain",
+            "Compressor/Main": "ambiguous",
+            "#0/Main": "is not a Rack",
+            "Vocal Rack/Drums": "no chain 'Drums' in 'Vocal Rack'. Choices: 0:Main, 1:Air",
+            "Kit/returns/Nope": "no return chain 'Nope'",
+            "Vocal Rack/": "empty part",
+        }
+        for path, message in cases.items():
+            with self.subTest(path=path), self.assertRaisesRegex(LiveOpsError, message):
+                self.rename_chain(path, "X")
+
+    def test_renames_run_inside_a_batch(self):
+        result = live_ops.handle(
+            self.song,
+            "ableton.batch",
+            {
+                "operations": [
+                    {
+                        "method": "ableton.set_device_properties",
+                        "params": {"track": 2, "device": "#1", "name": "De-esser"},
+                    },
+                    {
+                        "method": "ableton.set_chain_properties",
+                        "params": {"track": 2, "chain": "Vocal Rack/Air", "name": "Shine"},
+                    },
+                ]
+            },
+        )
+
+        self.assertIsNone(result["failed"])
+        self.assertEqual(self.track.devices[1].name, "De-esser")
+        self.assertEqual(self.vocal_rack.chains[1].name, "Shine")
+
+    def test_insert_device_can_name_the_new_device(self):
+        result = live_ops.handle(
+            self.song,
+            "ableton.insert_device",
+            {"track": 0, "device_name": "Glue Compressor", "name": "Bus Glue"},
+        )
+
+        self.assertEqual(self.song.tracks[0].devices[0].name, "Bus Glue")
+        self.assertEqual(result["device"]["name"], "Bus Glue")
+        self.assertEqual(result["device"]["path"], "Bus Glue")
+
+    def test_insert_device_with_an_empty_name_inserts_nothing(self):
+        with self.assertRaisesRegex(LiveOpsError, "non-empty"):
+            live_ops.handle(
+                self.song,
+                "ableton.insert_device",
+                {"track": 0, "device_name": "Utility", "name": " "},
+            )
+        self.assertEqual(self.song.tracks[0].devices, [])
+
+
+class NoColourTrack(Track):
+    """A track whose colour cannot be set, to test fail-closed cleanup."""
+
+    @property
+    def color(self):
+        return 0
+
+    @color.setter
+    def color(self, value):
+        if value != 0x112233:  # Track.__init__ sets this one
+            raise RuntimeError("colour refused")
+
+
+class TrackSong(Song):
+    """Song.create_midi_track / create_audio_track / delete_track (Cycling '74 LOM)."""
+
+    def __init__(self, track_class=Track):
+        super().__init__()
+        self.track_class = track_class
+        self.created = []
+        self.deleted = []
+
+    def _create(self, kind, index):
+        tracks = list(self.tracks)
+        if not -1 <= index <= len(tracks):
+            raise RuntimeError("Index out of range")
+        position = len(tracks) if index == -1 else index
+        track = self.track_class(f"{position + 1}-{kind}")
+        track.has_midi_input = kind == "MIDI"
+        tracks.insert(position, track)
+        self.tracks = tuple(tracks)
+        self.created.append((kind, index))
+
+    def create_midi_track(self, index):
+        self._create("MIDI", index)
+
+    def create_audio_track(self, index):
+        self._create("Audio", index)
+
+    def delete_track(self, index):
+        tracks = list(self.tracks)
+        del tracks[index]
+        self.tracks = tuple(tracks)
+        self.deleted.append(index)
+
+
+class CreateTrackTests(unittest.TestCase):
+    """Issue #47."""
+
+    def setUp(self):
+        self.song = TrackSong()
+
+    def create(self, **params):
+        return live_ops.handle(self.song, "ableton.create_track", params)
+
+    def test_appends_a_midi_track_by_default(self):
+        result = self.create(kind="midi")
+
+        self.assertEqual(self.song.created, [("MIDI", -1)])
+        self.assertEqual([t.name for t in self.song.tracks][-1], "4-MIDI")
+        self.assertEqual(result["track_type"], "midi")
+        self.assertEqual(result["track"]["kind"], "track")
+        self.assertEqual(result["track"]["index"], 3)
+        self.assertEqual(result["track"]["name"], "4-MIDI")
+        self.assertNotIn("note", result)
+        self.assertEqual(self.song.undo_steps, ["begin", "end"])
+
+    def test_result_is_shaped_like_compact_list_tracks(self):
+        result = self.create(kind="audio", name="Vox Double")
+
+        listed = live_ops.handle(self.song, "ableton.list_tracks", {"detail": "compact"})
+        self.assertEqual(result["track"], listed["tracks"][3])
+
+    def test_inserts_named_and_coloured_audio_track_at_an_index(self):
+        result = self.create(kind="Audio", name="Vox Double", index=1, color="#FF0000")
+
+        self.assertEqual(self.song.created, [("Audio", 1)])
+        self.assertEqual(
+            [t.name for t in self.song.tracks], ["Kick", "Vox Double", "Bass", "Vox"]
+        )
+        self.assertEqual(self.song.tracks[1].color, 0xFF0000)
+        self.assertEqual(result["track"]["index"], 1)
+        self.assertEqual(result["track"]["color"], "#FF0000")
+        self.assertIn("moved down by one", result["note"])
+
+    def test_sets_a_palette_colour_index(self):
+        self.create(kind="midi", color_index=12)
+
+        self.assertEqual(self.song.tracks[-1].color_index, 12)
+
+    def test_bad_arguments_create_nothing(self):
+        cases = [
+            ({"kind": "group"}, "must be 'midi' or 'audio'"),
+            ({"kind": "midi", "index": 9}, "out of range"),
+            ({"kind": "midi", "index": -2}, "out of range"),
+            ({"kind": "midi", "index": True}, "out of range"),
+            ({"kind": "midi", "name": " "}, "non-empty"),
+            ({"kind": "midi", "color": "red"}, "color must be"),
+            ({"kind": "midi", "color_index": "3"}, "whole number"),
+            ({}, "missing required parameter 'kind'"),
+        ]
+        for params, message in cases:
+            with self.subTest(params=params), self.assertRaisesRegex(LiveOpsError, message):
+                self.create(**params)
+        self.assertEqual(self.song.created, [])
+        self.assertEqual(len(self.song.tracks), 3)
+
+    def test_a_failed_setup_deletes_the_new_track(self):
+        self.song = TrackSong(track_class=NoColourTrack)
+        self.song.tracks = (Track("Kick"), Track("Bass"))
+
+        with self.assertRaisesRegex(LiveOpsError, "removed again"):
+            self.create(kind="audio", name="Temp", index=0, color="#00FF00")
+
+        self.assertEqual(self.song.deleted, [0])
+        self.assertEqual([t.name for t in self.song.tracks], ["Kick", "Bass"])
+        self.assertEqual(self.song.undo_steps, ["begin", "end"])
+
+    def test_live_errors_and_missing_calls_are_reported(self):
+        with self.assertRaisesRegex(LiveOpsError, "cannot create midi tracks"):
+            live_ops.handle(Song(), "ableton.create_track", {"kind": "midi"})
+
+        def refuse(index):
+            raise RuntimeError("no room")
+
+        self.song.create_audio_track = refuse
+        with self.assertRaisesRegex(LiveOpsError, "could not create a new audio track: no room"):
+            self.create(kind="audio")
+
+    def test_runs_inside_a_batch(self):
+        result = live_ops.handle(
+            self.song,
+            "ableton.batch",
+            {
+                "operations": [
+                    {"method": "ableton.create_track", "params": {"kind": "midi", "name": "Keys"}},
+                    {"method": "ableton.set_mixer", "params": {"track": "Keys", "mute": True}},
+                ]
+            },
+        )
+
+        self.assertIsNone(result["failed"])
+        self.assertTrue(self.song.tracks[-1].mute)
+        self.assertEqual(self.song.undo_steps, ["begin", "end"])
+# Issues #43 and #44: how a caller's value becomes a raw Live value. --------
+
+
+class StepParam(Param):
+    """A stepped parameter shaped like Glue Compressor's Release or Echo's
+    "L Synced": an integer raw range, display text from ``str_for_value``,
+    and (as reported in Live 12.4.16, issue #44) no ``value_items``.
+    ``writes`` records every write so tests can check lookups never write.
+    """
+
+    def __init__(self, name, labels, value=0.0, quantized=True, constant=None):
+        super().__init__(name, value, 0.0, float(len(labels) - 1))
+        self.is_quantized = quantized
+        self.value_items = ()
+        self.labels = tuple(labels)
+        self.constant = constant
+        self.writes = []
+
+    def __setattr__(self, key, value):
+        if key == "value" and "writes" in self.__dict__:
+            self.writes.append(value)
+        object.__setattr__(self, key, value)
+
+    def str_for_value(self, value):
+        if self.constant is not None:
+            return self.constant
+        return self.labels[int(round(value))]
+
+
+def q_display(value):
+    # EQ Eight Q stand-in: raw 0..1 shows 0.10..18.00 with no unit.
+    return f"{0.1 * 180 ** value:.2f}"
+
+
+GLUE_RELEASE = (".1", ".2", ".4", ".6", ".8", "1.2", "A")
+GLUE_ATTACK = (".01", ".1", ".3", "1", "3", "10", "30")
+ECHO_SYNCED = ("1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1")
+
+
+class BareNumberTests(unittest.TestCase):
+    """Issue #43: a bare number is not silently read as raw when that is ambiguous."""
+
+    def setUp(self):
+        self.q = Param("2 Q A", 0.5, display=q_display)
+
+    def test_ambiguous_bare_number_is_refused_with_both_readings(self):
+        with self.assertRaises(LiveOpsError) as raised:
+            live_ops.set_parameter_value(self.q, 1)
+
+        message = str(raised.exception)
+        self.assertIn("ambiguous", message)
+        self.assertIn("'18.00'", message)
+        self.assertIn("'1.00'", message)
+        self.assertIn('{"raw": 1}', raised.exception.hint)
+        self.assertIn('"1"', raised.exception.hint)
+        self.assertEqual(self.q.value, 0.5)
+
+    def test_display_text_and_explicit_raw(self):
+        live_ops.set_parameter_value(self.q, "1.00")
+        self.assertEqual(q_display(self.q.value), "1.00")
+
+        reading = live_ops.set_parameter_value(self.q, {"raw": 1.0})
+        self.assertEqual(self.q.value, 1.0)
+        self.assertEqual(reading["read_as"], "raw")
+
+    def test_explicit_raw_is_range_checked_and_shape_checked(self):
+        with self.assertRaisesRegex(LiveOpsError, "outside"):
+            live_ops.set_parameter_value(self.q, {"raw": 3})
+        for bad in ({"raw": "1"}, {"raw": 1, "display": "1"}, {"value": 1}, [1], None):
+            with self.subTest(bad=bad), self.assertRaises(LiveOpsError):
+                live_ops.set_parameter_value(self.q, bad)
+        self.assertEqual(self.q.value, 0.5)
+
+    def test_number_outside_raw_range_is_read_as_display(self):
+        reading = live_ops.set_parameter_value(self.q, 3)
+
+        self.assertEqual(q_display(self.q.value), "3.00")
+        self.assertEqual(reading["read_as"], "display")
+        self.assertIn("outside the raw range", reading["note"])
+
+    def test_raw_and_display_that_agree_keep_working(self):
+        knob = Param("Amount", 0.0, 0.0, 127.0, display=lambda v: f"{v:.0f}")
+
+        reading = live_ops.set_parameter_value(knob, 64)
+
+        self.assertEqual(knob.value, 64.0)
+        self.assertEqual(reading, {"raw": 64.0, "read_as": "raw", "note": None})
+
+    def test_unit_display_keeps_raw_reading_with_a_note(self):
+        gain = Param("Output", 0.0, -1.0, 1.0, display=gain_display)
+
+        reading = live_ops.set_parameter_value(gain, 0.5)
+
+        self.assertEqual(gain.value, 0.5)
+        self.assertEqual(reading["read_as"], "raw")
+        self.assertIn("'17.5 dB'", reading["note"])
+        self.assertIn('(for example "17.5 dB")', reading["note"])
+
+    def test_display_text_just_past_an_end_is_clamped_with_a_note(self):
+        gain = Param("Output", 0.0, -1.0, 1.0, display=gain_display)
+
+        reading = live_ops.set_parameter_value(gain, "36 dB")
+
+        self.assertEqual(gain.value, 1.0)
+        self.assertEqual(reading["read_as"], "display")
+        self.assertIn("past the end", reading["note"])
+        self.assertIn("'35.0 dB'", reading["note"])
+        for text in ("35 dB", "-35.0 dB", "0 dB"):
+            with self.subTest(text=text):
+                self.assertIsNone(live_ops.set_parameter_value(gain, text)["note"])
+
+    def test_out_of_range_unit_number_names_the_display_reading(self):
+        gain = Param("Output", 0.0, -1.0, 1.0, display=gain_display)
+
+        with self.assertRaises(LiveOpsError) as raised:
+            live_ops.set_parameter_value(gain, -6)
+
+        self.assertIn("outside", str(raised.exception))
+        self.assertIn("'-6.0 dB'", raised.exception.hint)
+        self.assertEqual(gain.value, 0.0)
+
+    def test_option_steps_take_the_step_number_without_a_note(self):
+        switch = Param("Device On", 1.0, items=("Off", "On"))
+
+        reading = live_ops.set_parameter_value(switch, 0)
+
+        self.assertEqual(switch.value, 0.0)
+        self.assertIsNone(reading["note"])
+
+    def test_set_device_parameter_reports_how_the_value_was_read(self):
+        song = Song()
+        song.tracks[0].devices = [
+            SimpleNamespace(
+                name="EQ Eight",
+                class_name="Eq8",
+                can_have_chains=False,
+                parameters=(Param("Device On", 1.0, items=("Off", "On")), self.q),
+            )
+        ]
+        params = {"track": 0, "device": 0, "parameter": "2 Q A"}
+
+        result = live_ops.handle(song, "ableton.set_device_parameter", {**params, "value": "1.00"})
+        self.assertEqual(result["after"]["display"], "1.00")
+        self.assertEqual(result["read_as"], "display")
+        with self.assertRaisesRegex(LiveOpsError, "ambiguous"):
+            live_ops.handle(song, "ableton.set_device_parameter", {**params, "value": 1})
+        self.assertEqual(q_display(self.q.value), "1.00")
+
+
+class SteppedParameterTests(unittest.TestCase):
+    """Issue #44: stepped parameters resolve by step name and list their steps."""
+
+    def test_glue_release_resolves_auto_and_numbers(self):
+        for quantized in (True, False):
+            release = StepParam("Release", GLUE_RELEASE, quantized=quantized)
+            with self.subTest(quantized=quantized):
+                for text, raw in (("Auto", 6.0), ("A", 6.0), ("0.1", 0.0), ("1.2", 5.0)):
+                    self.assertEqual(live_ops.value_for_display(release, text), raw)
+                self.assertEqual(release.writes, [])
+
+    def test_glue_release_refuses_words_that_only_start_with_a(self):
+        # The one-letter step "A" must not swallow any text starting with "a".
+        for quantized in (True, False):
+            release = StepParam("Release", GLUE_RELEASE, quantized=quantized)
+            with self.subTest(quantized=quantized):
+                for text in ("Attack", "abc", "Au"):
+                    with self.assertRaisesRegex(LiveOpsError, "not an option"):
+                        live_ops.value_for_display(release, text)
+                self.assertEqual(live_ops.value_for_display(release, "auto"), 6.0)
+                self.assertEqual(live_ops.value_for_display(release, "a"), 6.0)
+                self.assertEqual(release.writes, [])
+
+    def test_glue_release_lists_each_step_as_an_option(self):
+        release = StepParam("Release", GLUE_RELEASE, quantized=False)
+
+        self.assertEqual(live_ops._param_payload(release)["options"], list(GLUE_RELEASE))
+
+    def test_glue_release_bare_number_with_no_matching_step_is_raw(self):
+        release = StepParam("Release", GLUE_RELEASE)
+
+        reading = live_ops.set_parameter_value(release, 1)
+
+        self.assertEqual(release.value, 1.0)
+        self.assertIn("'.2'", reading["note"])
+
+    def test_glue_attack_bare_number_matching_another_step_is_ambiguous(self):
+        attack = StepParam("Attack", GLUE_ATTACK)
+
+        with self.assertRaisesRegex(LiveOpsError, "ambiguous.*'.1'.*'1' is raw 3"):
+            live_ops.set_parameter_value(attack, 1)
+        self.assertEqual(attack.writes, [])
+        live_ops.set_parameter_value(attack, "1")
+        self.assertEqual(attack.value, 3.0)
+
+    def test_glue_ratio_number_beyond_the_steps_is_read_as_display(self):
+        ratio = StepParam("Ratio", ("2", "4", "10"))
+
+        reading = live_ops.set_parameter_value(ratio, 4)
+
+        self.assertEqual(ratio.value, 1.0)
+        self.assertEqual(reading["read_as"], "display")
+
+    def test_unknown_step_lists_the_options(self):
+        release = StepParam("Release", GLUE_RELEASE)
+
+        with self.assertRaisesRegex(LiveOpsError, "Options: .1, .2, .4, .6, .8, 1.2, A"):
+            live_ops.set_parameter_value(release, "Slow")
+        self.assertEqual(release.writes, [])
+
+    def test_echo_synced_division_matches_text_not_its_leading_number(self):
+        synced = StepParam("L Synced", ECHO_SYNCED)
+
+        self.assertEqual(live_ops.value_for_display(synced, "1/8"), 3.0)
+        self.assertEqual(live_ops.value_for_display(synced, "1"), 6.0)
+        self.assertEqual(live_ops._param_payload(synced)["options"], list(ECHO_SYNCED))
+
+    def test_echo_synced_constant_display_is_explained(self):
+        # What Live 12.4.16 reported: '1/64' for every value (issue #44).
+        synced = StepParam("L Synced", ECHO_SYNCED, constant="1/64")
+
+        with self.assertRaises(LiveOpsError) as raised:
+            live_ops.set_parameter_value(synced, "1/8")
+
+        message = str(raised.exception)
+        self.assertIn("shows '1/64' for every value", message)
+        self.assertIn("depend on another parameter", message)
+        self.assertIn('{"raw"', raised.exception.hint)
+        self.assertEqual(synced.writes, [])
+        self.assertFalse(live_ops._param_payload(synced).get("options"))
+
+    def test_text_display_is_matched_by_sampling_and_misses_list_what_was_seen(self):
+        mode = Param("Mode", 0.0, display=lambda v: "Low" if v < 0.5 else "High")
+
+        self.assertGreaterEqual(live_ops.value_for_display(mode, "high"), 0.5)
+        with self.assertRaisesRegex(LiveOpsError, "it shows: Low, High"):
+            live_ops.value_for_display(mode, "Mid")
+
+    def test_continuous_integer_range_is_not_mistaken_for_steps(self):
+        knob = Param("Amount", 0.0, 0.0, 10.0, display=lambda v: f"{v:.1f}")
+
+        self.assertNotIn("options", live_ops._param_payload(knob))
+        self.assertAlmostEqual(live_ops.value_for_display(knob, "2.5"), 2.5, places=1)
+
+
+class GlueTrack(Track):
+    """insert_device makes a Glue Compressor with stepped parameters."""
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.inserted = []
+
+    def insert_device(self, device_name, index):
+        device = SimpleNamespace(
+            name=device_name,
+            class_name="GlueCompressor",
+            can_have_chains=False,
+            parameters=(
+                Param("Device On", 1.0, items=("Off", "On")),
+                StepParam("Attack", GLUE_ATTACK),
+                StepParam("Release", GLUE_RELEASE),
+            ),
+        )
+        self.inserted.append(device)
+        self.devices.insert(index, device)
+
+
+class InsertWithParametersTests(unittest.TestCase):
+    """Issue #44: insert_device checks what it can before inserting."""
+
+    def setUp(self):
+        self.song = Song()
+        self.track = GlueTrack("Drums")
+        self.song.tracks = (self.track,)
+
+    def insert(self, parameters):
+        return live_ops.handle(
+            self.song,
+            "ableton.insert_device",
+            {"track": 0, "device_name": "Glue Compressor", "parameters": parameters},
+        )
+
+    def test_step_names_resolve_on_insert(self):
+        result = self.insert({"Release": "Auto", "Attack": "1"})
+
+        self.assertEqual([p["display"] for p in result["parameters_set"]], ["A", "1"])
+
+    def test_malformed_values_are_refused_before_inserting(self):
+        for parameters in ({"Release": [1]}, {"Release": {"raw": "x"}}, ["Release"], {"": 1}):
+            with self.subTest(parameters=parameters), self.assertRaises(LiveOpsError):
+                self.insert(parameters)
+        self.assertEqual(self.track.inserted, [])
+
+    def test_unknown_name_fails_before_any_parameter_is_written(self):
+        with self.assertRaises(LiveOpsError) as raised:
+            self.insert({"Release": "Auto", "Knee": 3})
+
+        self.assertIn("removed again", str(raised.exception))
+        self.assertIn("list_devices", raised.exception.hint)
+        self.assertEqual(self.track.devices, [])
+        self.assertEqual(self.track.inserted[0].parameters[2].writes, [])
+
+    def test_a_failed_removal_keeps_the_original_error_and_says_so(self):
+        def refuse(index):
+            raise RuntimeError("delete refused")
+
+        self.track.delete_device = refuse
+        with self.assertRaises(LiveOpsError) as raised:
+            self.insert({"Release": "Slow"})
+
+        message = str(raised.exception)
+        self.assertIn("Options:", message)
+        self.assertIn("delete refused", message)
+        self.assertIn("NOT removed", message)
+        self.assertEqual(len(self.track.devices), 1)
+
+    def test_unresolvable_value_keeps_its_code_and_explains(self):
+        with self.assertRaises(live_ops.InvalidValue) as raised:
+            self.insert({"Release": "Slow"})
+
+        self.assertIn("Options:", str(raised.exception))
+        self.assertIn("removed again", str(raised.exception))
+        self.assertIn("insert it without parameters", raised.exception.hint)
+        self.assertEqual(self.track.devices, [])
+
+    def test_batch_rejects_malformed_values_before_anything_runs(self):
+        with self.assertRaisesRegex(LiveOpsError, "operation 1"):
+            live_ops.handle(
+                self.song,
+                "ableton.batch",
+                {
+                    "operations": [
+                        {
+                            "method": "ableton.insert_device",
+                            "params": {"track": 0, "device_name": "Glue Compressor"},
+                        },
+                        {
+                            "method": "ableton.set_device_parameter",
+                            "params": {
+                                "track": 0,
+                                "device": 0,
+                                "parameter": "Release",
+                                "value": [1],
+                            },
+                        },
+                    ]
+                },
+            )
+        self.assertEqual(self.track.inserted, [])
+        self.assertEqual(self.song.undo_steps, [])
 
 
 if __name__ == "__main__":
