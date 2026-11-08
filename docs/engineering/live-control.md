@@ -36,7 +36,7 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `list_tracks` | `ableton.list_tracks` | Names, group parent, colour, output routing, volume, pan, sends, mute/solo, device names. Covers regular, return, and main tracks. The tool defaults to `detail="compact"` (levels as display text, no routing options), about a quarter of the size, so large sets fit; `detail="full"` adds raw values and the output routing choices. `name` keeps tracks whose name contains it. |
 | `list_devices` | `ableton.list_devices` | Devices per track (or all tracks) with name, path, class and on/off, and rack chains with index, name and device count. Devices whose sidechain input Live exposes (Compressor) also show `sidechain: {"on", "from", "channel"}`; see [Sidechain](#sidechain). The tool defaults to `detail="compact"` (no parameters; issue #42, a full dump of one Drum Rack track reached 2.5 MB). `detail="full"` or `include_parameters=true` adds every parameter with raw value, range, display text, and options. `max_depth` (0-4, default 4) limits how many rack levels have their chains expanded; `max_depth=0` lists a Drum Rack's chains by name and device count only (`"truncated": true`). Without `detail` or `include_parameters` the bridge keeps its old default (full for one track, compact for all tracks); the tool always sends `include_parameters`. Read-only. |
 | `get_device` | `ableton.get_device` | One device, by the same index, name or path the write tools take, with its parameters (raw value, display text, min/max, options, original name). `parameters` keeps only those whose name or original name contains it (case-insensitive; Utility's `Gain` alias works), or any of a list. A rack's chains are listed by name and device count only. Use it to read one value instead of a whole `list_devices` dump. Read-only. |
-| `list_clips` | `ableton.list_clips` | A track's Arrangement View clips (`Track.arrangement_clips`, Live 11+): index, name, start/end/length in beats, start/end as `bar.beat.sixteenth` from the song's time signature, audio or MIDI, muted, and for audio clips `gain` (0..1) and `gain_display`. Read-only. Session View clips are not listed. Not validated in Live (issue #50). |
+| `list_clips` | `ableton.list_clips` | A track's Arrangement View clips (`Track.arrangement_clips`, Live 11+): index, name, start/end/length in beats, start/end as `bar.beat.sixteenth` from the song's time signature, audio or MIDI, muted, and for audio clips `gain` (0..1) and `gain_display`. Read-only. Session View clips are not listed. Checked in Live 12.4.16 on 2026-11-08 (issue #50). |
 | `read_levels` | `ableton.read_levels` | Realtime read (issue #45): sample track output meters for `seconds` (0.5 to 10, default 4) while Live plays, for up to 16 tracks (`tracks`, default every regular track; `include_returns`, `include_main`). Per track: `peak`, `rms_of_samples`, `hold_peak`, left/right peaks, `sample_count`. Meter positions 0..1, not dBFS. Never starts or stops the transport; refuses with `transport_stopped` when Live is not playing. See [Reading levels](#reading-levels). |
 | `generate_macro_cockpit` | `ableton.get_selected_rack_macros` | Read the selected Rack's macros (read-only) and return a grouped Macro Cockpit spec plus a text summary. See [RFC 0002](../rfcs/0002-selected-rack-macro-cockpit.md). |
 | `save_macro_cockpit` | none | Save a cockpit generated in this session as a JSON file, so it can be reopened. Cockpits are temporary until saved. |
@@ -45,8 +45,8 @@ Claude Code ──stdio MCP──▶ abletonian (Python 3.10+)
 | `show_macro_cockpit` | none | Write a cockpit (generated this session, or saved) as a self-contained HTML page under the cockpit folder's `views/`, and open it in the browser. Display only. |
 | `set_device_parameter` | `ableton.set_device_parameter` | Set by display text (`"-3 dB"`, `"2.5 kHz"`, `"1.00"`), option or step name (`"Off"`, `"Auto"`, `"1/8"`), or raw value (`{"raw": 0.5}`). A bare number is raw unless that is ambiguous; see "How a value is read" below. The result says how the value was read (`read_as`) and may carry a `note`. |
 | `set_track_output_routing` | `ableton.set_track_output_routing` | Set Audio To / MIDI To by display name, such as `Main` or a group name. |
-| `set_device_sidechain` | `ableton.set_device_sidechain` | Point a Compressor's sidechain input at a source by display name (`from_track`, such as `"2-32 Pad Kit Jazz"` or just `"32 Pad Kit Jazz"` when unique) and an optional `channel` (`"Post FX"`). Transformative, one undo step, batchable. Only the routing: "S/C On" is set with `set_device_parameter`. Not validated in Live (issue #49). |
-| `set_clip_gain` | `ableton.set_clip_gain` | Set an arrangement audio clip's Gain in dB (`-3`, `"-3 dB"`, `"-inf dB"`). `clip` is the `list_clips` index (`0` or `"#0"`) or a unique clip name. Transformative, one undo step, batchable. See [Clips](#clips). Not validated in Live (issue #50). |
+| `set_device_sidechain` | `ableton.set_device_sidechain` | Point a Compressor's sidechain input at a source by display name (`from_track`, such as `"2-32 Pad Kit Jazz"` or just `"32 Pad Kit Jazz"` when unique) and an optional `channel` (`"Post FX"`). Transformative, one undo step, batchable. Only the routing: "S/C On" is set with `set_device_parameter`. Checked in Live 12.4.16 on 2026-11-08 (issue #49); there only Compressor exposes a sidechain, not Glue Compressor or Gate. |
+| `set_clip_gain` | `ableton.set_clip_gain` | Set an arrangement audio clip's Gain in dB (`-3`, `"-3 dB"`, `"-inf dB"`). `clip` is the `list_clips` index (`0` or `"#0"`) or a unique clip name. Transformative, one undo step, batchable. See [Clips](#clips). Checked in Live 12.4.16 on 2026-11-08 (issue #50). |
 | `set_track_properties` | `ableton.set_track_properties` | Rename and recolour (`"#RRGGBB"` or a palette index). Live shows a return's letter in front of its name, so a leading `A-` is dropped when renaming return A. |
 | `set_device_properties` | `ableton.set_device_properties` | Rename a device (`Device.name`), at the top of a track or inside racks by its path. Transformative. Returns the name and printed path before and after; renaming can change the device's own path and a same-named sibling's (issue #46). |
 | `set_chain_properties` | `ableton.set_chain_properties` | Rename a rack chain (`Chain.name`). `chain` is the rack's path plus the chain's name or index: `"Vocal Rack/Main"`, `"Drum Rack/returns/0"`. Transformative. Returns the name and path before and after. |
@@ -93,7 +93,9 @@ that would be misread also get the index: names that are only digits, a
 chain named "returns", names with leading or trailing spaces, and names
 containing `/`. For the top-level device, `#N` always means index N, even
 if a device is named `#N`; it is printed instead of `N` when another device
-is literally named `N`. Not yet run in Live.
+is literally named `N`. In Live 12.4.16 (2026-11-08) all 43 paths
+`list_devices` printed for First Light, including `C78 Core Kit/4/Guiro Short`,
+resolved through `get_device` to the same device.
 
 ### Sidechain
 
@@ -102,16 +104,21 @@ Since Live 11 a Compressor is a `Live.CompressorDevice.CompressorDevice` with
 `input_routing_type` and `input_routing_channel` (Cycling '74 LOM docs). The
 script detects these by attribute, not by class name, so any device that has
 them gets a `sidechain` entry in `list_devices` and can be set with
-`set_device_sidechain`. Guesses, not yet checked in Live (issue #49):
+`set_device_sidechain`. Checked in Live 12.4.16 on 2026-11-08 (issue #49):
 
-- whether Glue Compressor and Gate expose the same properties;
-- that `display_name` of a sidechain source reads as Live's chooser shows it,
-  with the track number in front (`"2-32 Pad Kit Jazz"`). A bare name
-  (`"32 Pad Kit Jazz"`) also matches when exactly one source has it, for
-  output routing as well;
-- what `input_routing_type` reads when the source track was deleted;
-- that the sidechain switch is a parameter named `S/C On` (`on` is `null`
-  when no parameter has that name).
+- Glue Compressor and Gate do not expose these properties, so they have no
+  `sidechain` entry and `set_device_sidechain` refuses them with
+  `not_supported`. Their sidechain can only be set in Live's UI.
+- A source's `display_name` reads with the track number in front
+  (`"1-C78 Core Kit"`), and the bare name (`"C78 Core Kit"`) also matched.
+  The choices were the other audio tracks, the returns, Main and "No Input";
+  the MIDI track without an instrument was not offered.
+- The sidechain switch is a parameter named `S/C On`; it is the "External"
+  button in Live's Compressor.
+- Each call is one undo step. Setting the source it already has added none.
+
+Still a guess: what `input_routing_type` reads when the source track was
+deleted.
 
 A channel that does not exist for the new source puts the old source back,
 as with output routing. A wrong source or channel lists every choice Live
@@ -144,21 +151,29 @@ two ends differ, so a display that lags one write behind is caught whatever
 the starting gain. On any failure the original gain is put back; if putting
 it back fails too, the error says so. Text a little past either end (such as
 `"25 dB"` when the top shows `24.0 dB`) is set to that end with a `note`.
-Guesses, not yet checked in Live:
+Checked in Live 12.4.16 on 2026-11-08:
 
-- that `gain_display_string` changes at once after a write, within one
-  main-thread callback (if it does not, the call is refused, not wrong);
-- that the probe writes stay in one undo step and leave no extra ones;
-- that `arrangement_clips` is missing or fails, rather than being empty, on
-  tracks without clips, and that bar 1 starts at beat 0.
+- `gain_display_string` changes at once after a write: `-3`, `"-6 dB"`,
+  `"-inf dB"`, `"+3"` and `0` each landed on that display (`-3.00 dB` and so
+  on), and `"25 dB"` was set to the top, `24.0 dB`, with a note.
+- Each call is one undo step; the probe writes leave no extra ones.
+- A refused value (`-200`) puts the gain back, but its probe writes still
+  leave one undo step that changes nothing.
+- `arrangement_clips` is an empty list on tracks without clips. A clip at
+  beat 8 in 4/4 starts at `3.1.1`, so bar 1 starts at beat 0.
+- `gain_db` accepts only a number with an optional `dB`, or `-inf`. Before
+  this run, `"#0"` (meant as a clip reference) was read as 0 dB.
 Renaming a device or chain (`set_device_properties`, `set_chain_properties`,
 `insert_device` with `name`) works out the printed path again after the
 rename and returns it. `Device.name` and `Chain.name` are read/write in the
-Cycling '74 LOM docs. Not yet run in Live: a Live check should confirm that
-the name Live shows (and reads back) is the one written, that renaming a
-device inside a rack, or a chain, changes the paths `list_devices` prints
-the way the fakes do, and that renaming a Drum Rack chain does not also
-rename its pad in an unexpected way.
+Cycling '74 LOM docs. Checked in Live 12.4.16 on 2026-11-08: Live shows and
+reads back the written name; renaming the chain `C78 Core Kit/4` to
+"Guiro A" made the other "Guiro Short" chain's path `C78 Core Kit/Guiro Short`;
+a Drum Rack chain's pad shows the new chain name. Renaming the Instrument
+Rack inside a Drum Rack chain ("Snare" to "Snare X") also renamed that chain
+and its pad. The returned path already shows this
+(`C78 Core Kit/Snare X/Snare X`), so use the path from the result, not the
+old chain name. Each rename is one undo step.
 
 ### Values by display text
 
@@ -319,7 +334,7 @@ edit. So the empty step is left and the error says so.
 
 ### Reading levels
 
-`read_levels` (issue #45, not validated in Live) is the first realtime read:
+`read_levels` (issue #45, checked in Live 12.4.16 on 2026-11-08) is the first realtime read:
 it takes wall-clock time and its answer depends on what is playing, but it
 changes neither the Set nor the transport and adds nothing to Undo History.
 
@@ -356,13 +371,18 @@ louder of left and right), `peak_left`, `peak_right`, `hold_peak` (the
 highest `output_meter_level`), `rms_of_samples` (the root mean square of the
 momentary readings: a rough loudness average at about the tick rate, not a
 true signal RMS), and `sample_count`. Warnings name tracks that read 0.0 for
-the whole window, tracks that could not be read, and MIDI tracks, and say so
-when fewer than 2 samples per second were taken (stalled or skipped ticks).
+the whole window, tracks where only `hold_peak` caught a level, tracks that
+could not be read, and MIDI tracks, and say so when fewer than 2 samples per
+second were taken (stalled or skipped ticks). In Live 12.4.16 a one-shot clap
+fell between samples: `peak` was 0.0 while `hold_peak` was 0.40, so short
+sounds are better judged by `hold_peak`.
 If abletonian's bridge client times out waiting for a read, its error says
 that nothing was changed.
 
 Live Object Model assumptions, from the Cycling '74 LOM docs (Track, Song)
-as recalled, not re-checked for this change and not yet run in Live:
+as recalled. In Live 12.4.16 (2026-11-08) the meters read sensibly (the
+playing drum track about 0.84, silent tracks 0.0), a stopped transport was
+refused, and stopping it during a read gave `stopped_early`:
 
 - `Track.output_meter_left` / `output_meter_right`: momentary peak per
   channel, 0.0 to 1.0, for tracks with audio output.
@@ -373,7 +393,8 @@ as recalled, not re-checked for this change and not yet run in Live:
 - The values are meter positions, not dBFS. Live does not document the
   mapping to dB, so none is reported. That 1.0 is near 0 dBFS is a guess.
 - Live's timer runs about 10 ticks a second (community knowledge, not in the
-  LOM docs; a guess), so a 4 s window gives about 40 samples. The result
+  LOM docs; in Live 12.4.16 a 4 s window took 39 samples), so a 4 s window
+  gives about 40 samples. The result
   reports the real sample count and elapsed time.
 - Gain reduction per device (compressors, limiters) is out of scope. It is
   probably not exposed to Remote Scripts (a guess; not checked).
@@ -458,6 +479,44 @@ Checked in Live 12.4.16 on 2026-11-03 (PR #40, validation log below).
   macros. The page has no running scripts and loads nothing from the network.
 
 ## Validation log
+
+### 2026-11-08 (PR #61), Live 12.4.16 Suite, macOS 27.2
+
+Remote Script 0.7.1 from the PR branch, installed and reloaded by switching
+the Control Surface slot to None and back. Run by an agent on the Mac with
+the `drive-live-on-mac` skill. Set: `First Light 061 check.als`, a Save As
+copy of First Light, not saved after the run; every change was undone and
+Live's Edit menu showed "Nothing to Undo" at the end.
+
+- `daw.health`: adapter 0.7.1 with the new capabilities.
+- `list_devices` with `max_depth` 0 listed the 16 Drum Rack chains as
+  truncated. All 43 printed paths resolved through `get_device` (#24, #42).
+- EQ Eight `1 Q A` (#43): bare `1` refused as ambiguous naming both
+  readings, `"1"` set 1.00, `{"raw": 1}` set 18.0, bare `3` set 3.00 with a
+  note. Nothing changed on the refusal.
+- Glue Compressor (#44): options listed as Live shows them (Release `.1` to
+  `A`). `"Auto"` set Release to A; `"Attack"` and `"Au"` were refused;
+  `"0.4"`, Attack `"1"` and `"0.1"`, Ratio `"4"` and `10` all set.
+- `insert_device` with a name (#46): one undo step for insert and name.
+  Chain and device renames showed in Live and moved paths as expected;
+  renaming the rack inside a Drum Rack chain also renamed the chain.
+- `set_device_sidechain` (#49): Compressor set to C78 Core Kit Post FX, then
+  A-Reverb; Live's Compressor showed External, A-Reverb, Post FX. Glue
+  Compressor and Gate refused with `not_supported`.
+- `create_track` (#47): MIDI at index 1 and audio at the end, each one undo
+  step; group kind, index 99 and a bad colour refused with nothing created.
+- `list_clips` and `set_clip_gain` (#50), on a clap sample dragged into
+  Arrangement View: all values landed; one undo step each.
+- `read_levels` (#45): refused while stopped; 39 samples in 4 s while a
+  Session clip played; returns and Main included on request; stopping the
+  transport after 2.5 s of a 6 s read gave `stopped_early`.
+- Found and fixed: `gain_db` `"#0"` was read as 0 dB, the out-of-range clip
+  gain error told the caller to send a raw value, and `read_levels` called a
+  track silent when only `hold_peak` had caught its short hit. The first two
+  fixes were rerun in Live; the `read_levels` warning change is unit tested
+  only. These fixes are adapter 0.7.2.
+- Not checked: `create_track` inside a group, the fail-closed delete, and a
+  sidechain source that was deleted.
 
 ### 2026-11-03 (MEH-25, PR #40), Live 12.4.16 Suite, macOS 27.2
 
@@ -674,11 +733,15 @@ reorder tracks. Creating group buses therefore still needs Live's UI
 name them, route tracks into them, and insert a Glue Compressor on them.
 Saving the set is also not exposed.
 
-`create_track` (issue #47) is not yet run in Live. A Live check should
-confirm: the new track lands at the requested index; what happens when that
-index falls inside a folded or unfolded group (a guess: Live may put the
-track into the group); that the create and the name/colour form one undo
-step; and that the fail-closed `Song.delete_track` leaves no track behind.
+`create_track` (issue #47) was checked in Live 12.4.16 on 2026-11-08: a MIDI
+track created at index 1 landed there, an audio track without an index went
+to the end, and each create with its name and colour was one undo step. A
+bad colour or index is refused before anything is created. Live picked the
+palette colour `#5480E4` for `"#3366FF"`, and the next track created without
+a colour showed the same colour, so whether the colour was applied or is
+Live's default is not settled. Not checked: an index inside a folded or
+unfolded group (a guess: Live may put the track into the group), and the
+fail-closed `Song.delete_track`.
 
 ## Prior art
 

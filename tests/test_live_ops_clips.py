@@ -188,6 +188,13 @@ class SetClipGainTests(unittest.TestCase):
         self.call("ableton.set_clip_gain", track=1, clip="bass intro", gain_db=0)
         self.assertEqual(self.clips[0].gain_display_string, "0.0 dB")
 
+    def test_gain_text_forms_that_are_accepted(self):
+        for text, shown in (("+3", "3.0 dB"), ("-6dB", "-6.0 dB"), (" -1.5 db ", "-1.5 dB"),
+                            ("0", "0.0 dB"), ("-inf", "-inf dB")):
+            with self.subTest(gain_db=text):
+                self.call("ableton.set_clip_gain", track=1, clip=0, gain_db=text)
+                self.assertEqual(self.clips[0].gain_display_string, shown)
+
     def test_minus_infinity_and_the_top_of_the_range(self):
         self.call("ableton.set_clip_gain", track=1, clip=0, gain_db="-inf dB")
         self.assertEqual(self.clips[0].gain, 0.0)
@@ -208,6 +215,18 @@ class SetClipGainTests(unittest.TestCase):
         self.assertIn("put back", str(raised.exception))
         self.assertEqual(self.clips[0].gain, 0.25)
 
+    def test_out_of_range_gain_error_names_the_range_not_a_raw_value(self):
+        # Live 12.4.16, 2026-11-08: -200 dB was refused with "Use a raw value
+        # between 0.0 and 1.0", but gain_db takes no raw value.
+        with self.assertRaises(InvalidValue) as raised:
+            self.call("ableton.set_clip_gain", track=1, clip=0, gain_db=-200)
+
+        message = str(raised.exception) + " " + str(raised.exception.hint)
+        self.assertNotIn("raw value", message)
+        self.assertIn("'-inf dB'", message)
+        self.assertIn("'24.0 dB'", message)
+        self.assertNotIn("..", message)
+
     def test_midi_clip_is_refused_without_writing(self):
         self.song.tracks[1].arrangement_clips = (Clip("Keys", 0.0, 4.0, audio=False),)
         with self.assertRaisesRegex(InvalidValue, "MIDI clip"):
@@ -222,6 +241,10 @@ class SetClipGainTests(unittest.TestCase):
             self.call("ableton.set_clip_gain", track=1, clip="Outro", gain_db=-3)
         with self.assertRaises(InvalidValue):
             self.call("ableton.set_clip_gain", track=1, clip=0, gain_db="loud")
+        # Live 12.4.16, 2026-11-08: "#0" (a clip reference) was read as 0 dB.
+        for bad in ("#0", "-3 dB louder", "3 Hz", "1/8", "about -3"):
+            with self.subTest(gain_db=bad), self.assertRaises(InvalidValue):
+                self.call("ableton.set_clip_gain", track=1, clip=0, gain_db=bad)
         for bad in (True, {"raw": 0.7}, [-3], None, float("nan")):
             with self.subTest(gain_db=bad), self.assertRaises(LiveOpsError):
                 self.call("ableton.set_clip_gain", track=1, clip=0, gain_db=bad)
@@ -270,7 +293,7 @@ class SetClipGainTests(unittest.TestCase):
             self.call("ableton.set_clip_gain", track=1, clip=0, gain_db=40)
 
         message = str(raised.exception)
-        self.assertIn("could not find", message)
+        self.assertIn("no gain of clip", message)
         self.assertIn("restore refused", message)
         self.assertIn("could NOT be put back", message)
         self.assertIn("'-23.0 dB'", message)

@@ -43,7 +43,7 @@ HOST = "127.0.0.1"
 # (RFC 0004). Must match DEFAULT_BRIDGE_PORT in src/abletonian/config.py.
 PORT = 39877
 PROTOCOL_VERSION = "abletonian.bridge.v2"
-ADAPTER_VERSION = "0.7.1"
+ADAPTER_VERSION = "0.7.2"
 # The per-install key every request must carry (RFC 0004). Same path as
 # DEFAULT_BRIDGE_KEY_PATH in src/abletonian/bridge/client.py.
 KEY_PATH = os.path.join(os.path.expanduser("~"), ".abletonian", "bridge_key")

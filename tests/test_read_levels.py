@@ -211,6 +211,17 @@ class LevelWindowTests(unittest.TestCase):
         self.assertEqual(by_name(result)["Pad"]["peak"], 0.0)
         self.assertTrue(any("0.0 for the whole window on: Pad" in w for w in result["warnings"]))
 
+    def test_a_short_hit_caught_only_by_the_hold_meter_is_not_called_silent(self):
+        # Live 12.4.16, 2026-11-08: a one-shot clap showed hold_peak 0.40 with
+        # every momentary reading 0.0, and was still listed as silent.
+        song = MeterSong(tracks=[MeterTrack("Kick"), MeterTrack("Clap", [(0.0, 0.0, 0.4)])])
+        result = run_window(song)
+        self.assertEqual(by_name(result)["Clap"]["peak"], 0.0)
+        self.assertEqual(by_name(result)["Clap"]["hold_peak"], 0.4)
+        silent = [w for w in result["warnings"] if "whole window" in w]
+        self.assertEqual(silent, [])
+        self.assertTrue(any("Clap" in w and "hold_peak" in w for w in result["warnings"]))
+
     def test_midi_tracks_use_the_level_meter_and_say_so(self):
         song = MeterSong(tracks=[MeterTrack("Notes", [(0.9, 0.9, 0.5)], has_audio_output=False)])
         track = by_name(run_window(song))["Notes"]

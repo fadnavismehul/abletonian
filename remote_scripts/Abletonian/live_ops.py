@@ -500,7 +500,17 @@ def set_clip_gain(song, params):
     probe = _ClipGainProbe(clip, track)
     try:
         _check_probe(probe)
-        raw = _search_display(probe, probe.read, 0.0, 1.0, target, text)
+        try:
+            raw = _search_display(probe, probe.read, 0.0, 1.0, target, text)
+        except InvalidValue as exc:
+            # The parameter wording offers a raw value, which gain_db does not
+            # take, so name the range in dB instead.
+            raise InvalidValue(
+                f"no gain of clip '{_str(clip.name)}' on '{_str(track.name)}' shows "
+                f"'{text}'; it runs from '{probe.read(probe, 0.0)}' to "
+                f"'{probe.read(probe, 1.0)}'",
+                "Send a dB value inside that range, or '-inf dB' for silence.",
+            ) from exc
         note = _clamp_note(f"the {probe.name}", text, probe.read(probe, raw), raw, 0.0, 1.0)
     except Exception as exc:
         try:
@@ -524,6 +534,9 @@ def set_clip_gain(song, params):
     }
 
 
+_GAIN_DB = re.compile(r"^\s*(-inf|[-+]?(?:\d+\.?\d*|\.\d+))\s*(?:db)?\s*$", re.IGNORECASE)
+
+
 def _gain_db_target(value):
     """``(dB number, text)`` for ``set_clip_gain``'s ``gain_db``. Needs no Live object.
 
@@ -536,9 +549,16 @@ def _gain_db_target(value):
             f"gain_db {value!r} must be a number of dB or text such as '-3 dB'"
         )
     if isinstance(value, str):
-        target = parse_display_number(value)
-        if target is None:
-            raise InvalidValue(f"could not read a dB value from '{value}'")
+        # Only a number with an optional "dB": parse_display_number would also
+        # read "#0" (a clip reference) as 0 dB (Live 12.4.16, 2026-11-08).
+        match = _GAIN_DB.match(value)
+        if not match:
+            raise InvalidValue(
+                f"could not read a dB value from '{value}'",
+                "Send a number of dB such as -3 or '-3 dB', or '-inf dB' for silence.",
+            )
+        number = match.group(1).lower()
+        target = -math.inf if number == "-inf" else float(number)
         return target, value
     if not math.isfinite(value):
         raise InvalidValue(f"gain_db {value!r} must be a finite number, or the text '-inf dB'")
@@ -1391,11 +1411,22 @@ class LevelWindow:
                 "window, so Live skipped ticks and short peaks may be missing. Read again "
                 "if the values look low."
             )
-        silent = [t["name"] for t in tracks if t["sample_count"] and t["peak"] == 0.0]
+        audio = [t for t in tracks if t["sample_count"] and t["meter"] != "midi"]
+        silent = [t["name"] for t in tracks if t["sample_count"] and t["peak"] == 0.0
+                  and t["hold_peak"] == 0.0]
         if silent:
             warnings.append(
                 "Meters read 0.0 for the whole window on: " + ", ".join(silent)
                 + ". They may be muted, have no clip playing here, or be routed elsewhere."
+            )
+        # A short hit can fall between ticks and show only in the hold meter
+        # (a one-shot clap in Live 12.4.16, 2026-11-08).
+        held_only = [t["name"] for t in audio if t["peak"] == 0.0 and t["hold_peak"] > 0.0]
+        if held_only:
+            warnings.append(
+                "Only the hold meter (hold_peak) caught a level on: " + ", ".join(held_only)
+                + ". Short sounds there fell between samples, so peak and rms_of_samples "
+                "read 0.0; use hold_peak for them."
             )
         unreadable = [t["name"] for t in tracks if t["sample_count"] == 0]
         if unreadable:
